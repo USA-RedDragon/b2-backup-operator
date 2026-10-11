@@ -503,3 +503,32 @@ func TestMariaDBRestoresADatabaseNamedLikeAnOption(t *testing.T) {
 		t.Error("app was changed")
 	}
 }
+
+// Only the staging database may change while the dump loads: a statement that
+// names another database, or the server itself, is refused before it runs.
+func TestMariaDBKeepsTheDumpInsideStaging(t *testing.T) {
+	maxConnections := sql(t, "SELECT @@GLOBAL.max_connections")
+	for name, inject := range map[string]string{
+		"another database":                 "INSERT INTO `other`.`t` VALUES (43);\n",
+		"the live database":                "INSERT INTO `app`.`keep` VALUES (99, 'live');\n",
+		"a second statement on a line":     "SELECT 1; INSERT INTO other.t VALUES (44);\n",
+		"a global variable":                "SET GLOBAL max_connections = 99;\n",
+		"a global variable after another":  "SET @a = 1, GLOBAL max_connections = 99;\n",
+		"a qualified table in a versioned": "/*!40000 ALTER TABLE `other`.`t` DISABLE KEYS */;\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			backup, _ := seed(t)
+			at := strings.Index(backup, "UNLOCK TABLES;\n") + len("UNLOCK TABLES;\n")
+			otherBefore := fingerprint(t, "other")
+			refused(t, backup[:at]+inject+backup[at:], nil)
+			if fingerprint(t, "other") != otherBefore {
+				t.Error("the other database was changed")
+			}
+			if got := sql(t, "SELECT @@GLOBAL.max_connections"); got != maxConnections {
+				t.Errorf("max_connections is %s, was %s", got, maxConnections)
+				sql(t, "SET GLOBAL max_connections = "+maxConnections)
+			}
+			assertNoStaging(t)
+		})
+	}
+}

@@ -28,11 +28,18 @@ The replaced tables stay in <database>` + OldSuffix + ` for a rollback until it 
 dropped, by hand or with --drop-old. A restore refuses to start while that
 database still holds tables.
 
-USE and CREATE DATABASE lines from a --databases dump are left out, so the
-dump always lands in the database given; a dump of more than one database is
-refused. RENAME TABLE cannot move views or tables with triggers to another
-database, so a database or dump that has views, triggers, or (in the dump)
-stored routines or events is refused before the live database is touched.
+The dump is read a statement at a time, split the way the mariadb client splits
+it, and each statement is checked before the client sees it. USE and CREATE
+DATABASE statements from a --databases dump are left out, so the dump always
+lands in the database given; a dump of more than one database is refused. So is
+a statement that names its table with a database, such as INSERT INTO
+` + "`other`.`t`" + `, which would write past the staging database; one that changes the
+server, replication or accounts, such as SET GLOBAL, CHANGE MASTER or GRANT, or
+builds SQL at run time, such as PREPARE or EXECUTE, or writes a file on the
+server; and a client command other than the \- a mariadb-dump starts with.
+RENAME TABLE cannot move views or tables with triggers to another database, so
+a database or dump that has views, triggers, or (in the dump) stored routines
+or events is refused before the live database is touched.
 
 The user needs ALL on <database>` + StagingSuffix + ` and <database>` + OldSuffix + `,
 and ALTER, DROP, CREATE and INSERT on the database itself.

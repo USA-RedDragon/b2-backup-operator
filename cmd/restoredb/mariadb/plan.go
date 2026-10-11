@@ -29,9 +29,15 @@ var (
 	// ErrUnsupportedObjects is returned when a schema or the dump holds objects the
 	// swap cannot move atomically.
 	ErrUnsupportedObjects = errors.New("views, triggers, stored routines and events cannot be swapped atomically")
-	// ErrUnsupportedStatement is returned for a database-level statement the
-	// restore does not know how to keep out of the live database.
-	ErrUnsupportedStatement = errors.New("the dump changes a database itself")
+	// ErrUnsupportedStatement is returned for a statement the restore cannot
+	// keep out of the live database, or cannot check.
+	ErrUnsupportedStatement = errors.New("the dump has a statement restoredb cannot restore safely")
+	// ErrServerStatement is returned for a statement that changes the server,
+	// replication or accounts rather than the dump's own tables.
+	ErrServerStatement = errors.New("the dump changes the server, replication or accounts, not only its own tables")
+	// ErrOtherDatabase is returned for a statement that names its table with a
+	// database, which would write past the staging database.
+	ErrOtherDatabase = errors.New("the dump writes to a table it names with a database, outside the staging database")
 	// ErrOldExists is returned when the rollback schema of an earlier restore is still there.
 	ErrOldExists = errors.New("the rollback database of an earlier restore still holds tables")
 	// ErrNoDatabase is returned when the target database does not exist or is not visible.
@@ -118,105 +124,4 @@ func DumpComplete(tail []byte) bool {
 	}
 	last := strings.TrimRight(lines[len(lines)-1], "\r")
 	return last == trailer || strings.HasPrefix(last, trailer+" on ")
-}
-
-type lineKind int
-
-const (
-	linePass lineKind = iota
-	lineDatabase
-	lineObject
-	lineUnsupported
-	lineRefused
-)
-
-// classify reads the start of a dump line. It returns lineDatabase and the
-// database named for a USE, CREATE DATABASE or DROP DATABASE line, all of which
-// a --databases or --all-databases dump writes and none of which may reach the
-// server. lineRefused means the line starts an object the swap cannot move.
-func classify(line string) (lineKind, string) {
-	line = strings.TrimRight(line, "\r\n")
-	switch {
-	case hasPrefixFold(line, "DELIMITER"):
-		return lineRefused, "triggers, stored routines or events"
-	case strings.HasPrefix(line, "/*!50001 "):
-		return lineRefused, "views"
-	case hasPrefixFold(line, "CREATE TABLE "), hasPrefixFold(line, "DROP TABLE "),
-		hasPrefixFold(line, "CREATE SEQUENCE "), hasPrefixFold(line, "INSERT "):
-		return lineObject, ""
-	}
-
-	body := skipVersionComment(line)
-	for _, stmt := range []string{"USE ", "CREATE DATABASE ", "CREATE SCHEMA ", "DROP DATABASE ", "DROP SCHEMA "} {
-		if !hasPrefixFold(body, stmt) {
-			continue
-		}
-		name, ok := databaseName(body[len(stmt):])
-		if !ok {
-			return lineUnsupported, line
-		}
-		return lineDatabase, name
-	}
-	for _, stmt := range []string{"ALTER DATABASE", "ALTER SCHEMA", "CREATE OR REPLACE DATABASE",
-		"CREATE OR REPLACE SCHEMA"} {
-		if hasPrefixFold(body, stmt) {
-			return lineUnsupported, line
-		}
-	}
-	return linePass, ""
-}
-
-func hasPrefixFold(s, prefix string) bool {
-	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
-}
-
-// skipVersionComment strips the opening of a versioned comment, such as
-// "/*!40000 " or "/*M!100616 ", from the start of s.
-func skipVersionComment(s string) string {
-	for _, open := range []string{"/*!", "/*M!"} {
-		if rest, ok := strings.CutPrefix(s, open); ok {
-			return strings.TrimLeft(strings.TrimLeft(rest, "0123456789"), " ")
-		}
-	}
-	return s
-}
-
-// databaseName reads the backquoted name that follows an optional IF [NOT]
-// EXISTS, itself perhaps in a versioned comment.
-func databaseName(rest string) (string, bool) {
-	for {
-		rest = strings.TrimLeft(rest, " ")
-		switch {
-		case strings.HasPrefix(rest, "/*!"), strings.HasPrefix(rest, "/*M!"):
-			rest = skipVersionComment(rest)
-		case hasPrefixFold(rest, "IF NOT EXISTS"):
-			rest = rest[len("IF NOT EXISTS"):]
-		case hasPrefixFold(rest, "IF EXISTS"):
-			rest = rest[len("IF EXISTS"):]
-		case strings.HasPrefix(rest, "*/"):
-			rest = rest[2:]
-		default:
-			return unquoteIdent(rest)
-		}
-	}
-}
-
-func unquoteIdent(s string) (string, bool) {
-	if !strings.HasPrefix(s, "`") {
-		return "", false
-	}
-	var b strings.Builder
-	for i := 1; i < len(s); i++ {
-		if s[i] != '`' {
-			b.WriteByte(s[i])
-			continue
-		}
-		if i+1 < len(s) && s[i+1] == '`' {
-			b.WriteByte('`')
-			i++
-			continue
-		}
-		return b.String(), b.Len() > 0
-	}
-	return "", false
 }

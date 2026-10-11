@@ -200,9 +200,10 @@ func (r *restore) load(ctx context.Context, in *bufio.Reader) error {
 	}
 	switch {
 	case errors.Is(err, ErrUnsupportedObjects), errors.Is(err, ErrUnsupportedStatement),
-		errors.Is(err, ErrMultipleDatabases):
+		errors.Is(err, ErrMultipleDatabases), errors.Is(err, ErrServerStatement), errors.Is(err, ErrOtherDatabase),
+		errors.Is(err, ErrClientCommand):
 		return err
-	case !DumpComplete(f.tail):
+	case !f.complete():
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrIncomplete, err)
 		}
