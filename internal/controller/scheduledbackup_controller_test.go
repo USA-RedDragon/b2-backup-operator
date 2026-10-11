@@ -146,7 +146,7 @@ func TestALabelledCronJobIsReadopted(t *testing.T) {
 		t.Fatal(err)
 	}
 	cj.OwnerReferences = nil
-	delete(cj.Labels, labelManagedBy)
+	cj.Spec.Schedule = "1 2 * * *"
 	if err := c.Update(context.Background(), &cj); err != nil {
 		t.Fatal(err)
 	}
@@ -472,5 +472,37 @@ func assertNoCronJob(t *testing.T, c client.Client) {
 		types.NamespacedName{Namespace: testNS, Name: cronJobName}, &batchv1.CronJob{})
 	if !apierrors.IsNotFound(err) {
 		t.Errorf("a CronJob was created despite the repository not being usable: %v", err)
+	}
+}
+
+func TestAnUnownedCronJobIsNeverTakenOver(t *testing.T) {
+	t.Parallel()
+	foreign := &batchv1.CronJob{
+		Name: cronJobName, Namespace: testNS,
+		Spec: batchv1.CronJobSpec{
+			Schedule: "5 4 * * *",
+			JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "someone/else"}}},
+			}}},
+		},
+	}
+	r, c := backupHarness(t, initializedRepo(), scheduledBackup(), foreign)
+	reconcileBackup(t, r)
+
+	var cj batchv1.CronJob
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+		t.Fatal(err)
+	}
+	if cj.Spec.Schedule != "5 4 * * *" || cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image != "someone/else" ||
+		len(cj.OwnerReferences) != 0 {
+		t.Errorf("an unowned CronJob was rewritten: %+v", cj.Spec)
+	}
+	var sb b2backupv1.ScheduledBackup
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: resticName}, &sb); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(sb.Status.Conditions, b2backupv1.ScheduledBackupConditionReady); cond == nil ||
+		cond.Status != metav1.ConditionFalse || cond.Reason != "CronJobNotManaged" {
+		t.Errorf("Ready = %+v, want False CronJobNotManaged", cond)
 	}
 }
