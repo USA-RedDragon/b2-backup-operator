@@ -84,7 +84,8 @@ pg_restore. Anything else is taken as a plain SQL dump from pg_dump and run with
 psql. Both run in a single transaction, so a failed restore leaves the database
 untouched. pg_restore reads the whole archive before it commits; psql commits
 when its input ends, so a plain dump that ends without pg_dump's "dump complete"
-trailer stops psql first, and nothing is committed.
+trailer, outside any COPY data and statement, stops psql first, and nothing is
+committed.
 
 A plain dump with large objects has its own BEGIN; and COMMIT; lines around
 them. The COMMIT would end the restore's transaction partway, so those lines
@@ -112,8 +113,9 @@ prepares a transaction is refused before psql runs it.`,
 			if more, _ := in.Peek(in.Size()); len(more) > 0 {
 				key = RestrictKey(more)
 			}
-			complete := func(tail []byte) bool { return PlainDumpComplete(key, tail) }
-			filter := NewPlainFilter().Copy
+			plain := NewPlainFilter()
+			complete := func(tail []byte) bool { return plain.Ended() && PlainDumpComplete(key, tail) }
+			filter := plain.Copy
 			if IsCustomFormat(head) {
 				name = "pg_restore"
 				opts = []string{"--clean", "--if-exists", "--no-owner", "--single-transaction"}

@@ -88,9 +88,9 @@ func newLexer() *lexer {
 }
 
 // idle reports whether the lexer is between statements, outside any string,
-// comment or meta-command.
+// block comment or meta-command.
 func (l *lexer) idle() bool {
-	return l.state == stNormal && l.empty && l.pending == 0 && l.dollar == nil && !l.uAmp && !l.meta &&
+	return (l.state == stNormal || l.state == stLineComment) && l.empty && l.pending == 0 && l.dollar == nil && !l.uAmp && !l.meta &&
 		!l.copyPending && l.tok == tokNone
 }
 
