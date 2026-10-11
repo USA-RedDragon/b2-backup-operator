@@ -783,3 +783,27 @@ func TestParityReportsAForgetThatGroupedByAnythingButTags(t *testing.T) {
 		t.Errorf("parity = %v; the image's RESTIC_GROUP_BY=tags is what the operator passes:\n%s", err, out.String())
 	}
 }
+
+func TestParityCatchesADumpThatReadsNoSecret(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	hr := filepath.Join(dir, "helmrelease.yaml")
+	gen := filepath.Join(dir, "generated.yaml")
+	const dump = "restic backup --tag=db --stdin-from-command -- dumpdb cnpg"
+	original := strings.Replace(parityRelease, "restic backup --tag=files /data\n", "echo start\n                "+dump+"\n", 1) +
+		"      postgresql-app:\n        type: secret\n        name: postgresql-app\n"
+	generated := strings.Replace(parityGenerated, "  sources:\n    - type: files\n      paths: [/data]\n  retention: {daily: 7}\n",
+		"  database: {engine: cnpg}\n  script: |\n    echo start\n    "+dump+"\n    restic forget --prune --keep-daily=7\n", 1)
+	if err := os.WriteFile(hr, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gen, []byte(generated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runParity(&out, gen, hr, migrateOptions{})
+	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "DATABASE SECRET UNREAD") {
+		t.Errorf("parity = %v; dumpdb reads /postgresql-app and the operator mounts the Secret elsewhere:\n%s",
+			err, out.String())
+	}
+}

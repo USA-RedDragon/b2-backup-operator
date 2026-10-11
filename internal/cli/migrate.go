@@ -281,8 +281,14 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]s
 			unstructured.reason))
 		parsed = parsedScript{}
 		sb.Spec.Script = scriptBody(script)
-		if strings.Contains(script, backupCNPGScript) || strings.Contains(script, "dumpdb cnpg") {
+		if err := checkVerbatimDatabase(script); err != nil {
+			return nil, err
+		}
+		switch {
+		case strings.Contains(script, backupCNPGScript) || strings.Contains(script, "dumpdb cnpg"):
 			parsed.engine = b2backupv1.DatabaseEngineCNPG
+		case strings.Contains(script, "dumpdb mariadb"):
+			parsed.engine = b2backupv1.DatabaseEngineMariaDB
 		}
 		if strings.Contains(script, backupCNPGScript) {
 			setEnv(sb, cnpgSecretPathEnv, b2backupv1.DBSecretMountPath)
@@ -301,27 +307,8 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]s
 		}
 	}
 
-	if parsed.engine != "" {
-		db := &b2backupv1.DatabaseSpec{Engine: parsed.engine}
-		if dbSecret != nil {
-			db.SecretName = dbSecret.name
-			if cluster := cnpgClusterOf(dbSecret.name); parsed.engine == b2backupv1.DatabaseEngineCNPG &&
-				cluster != "" && cluster != defaultCNPGCluster {
-				db.CNPGCluster = cluster
-			}
-		}
-		if parsed.engine == b2backupv1.DatabaseEngineMariaDB {
-			db.Host = container.env(envDBHost)
-			db.Name = container.env(envDBDatabase)
-			db.User = container.env(envDBUsername)
-			for _, name := range []string{envDBHost, envDBDatabase, envDBUsername} {
-				delete(sb.Spec.Env, name)
-			}
-			if len(sb.Spec.Env) == 0 {
-				sb.Spec.Env = nil
-			}
-		}
-		sb.Spec.Database = db
+	if err := migrateDatabase(parsed.engine, dbSecret, container, sb); err != nil {
+		return nil, err
 	}
 
 	if sb.Spec.Affinity == nil && len(sb.Spec.Volumes) > 0 {
@@ -465,6 +452,39 @@ func migrateResticEnvs(envs map[string]string, container hrContainer, m *migrati
 		m.notes = append(m.notes, fmt.Sprintf("restic-envs: %s carried into spec.env from the decrypted Secret.",
 			strings.Join(carried, ", ")))
 	}
+	return nil
+}
+
+// migrateDatabase sets spec.database for the engine the script dumps.
+func migrateDatabase(engine b2backupv1.DatabaseEngine, dbSecret *hrVolume, container hrContainer,
+	sb *b2backupv1.ScheduledBackup) error {
+	switch {
+	case engine == "" && dbSecret != nil:
+		return fmt.Errorf("%w: %s mounts the Secret %s, and a ScheduledBackup mounts a Secret only for "+
+			"a database dump", ErrUnsupportedMount, dbSecret.key, dbSecret.name)
+	case engine == "":
+		return nil
+	}
+	db := &b2backupv1.DatabaseSpec{Engine: engine}
+	if dbSecret != nil {
+		db.SecretName = dbSecret.name
+		if cluster := cnpgClusterOf(dbSecret.name); engine == b2backupv1.DatabaseEngineCNPG &&
+			cluster != "" && cluster != defaultCNPGCluster {
+			db.CNPGCluster = cluster
+		}
+	}
+	if engine == b2backupv1.DatabaseEngineMariaDB {
+		db.Host = container.env(envDBHost)
+		db.Name = container.env(envDBDatabase)
+		db.User = container.env(envDBUsername)
+		for _, name := range []string{envDBHost, envDBDatabase, envDBUsername} {
+			delete(sb.Spec.Env, name)
+		}
+		if len(sb.Spec.Env) == 0 {
+			sb.Spec.Env = nil
+		}
+	}
+	sb.Spec.Database = db
 	return nil
 }
 
@@ -675,6 +695,29 @@ func setEnv(sb *b2backupv1.ScheduledBackup, name, value string) {
 		sb.Spec.Env = map[string]string{}
 	}
 	sb.Spec.Env[name] = value
+}
+
+var dumpdbCall = regexp.MustCompile(`\bdumpdb\s+\S+[^\n;|&]*`)
+
+// checkVerbatimDatabase refuses a script kept verbatim whose dump would look
+// for its credentials anywhere but where the operator mounts the database
+// Secret. dumpdb reads its --secret-mount, by default /postgresql-app or
+// /mariadb; backup-mariadb.sh reads /mariadb and DB_USER and DB_NAME, which
+// the operator does not set. backup-cnpg.sh reads CNPG_SECRET_PATH, which
+// migrate points at the operator's mount.
+func checkVerbatimDatabase(script string) error {
+	if strings.Contains(script, "backup-mariadb.sh") {
+		return fmt.Errorf("%w: the script runs backup-mariadb.sh, which reads its credentials from /mariadb, "+
+			"and the operator mounts the database Secret at %s", ErrUnsupportedMount, b2backupv1.DBSecretMountPath)
+	}
+	for _, call := range dumpdbCall.FindAllString(script, -1) {
+		if !strings.Contains(call, "--secret-mount="+b2backupv1.DBSecretMountPath) {
+			return fmt.Errorf("%w: the script runs %q, which reads its credentials from its own --secret-mount, "+
+				"and the operator mounts the database Secret at %s", ErrUnsupportedMount, strings.TrimSpace(call),
+				b2backupv1.DBSecretMountPath)
+		}
+	}
+	return nil
 }
 
 func cnpgClusterOf(secret string) string {
