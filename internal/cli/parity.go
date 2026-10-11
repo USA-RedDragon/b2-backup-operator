@@ -86,6 +86,7 @@ type parityView struct {
 	annotations       map[string]string
 
 	extraContainers []string
+	unreadSecrets   []string
 	podRest         string
 	containerRest   string
 }
@@ -155,6 +156,7 @@ func viewOf(cj *batchv1.CronJob, namespace, repositorySecret, defaultZone string
 		return v, err
 	}
 	delete(env, envResticCacheDir)
+	v.unreadSecrets = unreadSecrets(v.script, env, secretMounts)
 	normalizeCNPGSecretPath(env, v.script, secretMounts)
 	v.env = env
 
@@ -276,6 +278,36 @@ func remainingSpecs(pod corev1.PodSpec, container corev1.Container) (string, str
 	c.Resources, c.SecurityContext = corev1.ResourceRequirements{}, nil
 	return canonicalJSON(rest), canonicalJSON(c)
 }
+
+var dumpdbSecretMounts = map[string]string{"cnpg": "/postgresql-app", "mariadb": "/mariadb"}
+
+var dumpdbInvocation = regexp.MustCompile(`\bdumpdb\s+(\S+)([^\n;|&]*)`)
+
+// unreadSecrets lists each database dump in the script whose credentials are
+// read from a directory where no Secret is mounted: dumpdb reads its
+// --secret-mount, defaulting per engine, and backup-cnpg.sh reads
+// CNPG_SECRET_PATH, defaulting to /postgresql-app.
+func unreadSecrets(script string, env map[string]string, secretMounts map[string]bool) []string {
+	var out []string
+	for _, m := range dumpdbInvocation.FindAllStringSubmatch(script, -1) {
+		dir := dumpdbSecretMounts[m[1]]
+		if flag := secretMountFlag.FindStringSubmatch(m[2]); flag != nil {
+			dir = flag[1]
+		}
+		if dir != "" && !secretMounts[pathpkg.Clean(dir)] {
+			out = append(out, "dumpdb "+m[1]+" reads "+dir)
+		}
+	}
+	if strings.Contains(script, backupCNPGScript) {
+		dir := cmpOr(env[cnpgSecretPathEnv], backupCNPGDefaultMount)
+		if !secretMounts[pathpkg.Clean(dir)] {
+			out = append(out, backupCNPGScript+" reads "+dir)
+		}
+	}
+	return out
+}
+
+var secretMountFlag = regexp.MustCompile(`--secret-mount=(\S+)`)
 
 func int32Setting(p *int32, def string) string {
 	if p == nil {
@@ -781,6 +813,10 @@ func compareContainer(r *parityReport, o, g parityView) {
 		canonicalJSON(o.containerSecurityContext) != canonicalJSON(g.containerSecurityContext) {
 		r.differ("SECURITY CONTEXT DIFFERS: original container %s, generated %s",
 			canonicalJSON(o.containerSecurityContext), orNone(canonicalJSON(g.containerSecurityContext)))
+	}
+	if len(g.unreadSecrets) > len(o.unreadSecrets) {
+		r.differ("DATABASE SECRET UNREAD: in the generated backup %s, where no Secret is mounted",
+			strings.Join(g.unreadSecrets, ", "))
 	}
 	if len(o.extraContainers) > 0 {
 		r.differ("CONTAINERS DIFFER: the original pod also runs %s, which the generated one does not",

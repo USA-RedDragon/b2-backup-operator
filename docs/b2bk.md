@@ -610,8 +610,10 @@ Some differences are the operator's by design and are normalized away: its
 restic cache claim, and a cache volume on the original side mounted where restic
 keeps its cache (`--cache-dir`, then `RESTIC_CACHE_DIR`, then the image's
 `/cache`) when the script backs nothing up from there; the database Secret's
-mount path; the Repository's Secret in place of `restic-envs` and `restic-b2`;
-the pod's restart policy, service account token and service links; and, when
+mount path, as long as every dump on the generated side reads its credentials
+where a Secret is mounted (`DATABASE SECRET UNREAD` otherwise); the
+Repository's Secret in place of `restic-envs` and `restic-b2`; the pod's restart
+policy, service account token and service links; and, when
 the original sets none, the operator's own security contexts.
 
 | Flag | |
@@ -675,6 +677,7 @@ printed with the time of day in the schedule's time zone, such as
 | `GROUPING DIFFERS` | 1 | The original's forget grouped by something other than tags: its own `--group-by`, or `RESTIC_GROUP_BY`, which the image's wrapper adds and the image sets to `tags`. The operator's forget always passes `--group-by=tags` |
 | `ENVFROM DIFFERS` | 1 | The original reads a Secret or ConfigMap other than `restic-envs` and `restic-b2` |
 | `DATABASE SECRET DIFFERS` | 1 | |
+| `DATABASE SECRET UNREAD` | 1 | A dump in the generated backup reads its credentials from a directory where no Secret is mounted: `dumpdb`'s `--secret-mount`, by default `/postgresql-app` or `/mariadb`, or `backup-cnpg.sh`'s `CNPG_SECRET_PATH` |
 | `REPOSITORY DIFFERS` | 1 | The Repository is not at the original bucket and path |
 | `SUSPEND DIFFERS`, `CONCURRENCY DIFFERS` | 1 | |
 | `JOB SETTINGS DIFFER` | 1 | `activeDeadlineSeconds`, `parallelism` or `completions` |
@@ -791,6 +794,12 @@ such a value is refused, to be quoted in the HelmRelease.
 `migrate` refuses a HelmRelease whose `restic` controller is disabled or is not
 a `cronjob`, runs init containers or any container but `restic`, or that runs
 any other controller than that `restic init` Job, rather than drop them.
+
+A Secret is mounted only for a database dump, at the operator's
+`/var/run/secrets/b2backup/database`. So `migrate` refuses a mounted Secret no
+dump reads, and a script kept verbatim that runs `dumpdb` without
+`--secret-mount=/var/run/secrets/b2backup/database` or runs
+`backup-mariadb.sh`, since either would look for its credentials elsewhere.
 
 `migrate` refuses what a ScheduledBackup cannot mount: data at `/cache`, where
 the operator mounts restic's cache, more than one Secret, more

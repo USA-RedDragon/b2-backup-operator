@@ -1267,3 +1267,24 @@ func TestMigrateRefusesAReleaseWhoseRepositoryLivesInAnotherSecret(t *testing.T)
 			"reading its repository from another Secret would collapse into another release's Repository\n%s", err, out)
 	}
 }
+
+func TestMigrateRefusesASecretTheBackupWouldNotFind(t *testing.T) {
+	t.Parallel()
+	const dump = "restic backup --tag=db --stdin-from-command -- backup-cnpg.sh\n"
+	tests := map[string]string{
+		"a verbatim dumpdb reading its default mount": "echo start\n                restic backup --tag=db --stdin-from-command -- dumpdb cnpg\n",
+		"a verbatim dumpdb told the old mount": "echo start\n                restic backup --tag=db --stdin-from-command -- " +
+			"dumpdb cnpg --secret-mount=/postgresql-app\n",
+		"a verbatim backup-mariadb.sh": "echo start\n                restic backup --tag=db --stdin-from-command -- backup-mariadb.sh\n",
+		"a Secret no dump reads":       "echo start\n",
+	}
+	for name, replacement := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out, err := migrate(t, strings.Replace(homeClusterRelease, dump, replacement, 1))
+			if !errors.Is(err, ErrUnsupportedMount) {
+				t.Errorf("err = %v, want ErrUnsupportedMount\n%s", err, out)
+			}
+		})
+	}
+}
