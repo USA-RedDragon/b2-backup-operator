@@ -33,6 +33,7 @@ const (
 	envResticHost     = "RESTIC_HOST"
 	envResticCacheDir = "RESTIC_CACHE_DIR"
 	envResticGroupBy  = "RESTIC_GROUP_BY"
+	envResticPassword = "RESTIC_PASSWORD"
 	imageGroupBy      = "tags"
 	volumeDiffers     = "VOLUME DIFFERS"
 	verdictEquivalent = "EQUIVALENT"
@@ -44,6 +45,7 @@ const (
 	operatorCacheDir       = "/cache"
 	podHostname            = "(the pod's hostname)"
 	unsetSetting           = "unset"
+	kindRepositoryDoc      = "Repository"
 )
 
 // controllerManagerZone is the zone a CronJob without timeZone runs in: the
@@ -568,6 +570,7 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 	if err != nil {
 		return fmt.Errorf("rendering the generated resource: %w", err)
 	}
+	repoGiven := repo.Kind == kindRepositoryDoc
 	original, err := readOriginal(helmReleasePath)
 	if err != nil {
 		return fmt.Errorf("reading the original backup: %w", err)
@@ -603,7 +606,15 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 	compareContainer(&r, o, g)
 	comparePod(&r, o, g)
 	compareControllers(&r, original.others)
-	if repositoryURL != "" {
+	if repoGiven {
+		compareRepository(&r, original, o, g, sb, repo, resticEnvs)
+	} else {
+		r.note("REPOSITORY UNCHECKED: %s holds no Repository %s, so neither its password nor its location "+
+			"is compared", generatedPath, sb.Spec.RepositoryRef.Name)
+	}
+	if repositoryURL == "" && repoGiven {
+		r.note("REPOSITORY UNCHECKED: pass --repository or --from-secret to compare the Repository's bucket and path")
+	} else if repositoryURL != "" {
 		loc, err := parseS3Repository(repositoryURL)
 		if err != nil {
 			return err
@@ -645,6 +656,47 @@ func readsSecret(cj *batchv1.CronJob, name string) bool {
 	return slices.ContainsFunc(container.EnvFrom, func(e corev1.EnvFromSource) bool {
 		return e.SecretRef != nil && e.SecretRef.Name == name
 	})
+}
+
+// passwordEnv names the variables that give restic its password, or point it
+// at another repository, in the order restic reads them.
+var passwordEnv = []string{envResticPassword, "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND", "RESTIC_REPOSITORY_FILE"}
+
+// compareRepository checks that the generated backup lands in the original's
+// namespace and opens the repository with the key the original used.
+func compareRepository(r *parityReport, original originalRelease, o, g parityView,
+	sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository, resticEnvs map[string]string) {
+	if original.namespace != sb.Namespace || (repo.Namespace != "" && repo.Namespace != sb.Namespace) {
+		r.differ("NAMESPACE DIFFERS: original %s, generated ScheduledBackup %s and Repository %s",
+			orNone(original.namespace), orNone(sb.Namespace), orNone(repo.Namespace))
+	}
+
+	generatedKey := "a password the operator generates"
+	if ref := repo.Spec.PasswordSecretRef; ref != nil {
+		generatedKey = ref.Name + "/" + ref.Key
+	}
+	originalKey := "an unknown source"
+	switch {
+	case readsSecret(original.cronJob, repo.SecretName()):
+		originalKey = generatedKey
+	case readsSecret(original.cronJob, passwordSecretName):
+		originalKey = passwordSecretName + "/RESTIC_PASSWORD"
+		if _, ok := resticEnvs[envResticPassword]; resticEnvs != nil && !ok {
+			originalKey = passwordSecretName + ", which holds no RESTIC_PASSWORD"
+		}
+	}
+	for _, name := range passwordEnv {
+		if _, set := o.env[name]; set {
+			originalKey = "env " + name
+		}
+		if _, set := g.env[name]; set {
+			generatedKey = "env " + name
+		}
+	}
+	if originalKey != generatedKey {
+		r.differ("PASSWORD DIFFERS: the original opens the repository with %s, the generated Repository with %s",
+			originalKey, generatedKey)
+	}
 }
 
 func (r *parityReport) print(out io.Writer) error {

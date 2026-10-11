@@ -410,7 +410,7 @@ func checkEnvFrom(sources []hrEnvFrom) error {
 
 var (
 	// resticEnvsReplaced are the restic-envs keys the Repository's own Secret supplies.
-	resticEnvsReplaced = []string{"RESTIC_REPOSITORY", "RESTIC_PASSWORD",
+	resticEnvsReplaced = []string{"RESTIC_REPOSITORY", envResticPassword,
 		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"}
 	// resticEnvsRefused would point restic at another repository or key.
 	resticEnvsRefused = []string{"RESTIC_REPOSITORY_FILE", "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND"}
@@ -516,7 +516,7 @@ func migratedRepository(namespace string, loc s3Location) *b2backupv1.Repository
 			Mode:              mode,
 			Bucket:            loc.Bucket,
 			Path:              loc.Path,
-			PasswordSecretRef: &corev1.SecretKeySelector{Name: passwordSecretName, Key: "RESTIC_PASSWORD"},
+			PasswordSecretRef: &corev1.SecretKeySelector{Name: passwordSecretName, Key: envResticPassword},
 		},
 	}
 }
