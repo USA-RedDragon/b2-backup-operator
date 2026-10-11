@@ -707,9 +707,11 @@ one above it, up to the repository root), else the outermost
 `kustomization.yaml` `namespace` between that path and the file, else
 `metadata.namespace`. Two Flux Kustomizations for the same path with different
 `targetNamespace`s are refused. The ScheduledBackup is named
-after the HelmRelease and backs up into a Repository named `restic`, so two
-HelmReleases that share one `restic-envs` Secret, and therefore one repository,
-come out sharing one Repository.
+after the HelmRelease and backs up into a Repository named `restic`, which reads
+its password from `restic-envs`. A release that reads its repository from any
+other Secret is refused, so every HelmRelease in a namespace reads the same
+`restic-envs`, and therefore the same repository, and two of them come out
+sharing one Repository rather than two releases collapsing into one.
 
 The Repository adopts the existing restic repository where it is. It is in
 Prefix mode with the bucket and path from the old `RESTIC_REPOSITORY`, or in
