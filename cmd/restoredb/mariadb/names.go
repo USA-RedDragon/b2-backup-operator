@@ -189,22 +189,11 @@ func (q *qualifiedNames) endWord() {
 		}
 	}
 	switch word {
-	case "SELECT":
+	case verbSelect:
 		q.sawSelect = true
 	case "ENGINE":
 		q.afterEngine = true
 	case "UNION", "CONNECTION":
 		q.see(word)
 	}
-}
-
-// createsTable reports whether a statement is a CREATE TABLE or CREATE
-// SEQUENCE.
-func createsTable(stmt string) bool {
-	toks := tokenize(skipLeadingComments(strings.TrimLeft(stmt, " \t\r\n")))
-	if len(toks) == 0 || toks[0].kind != tokWord || !strings.EqualFold(toks[0].text, verbCreate) {
-		return false
-	}
-	kind, _ := objectKind(toks[1:])
-	return kind == kindTable || kind == kindSequence
 }

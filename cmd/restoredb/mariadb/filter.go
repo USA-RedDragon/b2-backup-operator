@@ -44,10 +44,11 @@ type dumpFilter struct {
 	out       []byte
 	sawObject bool
 	names     qualifiedNames
+	values    valueWatch
 	modes     sqlModes
 	isSet     bool
-	// createTable is set once the statement is known to be a CREATE TABLE or
-	// CREATE SEQUENCE.
+	// createTable is set once the statement is known to be a CREATE TABLE,
+	// where a dump may name another database in a foreign key.
 	createTable bool
 	decided     bool
 }
@@ -112,6 +113,7 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 		f.active, f.mode = true, modeHold
 		f.head, f.held = f.head[:0], f.held[:0]
 		f.names.reset()
+		f.values.reset(false)
 		f.createTable, f.decided, f.isSet = false, false, false
 	}
 	if !f.active {
@@ -122,6 +124,7 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 	case byteText:
 		f.head = append(f.head, p[:min(len(p), max(0, headSize-len(f.head)))]...)
 		f.names.text(p, f.lex.inString)
+		f.values.text(p, f.lex.inString)
 	case byteEnd:
 		// The semicolon is not part of the statement, but it ends its last
 		// word, which the watcher has to see.
@@ -134,6 +137,9 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 	}
 	if f.decided && f.mode == modePass {
 		if err := f.checkNames(); err != nil {
+			return err
+		}
+		if err := f.checkValues(); err != nil {
 			return err
 		}
 	}
@@ -165,7 +171,7 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 func (f *dumpFilter) decide(complete bool) error {
 	held := f.held
 	f.held = f.held[:0]
-	kind, arg := classify(string(f.head), complete)
+	kind, arg, shape := allowStatement(string(f.head), complete)
 	toks := tokenize(skipLeadingComments(strings.TrimLeft(string(f.head), " \t\r\n")))
 	f.isSet = len(toks) > 0 && toks[0].kind == tokWord && strings.EqualFold(toks[0].text, "SET")
 	if f.isSet && complete && kind == stmtPass {
@@ -173,8 +179,12 @@ func (f *dumpFilter) decide(complete bool) error {
 			return err
 		}
 	}
-	f.createTable, f.decided = createsTable(string(f.head)), true
+	f.createTable, f.decided = shape == shapeTableDef, true
+	f.values.reset(shape == shapeValues)
 	if err := f.checkNames(); err != nil && kind != stmtRefused && kind != stmtServer {
+		return err
+	}
+	if err := f.checkValues(); err != nil {
 		return err
 	}
 	switch kind {
@@ -201,6 +211,16 @@ func (f *dumpFilter) decide(complete bool) error {
 	f.out = append(f.out, held...)
 	f.mode = modePass
 	return nil
+}
+
+// checkValues refuses an INSERT whose value list holds something a dump does
+// not write, such as a function call or a name.
+func (f *dumpFilter) checkValues() error {
+	if f.values.bad == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: a value a dump does not write, %.40q, in %.200s", ErrUnsupportedStatement,
+		f.values.bad, f.head)
 }
 
 // checkNames refuses a statement that names something in another database:

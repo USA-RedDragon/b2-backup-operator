@@ -407,7 +407,19 @@ dropped silently. Writes the app makes to `<db>` while the dump loads land in
 the tables that move to `<db>__b2bk_old`, so stop the app first.
 
 `restoredb` reads the dump a statement at a time, split the way the mariadb
-client splits it, and checks each statement before the client sees it.
+client splits it, and checks each statement against a list of the statement
+shapes mariadb-dump writes before the client sees it. Anything else is refused,
+so a dump that holds a statement restoredb does not know never reaches the
+server, whatever it would have done. The shapes it takes are: `USE`,
+`CREATE DATABASE` and `DROP DATABASE` (left out, see below); `DROP TABLE` and
+`DROP SEQUENCE`; `CREATE TABLE` and `CREATE SEQUENCE`; `DO SETVAL` and
+`SELECT SETVAL`; `LOCK TABLES` and `UNLOCK TABLES`;
+`ALTER TABLE ... DISABLE KEYS` and `ENABLE KEYS`; `INSERT` and `REPLACE` with a
+`VALUES` list of literals; `COMMIT` and `START TRANSACTION`; and a `SET` of the
+session variables a dump sets, to a literal or to the variable the dump saved
+the old value in. Only mariadb-dump and mysqldump output is supported: a dump
+from another tool, such as a MySQL 8 dump whose executable comments hold
+queries of their own, is refused rather than guessed at.
 `USE`, `CREATE DATABASE` and `DROP DATABASE` statements, which a dump taken with
 `--databases` or `--add-drop-database` has, are left out, so the dump always
 lands in the staging database and never in the database it names. A dump of

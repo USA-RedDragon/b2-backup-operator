@@ -174,8 +174,12 @@ one of these:
   move views and tables with triggers across databases, so those are refused
   up front. The dump is split into
   statements by `clientLexer`, a copy of the client's own rules (`add_line` in
-  `client/mysql.cc`), and each statement is held back until `classify` has
-  checked it. `qualifiedNames` watches the whole of every statement, since a
+  `client/mysql.cc`), and each statement is held back until `allowStatement`
+  (`allow.go`) has matched it, by tokens and never by a text prefix, against
+  the shapes mariadb-dump writes. Anything else is refused: the allowlist, not
+  a list of known-bad statements, is the barrier. A statement the head cuts
+  short is refused unless its shape says the rest is data, which the value and
+  name watchers check as it streams. `qualifiedNames` watches the whole of every statement, since a
   name qualified with a database anywhere outside CREATE TABLE, a server,
   replication or account statement, or dynamic SQL would reach past the
   staging database. `sqlModes` holds the dump to an sql_mode, a client charset
