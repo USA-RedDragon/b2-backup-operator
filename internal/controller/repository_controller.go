@@ -843,6 +843,9 @@ func (r *RepositoryReconciler) passwordPreserved(
 			"confirmed to hold this password", ref.Name)
 	case err != nil:
 		return false, false, fmt.Sprintf("the passwordSecretRef Secret %s could not be read: %v", ref.Name, err)
+	case seed.Labels[labelManagedBy] == managedByValue:
+		return false, true, fmt.Sprintf("the passwordSecretRef Secret %s is a credentials Secret this operator "+
+			"manages, which may be rotated or deleted with its Repository, so it is no lasting copy", ref.Name)
 	case password != "" && string(seed.Data[ref.Key]) != password:
 		return false, true, fmt.Sprintf("the passwordSecretRef Secret %s holds another password, "+
 			"so it no longer preserves this one", ref.Name)

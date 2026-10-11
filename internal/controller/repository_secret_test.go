@@ -511,3 +511,27 @@ func TestOwnershipIsRegainedOnlyByPassingTheChecks(t *testing.T) {
 		t.Errorf("the Repository passed every check and is still not its own: %s", why)
 	}
 }
+
+func TestAnotherRepositorysCredentialsSecretIsNoSeed(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	r, c := newHarness(t, f, bucketRepo(nil))
+	reconcileN(t, r, 2)
+	password := getSecret(t, c, credsSecretName).Data[KeyResticPassword]
+	if err := c.Create(context.Background(), &corev1.Secret{
+		Name: "sibling-credentials", Namespace: testNS,
+		Labels: map[string]string{labelManagedBy: managedByValue},
+		Data:   map[string][]byte{KeyResticPassword: password},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repo := getRepo(t, c)
+	repo.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: "sibling-credentials", Key: KeyResticPassword}
+	if err := c.Update(context.Background(), repo); err != nil {
+		t.Fatal(err)
+	}
+	_ = reconcileErr(r)
+	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Error("a Secret the operator manages for another Repository was taken as a lasting copy of the password")
+	}
+}
