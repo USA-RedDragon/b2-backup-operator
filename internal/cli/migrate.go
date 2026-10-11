@@ -312,13 +312,7 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]s
 	default:
 		sb.Spec.Sources = parsed.sources
 		sb.Spec.Retention = parsed.retention
-		if parsed.dumpChanged {
-			m.notes = append(m.notes,
-				"database: "+backupCNPGScript+" becomes dumpdb cnpg. The dump changes from plain SQL\n"+
-					"stored as <host> to pg_dump's custom format stored as <host>.dmp, which is\n"+
-					"what b2bk restore --to-database reads. Snapshots taken before the migration\n"+
-					"keep the old format and name.")
-		}
+		m.notes = append(m.notes, parsed.notes()...)
 	}
 
 	if err := migrateDatabase(parsed.engine, dbSecret, container, sb); err != nil {
@@ -765,6 +759,40 @@ type parsedScript struct {
 	retention   *b2backupv1.Retention
 	engine      b2backupv1.DatabaseEngine
 	dumpChanged bool
+	untagged    []string
+	unpruned    bool
+}
+
+// notes says what the operator's rendering of the parsed script changes.
+func (p parsedScript) notes() []string {
+	var out []string
+	if p.dumpChanged {
+		out = append(out, "database: "+backupCNPGScript+" becomes dumpdb cnpg. The dump changes from plain SQL\n"+
+			"stored as <host> to pg_dump's custom format stored as <host>.dmp, which is\n"+
+			"what b2bk restore --to-database reads. Snapshots taken before the migration\n"+
+			"keep the old format and name.")
+	}
+	if len(p.untagged) > 0 {
+		out = append(out, fmt.Sprintf("tags: %s carried no --tag, and the operator tags every source, here\n"+
+			"as %s. New snapshots start a series apart from the untagged ones, which this\n"+
+			"backup's forget, scoped to its own tags, no longer expires.",
+			strings.Join(p.untagged, " and "), strings.Join(defaultTags(p.sources), ", ")))
+	}
+	if p.unpruned {
+		out = append(out, "prune: restic forget ran without --prune, and the operator's forget always\n"+
+			"prunes, so data no snapshot references is now deleted on every run.")
+	}
+	return out
+}
+
+func defaultTags(sources []b2backupv1.BackupSource) []string {
+	var out []string
+	for _, src := range sources {
+		if src.Tag == "" {
+			out = append(out, src.EffectiveTag())
+		}
+	}
+	return slices.Compact(out)
 }
 
 func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
@@ -798,6 +826,9 @@ func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
 				parsed.engine = engine
 			}
 			parsed.dumpChanged = parsed.dumpChanged || changed
+			if source.Tag == "" {
+				parsed.untagged = append(parsed.untagged, fmt.Sprintf("%q", line))
+			}
 			parsed.sources = append(parsed.sources, source)
 		case "forget":
 			if forgets++; forgets > 1 {
@@ -811,6 +842,7 @@ func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
 				return parsed, notStructured("%q keeps nothing by policy, which spec.retention cannot say", line)
 			}
 			parsed.retention = r
+			parsed.unpruned = !slices.Contains(args, "--prune")
 		default:
 			return parsed, notStructured("it runs %q", line)
 		}
