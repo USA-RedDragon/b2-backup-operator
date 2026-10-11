@@ -18,7 +18,10 @@ func New() *cobra.Command {
 
 The restore is all or nothing. The dump is restored into a staging database,
 <database>` + StagingSuffix + `, which is dropped first if an earlier run left it
-behind. Only when the whole dump has gone in cleanly and ends with the dump
+behind. restoredb creates the staging and rollback databases with the comment
+"` + SchemaComment + `" and refuses to start while a database by either name
+exists without it, so it never drops a database it did not create; this needs
+MariaDB 10.5 or later. Only when the whole dump has gone in cleanly and ends with the dump
 tool's "-- Dump completed" trailer does one RENAME TABLE statement, which
 MariaDB applies atomically, move every live table into <database>` + OldSuffix + `
 and every staged table into the live database. Any failure before that drops
