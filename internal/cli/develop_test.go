@@ -1013,3 +1013,13 @@ func TestShellOptionsAddedSeeEachCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeScriptKeepsTheQuotingAroundAnExpansion(t *testing.T) {
+	t.Parallel()
+	if normalized(`restic backup /data --exclude="$HOME/x"`) == normalized(`restic backup /data --exclude='$HOME/x'`) {
+		t.Error("a double-quoted exclude the shell expands compared equal to a single-quoted literal one")
+	}
+	if normalized(`restic backup /data --exclude="a b"`) != normalized(`restic backup /data --exclude='a b'`) {
+		t.Error("quotes around a plain pattern should not matter")
+	}
+}

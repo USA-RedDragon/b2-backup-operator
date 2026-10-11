@@ -374,6 +374,18 @@ func shellOptionsAdded(original, generated string) []string {
 	return out
 }
 
+// unquoteExclude drops the quotes around an --exclude pattern, unless the
+// pattern holds something a double-quoted string expands, where single and
+// double quotes give restic different patterns.
+func unquoteExclude(m string) string {
+	inner := quotedExclude.FindStringSubmatch(m)
+	pattern := inner[1] + inner[2]
+	if strings.ContainsAny(pattern, "$`\\") {
+		return m
+	}
+	return "--exclude=" + pattern
+}
+
 // groupByFlag is a forget's grouping, which parity compares on its own.
 var groupByFlag = regexp.MustCompile(` --group-by[= ](\S+)`)
 
@@ -385,7 +397,7 @@ func normalizeScript(s string) (string, []string) {
 	var lines, dumps []string
 	for _, line := range joinContinuations(scriptBody(s)) {
 		line = ignoredFlags.ReplaceAllString(line, "")
-		line = quotedExclude.ReplaceAllString(line, "--exclude=$1$2")
+		line = quotedExclude.ReplaceAllStringFunc(line, unquoteExclude)
 		if strings.HasPrefix(strings.TrimSpace(line), "restic forget ") {
 			line = groupByFlag.ReplaceAllString(line, "")
 		}
