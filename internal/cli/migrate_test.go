@@ -439,6 +439,9 @@ func TestMigrateABucketRootRepositoryAdoptsTheBucket(t *testing.T) {
 	if repo.Spec.Mode != b2backupv1.StorageModeBucket || repo.Spec.Bucket != "acme-app" || repo.Spec.Path != "" {
 		t.Errorf("spec = %+v, want Bucket mode on acme-app at the root", repo.Spec)
 	}
+	if !strings.Contains(buf.String(), "adopts the whole") {
+		t.Errorf("the whole-bucket consequence of Delete was not called out:\n%s", buf.String())
+	}
 }
 
 func TestMigrateKeepsAnInexpressibleScriptVerbatim(t *testing.T) {

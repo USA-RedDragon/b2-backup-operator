@@ -170,6 +170,12 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 	}
 
 	m := &migration{repo: migratedRepository(namespace, loc)}
+	if m.repo.Spec.Mode == b2backupv1.StorageModeBucket {
+		m.notes = append(m.notes, fmt.Sprintf(
+			"mode: the repository sits at the root of %s, so the Repository adopts the whole\n"+
+				"bucket. Under deletionPolicy: Delete every file in it would be deleted, restic's\n"+
+				"or not; the default, Retain, deletes nothing.", loc.Bucket))
+	}
 	if !strings.HasPrefix(loc.Endpoint, "https://s3.") || !strings.HasSuffix(loc.Endpoint, ".backblazeb2.com") {
 		m.notes = append(m.notes, fmt.Sprintf(
 			"%s does not look like a B2 S3 endpoint. The operator builds the endpoint from\n"+
