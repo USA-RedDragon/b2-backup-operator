@@ -11,6 +11,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -177,9 +178,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "Failed to create clientset")
+		os.Exit(1)
+	}
+	ctx := ctrl.SetupSignalHandler()
+	coreEvents := controller.NewCoreEvents(ctx, clientset, mgr.GetScheme())
+	defer coreEvents.Shutdown()
+
 	if err := (&controller.RepositoryReconciler{
 		Client:                   mgr.GetClient(),
 		Scheme:                   mgr.GetScheme(),
+		Recorder:                 coreEvents.Recorder("repository-controller"),
 		DefaultCredentialsSecret: credentials,
 		BackupImage:              backupImage,
 		AuthURL:                  b2AuthURL,
@@ -188,8 +199,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ScheduledBackupReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: coreEvents.Recorder("scheduledbackup-controller"),
 		Config: backup.Config{
 			Image:             backupImage,
 			CacheStorageClass: cacheStorageClass,
@@ -210,8 +222,9 @@ func main() {
 	}
 
 	setupLog.Info("Starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
+		coreEvents.Shutdown()
 		os.Exit(1)
 	}
 }

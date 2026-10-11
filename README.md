@@ -391,7 +391,7 @@ The NetworkPolicy admits `:8443` only from namespaces labelled `metrics: enabled
 ```sh
 make manifests generate        # regenerate CRDs, RBAC and deepcopy
 make test                      # unit tests, no cluster needed
-make test-crd                  # CRD validation against a real API server (envtest)
+make test-crd                  # CRD validation and Event timestamps against a real API server (envtest)
 make test-e2e                  # full deploy against a throwaway Kind cluster
 make lint                      # golangci-lint with the logcheck plugin
 make build-installer IMG=...   # render dist/install.yaml

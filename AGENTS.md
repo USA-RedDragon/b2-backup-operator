@@ -183,7 +183,7 @@ Never hand-edit `config/crd/bases/*`, `config/rbac/role.yaml` or
 
 ```sh
 make test        # unit tests: plain go test, no cluster, no envtest binaries
-make test-crd    # CRD validation against a real API server (envtest)
+make test-crd    # CRD validation and Event timestamps against a real API server (envtest)
 make test-e2e    # full deploy against a throwaway Kind cluster
 make lint        # golangci-lint with the logcheck plugin
 ```
@@ -264,6 +264,14 @@ no trailing period, past tense, name the object type, balanced key-value pairs.
 log.Info("Created Deployment", "name", deploy.Name)
 log.Error(err, "Failed to create Pod", "name", name)
 ```
+
+## Events
+
+The controllers record Events through `controller.CoreEvents`, the core/v1
+API, not `mgr.GetEventRecorder`. The events.k8s.io/v1 recorder sets only
+`eventTime`, and that API rejects `lastTimestamp`, so `kubectl get events
+--sort-by=.lastTimestamp` would show every operator Event as `<nil>`.
+`TestEnvtestEventsSortByLastTimestamp` checks both against a real API server.
 
 ## References
 

@@ -54,9 +54,9 @@ test: manifests generate fmt vet ## Run unit tests. No cluster or envtest binari
 	go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: test-crd
-test-crd: manifests generate setup-envtest ## Run CRD validation tests against a real API server.
+test-crd: manifests generate setup-envtest ## Run CRD validation and Event tests against a real API server.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
-		go test -tags envtest ./internal/controller/ -run TestCRD -count=1
+		go test -tags envtest ./internal/controller/ -run 'TestCRD|TestEnvtest' -count=1
 
 KIND_CLUSTER ?= b2-backup-operator-test-e2e
 KIND_NODE_IMAGE ?= kindest/node:v1.37.0
