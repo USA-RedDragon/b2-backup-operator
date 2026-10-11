@@ -326,7 +326,10 @@ and that `COMMIT` would end the restore's transaction partway. `restoredb`
 follows the dump the way psql reads it, so it turns those lines into comments
 when they stand alone between statements, and leaves the same text inside COPY
 data, strings and function bodies alone. Any other statement that ends, rolls
-back or prepares a transaction is refused before psql runs it.
+back or prepares a transaction is refused before psql runs it. So is every psql
+meta-command but the `\restrict` and `\unrestrict` lines pg_dump writes, since
+psql runs those itself and one such as `\connect` would carry on outside the
+transaction. A plain dump taken with `--create` has a `\connect` and is refused.
 
 A mariadb restore is all or nothing too, although a mariadb-dump cannot run in
 one transaction: its `DROP TABLE` and `CREATE TABLE` commit on their own. So

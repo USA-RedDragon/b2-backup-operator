@@ -158,10 +158,10 @@ func (p pause) Read([]byte) (int, error) {
 }
 
 // refused runs a restore that must fail and leave app exactly as it was.
-func refused(t *testing.T, input []byte, args ...string) string {
+func refused(t *testing.T, input []byte) string {
 	t.Helper()
 	before := fingerprint(t)
-	out, err := restore(t, input, args...)
+	out, err := restore(t, input)
 	if err == nil {
 		t.Fatal("the restore succeeded")
 	}
@@ -273,4 +273,20 @@ func TestPostgresRefusesAKeylessDumpCutAtRowsThatReadAsTheTrailer(t *testing.T) 
 	}
 	refused(t, []byte(backup[:at+len("FROM stdin;\n"+trailer)]))
 	restored(t, []byte(backup), want)
+}
+
+// psql runs a meta-command such as \connect itself. A new connection is
+// outside the restore's transaction, so whatever follows commits on its own.
+func TestPostgresRefusesAMetaCommandInAKeylessDump(t *testing.T) {
+	backup, _ := seed(t, "", "--clean", "--if-exists")
+	backup = keyless(backup)
+	head, rest, ok := strings.Cut(backup, "SET row_security = off;\n")
+	if !ok {
+		t.Fatal("the dump does not set row_security")
+	}
+	cut, _, _ := strings.Cut(rest, "ALTER TABLE ONLY public.t")
+	out := refused(t, []byte(head+"SET row_security = off;\n\\connect app\n"+cut))
+	if !strings.Contains(out, "meta-command") {
+		t.Errorf("the refusal does not name the meta-command:\n%s", out)
+	}
 }

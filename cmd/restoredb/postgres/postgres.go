@@ -90,7 +90,9 @@ committed.
 A plain dump with large objects has its own BEGIN; and COMMIT; lines around
 them. The COMMIT would end the restore's transaction partway, so those lines
 reach psql as comments, and any other statement that ends, rolls back or
-prepares a transaction is refused before psql runs it.`,
+prepares a transaction is refused before psql runs it. So is any psql
+meta-command but \restrict and \unrestrict, since one such as \connect would
+carry on outside the transaction.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := fs.Resolve(); err != nil {
 				return err

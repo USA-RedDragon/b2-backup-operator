@@ -233,3 +233,26 @@ func TestPlainFilterEnded(t *testing.T) {
 		}
 	}
 }
+
+func TestPlainFilterRefusesMetaCommands(t *testing.T) {
+	t.Parallel()
+	for _, line := range []string{
+		"\\connect other", "\\c other", "\\! touch /tmp/x", "SELECT 1 \\g", "\\set ON_ERROR_STOP 0", "\\.",
+		"SELECT 1 \\; COMMIT;", "\\i other.sql", "  \\connect other", "\\restrict abc extra",
+		"SELECT 1\n\\restrict abc", "\\unrestrict",
+	} {
+		dump := "SELECT 1;\n" + line + "\nDROP TABLE t;\n"
+		got, _, err := filterPlain(t, dump)
+		if !errors.Is(err, ErrMetaCommand) {
+			t.Errorf("%q: err = %v", line, err)
+		}
+		if strings.Contains(got, "DROP") {
+			t.Errorf("%q: the filter went on after it: %q", line, got)
+		}
+	}
+	dump := "\\restrict abc\n\nSELECT 'a \\b', E'\\\\', $$\\x$$, \"\\\";\n-- \\connect\n/* \\connect */\n" +
+		"COPY t FROM stdin;\n\\N\t\\\\\n\\.\n\\unrestrict abc\r\n"
+	if got, f, err := filterPlain(t, dump); err != nil || got != dump || !f.Ended() {
+		t.Errorf("got %q, ended %t, err %v", got, f.Ended(), err)
+	}
+}
