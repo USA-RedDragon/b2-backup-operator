@@ -1,0 +1,24 @@
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: myapp-prod
+spec:
+  mode: Prefix
+  bucket: acme-restic
+  path: restic/myapp-prod
+  passwordSecretRef:
+    name: restic-envs
+    key: RESTIC_PASSWORD
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: otherapp-prod
+spec:
+  mode: Bucket
+  bucket: acme-otherapp-prod-restic
+  deletionPolicy: Delete
+  lifecycle:
+    daysFromHidingToDeleting: 7

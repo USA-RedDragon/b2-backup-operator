@@ -1,0 +1,89 @@
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: restic
+  namespace: myapp-prod
+spec:
+  repositoryRef:
+    name: restic
+  schedule: "@hourly"
+  sources:
+    - type: cnpg
+      tag: db
+    - type: files
+      tag: files
+      path: app
+      exclude:
+        - "**/temp*"
+        - app/export-logs
+  retention:
+    hourly: 168
+    daily: 90
+    monthly: 24
+    yearly: 10
+  database:
+    engine: cnpg
+    secretName: postgresql-app
+    cnpgCluster: postgresql
+  volume:
+    existingClaim: myapp-prod-storage
+    mountPath: /data
+  cache:
+    storageClass: longhorn
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: restic
+  namespace: otherapp-prod
+spec:
+  repositoryRef:
+    name: restic
+  schedule: "20 0 * * *"
+  concurrencyPolicy: Replace
+  resticHost: otherapp-prod
+  sources:
+    - type: mariadb
+      tag: db
+      extraArgs: ["--skip-ssl"]
+    - type: files
+      tag: files
+      exclude: [dumps]
+  retention:
+    daily: 90
+    monthly: 24
+    yearly: 10
+  database:
+    engine: mariadb
+    secretName: mariadb
+    host: mariadb
+    name: appdb
+    user: appdb
+  volume:
+    existingClaim: otherapp-prod-data
+  cache:
+    storageClass: longhorn
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: restic-script
+  namespace: myapp-prod
+spec:
+  repositoryRef:
+    name: restic
+  schedule: "@daily"
+  script: |
+    restic backup --tag=db --stdin-from-command -- \
+      dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
+    tar -C /data -cf - uploads | restic backup --tag=uploads --stdin --stdin-filename=uploads.tar
+    restic forget --keep-daily=30 --keep-monthly=12 --prune
+  database:
+    engine: cnpg
+    secretName: postgresql-app
+  volume:
+    existingClaim: myapp-prod-storage
+    mountPath: /data
+    readOnly: true
+  cache:
+    storageClass: longhorn

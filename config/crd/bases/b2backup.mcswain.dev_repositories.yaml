@@ -1,0 +1,310 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: repositories.b2backup.mcswain.dev
+spec:
+  group: b2backup.mcswain.dev
+  names:
+    kind: Repository
+    listKind: RepositoryList
+    plural: repositories
+    singular: repository
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.bucketName
+      name: Bucket
+      type: string
+    - jsonPath: .status.path
+      name: Path
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.initialized
+      name: Initialized
+      type: boolean
+    - jsonPath: .status.currentUsage
+      name: Usage
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Repository is a restic repository stored in Backblaze B2.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: RepositorySpec defines the desired state of a Repository.
+            properties:
+              bucket:
+                description: Bucket is the B2 bucket name. Bucket names are global
+                  across all of B2.
+                maxLength: 63
+                minLength: 6
+                pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                type: string
+                x-kubernetes-validations:
+                - message: bucket names starting with b2- are reserved by Backblaze
+                  rule: '!self.startsWith(''b2-'')'
+                - message: bucket cannot be changed
+                  rule: self == oldSelf
+              credentialsSecretRef:
+                description: |-
+                  CredentialsSecretRef names a Secret in this namespace holding the B2
+                  application key the operator manages this repository with, under
+                  B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY. Defaults to the operator's own.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              deletionPolicy:
+                default: Retain
+                description: DeletionPolicy decides whether the B2 data outlives this
+                  resource.
+                enum:
+                - Retain
+                - Delete
+                type: string
+              interval:
+                default: 1h
+                description: Interval is how often the repository is reconciled against
+                  the B2 API.
+                type: string
+                x-kubernetes-validations:
+                - message: must be a Go duration such as 30m, 1h or 1h30m
+                  rule: self == '0' || self.matches('^([0-9]+([.][0-9]+)?(ns|us|ms|s|m|h))+$')
+              lifecycle:
+                description: Lifecycle is the bucket lifecycle rule kept for the repository's
+                  path.
+                properties:
+                  daysFromHidingToDeleting:
+                    default: 1
+                    description: DaysFromHidingToDeleting is how long a hidden file
+                      version is kept before B2 deletes it.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  manage:
+                    description: |-
+                      Manage adds or updates a lifecycle rule scoped to the repository's path, so
+                      that files restic deletes, which B2 only hides, are removed for good.
+                      Rules for other prefixes are never changed. Set false to leave the
+                      bucket's rules alone. Defaults to true.
+                    type: boolean
+                type: object
+              mode:
+                description: |-
+                  Mode is how the repository is laid out. Bucket gives it a private bucket of
+                  its own, created when missing and adopted when this account already has it.
+                  Prefix puts it under its own path in an existing bucket that other
+                  repositories share; the operator never creates or deletes that bucket.
+                enum:
+                - Bucket
+                - Prefix
+                type: string
+                x-kubernetes-validations:
+                - message: mode cannot be changed
+                  rule: self == oldSelf
+              passwordSecretRef:
+                description: PasswordSecretRef seeds the restic password. Required
+                  when the path already holds a repository.
+                properties:
+                  key:
+                    description: The key of the secret to select from.  Must be a
+                      valid secret key.
+                    type: string
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  optional:
+                    description: Specify whether the Secret or its key must be defined
+                    type: boolean
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
+              path:
+                description: |-
+                  Path is where the repository lives inside the bucket, with no leading or
+                  trailing slash. Defaults to the bucket root in Bucket mode and to
+                  <namespace>/<name> in Prefix mode.
+                maxLength: 512
+                pattern: ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$
+                type: string
+                x-kubernetes-validations:
+                - message: path must not contain . or .. segments
+                  rule: '!self.matches(''(^|/)[.][.]?(/|$)'')'
+              secretName:
+                description: |-
+                  SecretName overrides the name of the Secret the operator writes credentials to.
+                  Defaults to <name>-credentials.
+                maxLength: 253
+                type: string
+              suspend:
+                description: Suspend stops reconciliation without deleting the resource.
+                type: boolean
+            required:
+            - bucket
+            - mode
+            type: object
+          status:
+            description: RepositoryStatus is the observed state of a Repository.
+            properties:
+              adopted:
+                description: Adopted reports whether a restic repository already existed
+                  at the path.
+                type: boolean
+              applicationKeyID:
+                description: ApplicationKeyID is the B2 application key written to
+                  the credentials Secret.
+                type: string
+              bucketID:
+                description: BucketID is the B2 ID of that bucket.
+                type: string
+              bucketName:
+                description: BucketName is the bucket holding the repository.
+                type: string
+              conditions:
+                description: Conditions holds the latest observations of the repository's
+                  state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              currentUsage:
+                description: |-
+                  CurrentUsage is the total size of the files restic can see under the path.
+                  It excludes hidden versions still awaiting deletion. Empty when unknown.
+                type: string
+              endpoint:
+                description: Endpoint is the S3-compatible endpoint restic talks to.
+                type: string
+              initialized:
+                description: Initialized reports whether restic init has completed.
+                type: boolean
+              observedGeneration:
+                description: ObservedGeneration is the spec generation this status
+                  was computed from.
+                format: int64
+                type: integer
+              path:
+                description: Path is the repository's path inside the bucket. Empty
+                  means the bucket root.
+                type: string
+              secretName:
+                description: SecretName is the Secret holding the repository credentials.
+                type: string
+              usageTime:
+                description: UsageTime is when CurrentUsage was measured.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: path cannot be added, changed or removed once the Repository exists
+          rule: has(self.spec.path) == has(oldSelf.spec.path) && (!has(self.spec.path)
+            || self.spec.path == oldSelf.spec.path)
+        - message: secretName must not be the passwordSecretRef Secret; the operator
+            never writes to the seed
+          rule: '!has(self.spec.passwordSecretRef) || !has(self.spec.secretName) ||
+            self.spec.secretName != self.spec.passwordSecretRef.name'
+        - message: secretName must not be the credentialsSecretRef Secret; the operator
+            never writes to it
+          rule: '!has(self.spec.credentialsSecretRef) || !has(self.spec.secretName)
+            || self.spec.secretName != self.spec.credentialsSecretRef.name'
+    served: true
+    storage: true
+    subresources:
+      status: {}

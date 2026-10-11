@@ -1,0 +1,4 @@
+namespace: b2-backup-operator-system
+
+resources:
+- allow-metrics-traffic.yaml

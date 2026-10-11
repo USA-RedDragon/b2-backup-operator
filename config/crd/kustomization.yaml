@@ -1,0 +1,7 @@
+resources:
+- bases/b2backup.mcswain.dev_repositories.yaml
+- bases/b2backup.mcswain.dev_scheduledbackups.yaml
+# +kubebuilder:scaffold:crdkustomizeresource
+
+patches:
+# +kubebuilder:scaffold:crdkustomizewebhookpatch

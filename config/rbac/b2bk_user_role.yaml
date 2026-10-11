@@ -1,0 +1,121 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: b2-backup-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: b2bk-viewer
+rules:
+  - apiGroups:
+      - b2backup.mcswain.dev
+    resources:
+      - repositories
+      - scheduledbackups
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - b2backup.mcswain.dev
+    resources:
+      - repositories/status
+      - scheduledbackups/status
+    verbs:
+      - get
+  - apiGroups:
+      - batch
+    resources:
+      - cronjobs
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - pods/log
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: b2-backup-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: b2bk-operator
+rules:
+  - apiGroups:
+      - b2backup.mcswain.dev
+    resources:
+      - repositories
+      - scheduledbackups
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+  - apiGroups:
+      - b2backup.mcswain.dev
+    resources:
+      - repositories/status
+      - scheduledbackups/status
+    verbs:
+      - get
+      - patch
+  - apiGroups:
+      - batch
+    resources:
+      - cronjobs
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - pods/log
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/exec
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - create
+      - patch
+      - delete
