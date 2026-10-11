@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -231,12 +232,13 @@ func (r *ScheduledBackupReconciler) reconcile(
 	return ctrl.Result{RequeueAfter: backupRequeueInterval}, nil
 }
 
-// tagConflict finds an older ScheduledBackup writing into the same Repository
+// tagConflict finds another ScheduledBackup writing into the same Repository
 // whose forget would reach this one's snapshots, or the other way round: one on
 // the same host with a source tag in common, or a script. What a script forgets
 // cannot be read from it, since the shell can build any restic command at run
 // time, including one with another --host, so a script backup must be the only
-// one on its Repository.
+// one on its Repository. Both sides of a conflict report it and stop, whichever
+// came first: the one edited into the conflict may well be the older.
 func (r *ScheduledBackupReconciler) tagConflict(
 	ctx context.Context, sb *b2backupv1.ScheduledBackup,
 ) (string, string, error) {
@@ -249,7 +251,7 @@ func (r *ScheduledBackupReconciler) tagConflict(
 	for i := range list.Items {
 		other := &list.Items[i]
 		if other.Name == sb.Name || other.Spec.RepositoryRef.Name != sb.Spec.RepositoryRef.Name ||
-			!other.DeletionTimestamp.IsZero() || !olderBackup(other, sb) {
+			!other.DeletionTimestamp.IsZero() {
 			continue
 		}
 		switch {
@@ -267,13 +269,6 @@ func (r *ScheduledBackupReconciler) tagConflict(
 		}
 	}
 	return "", "", nil
-}
-
-func olderBackup(a, b *b2backupv1.ScheduledBackup) bool {
-	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
-		return a.CreationTimestamp.Before(&b.CreationTimestamp)
-	}
-	return a.Name < b.Name
 }
 
 func (r *ScheduledBackupReconciler) suspendOwnCronJob(ctx context.Context, sb *b2backupv1.ScheduledBackup) error {
@@ -400,8 +395,31 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&b2backupv1.Repository{},
 			handler.EnqueueRequestsFromMapFunc(r.backupsForRepository),
 		).
+		Watches(
+			&b2backupv1.ScheduledBackup{},
+			handler.EnqueueRequestsFromMapFunc(r.siblingBackups),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Named("scheduledbackup").
 		Complete(r)
+}
+
+// siblingBackups re-checks every other ScheduledBackup in the namespace when one
+// is created, changed or deleted, so a tag conflict an edit causes, or ends, is
+// seen by both sides at once.
+func (r *ScheduledBackupReconciler) siblingBackups(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list b2backupv1.ScheduledBackupList
+	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list backups beside a changed one", "backup", obj.GetName())
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(list.Items))
+	for _, sb := range list.Items {
+		if sb.Name != obj.GetName() {
+			requests = append(requests, reconcile.Request{Namespace: sb.Namespace, Name: sb.Name})
+		}
+	}
+	return requests
 }
 
 func (r *ScheduledBackupReconciler) backupsForRepository(
