@@ -202,11 +202,13 @@ func untar(r io.Reader, dest string) (int, error) {
 
 	tr := tar.NewReader(r)
 	count := 0
+	var dirs []dirMeta
+	asRoot := os.Geteuid() == 0
 
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
-			return count, nil
+			return count, finishDirs(root, dirs, asRoot)
 		}
 		if err != nil {
 			return count, err
@@ -224,15 +226,19 @@ func untar(r io.Reader, dest string) (int, error) {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := root.MkdirAll(name, os.FileMode(header.Mode)); err != nil {
+			if err := root.MkdirAll(name, 0o755); err != nil {
 				return count, err
 			}
+			dirs = append(dirs, dirMeta{name: name, header: header})
 		case tar.TypeReg:
 			if err := root.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 				return count, err
 			}
 			_ = root.Remove(name)
-			if err := writeFile(root, name, os.FileMode(header.Mode), tr); err != nil {
+			if err := writeFile(root, name, 0o600, tr); err != nil {
+				return count, err
+			}
+			if err := setMetadata(root, name, header, asRoot); err != nil {
 				return count, err
 			}
 			count++
@@ -244,9 +250,54 @@ func untar(r io.Reader, dest string) (int, error) {
 			if err := root.Symlink(header.Linkname, name); err != nil {
 				return count, err
 			}
+			if asRoot {
+				if err := root.Lchown(name, header.Uid, header.Gid); err != nil {
+					return count, err
+				}
+			}
 			count++
 		}
 	}
+}
+
+// dirMeta is a directory whose mode and times are set once everything inside
+// it is written: writing a file changes its directory's mtime, and a read-only
+// mode would stop the writes.
+type dirMeta struct {
+	name   string
+	header *tar.Header
+}
+
+func finishDirs(root *os.Root, dirs []dirMeta, asRoot bool) error {
+	for _, dir := range slices.Backward(dirs) {
+		if err := setMetadata(root, dir.name, dir.header, asRoot); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// setMetadata gives a restored file or directory the owner, mode and times the
+// archive recorded. The owner is set only when running as root, since nobody
+// else may give a file away, and before the mode, since chown clears setuid
+// and setgid.
+func setMetadata(root *os.Root, name string, header *tar.Header, asRoot bool) error {
+	if asRoot {
+		if err := root.Lchown(name, header.Uid, header.Gid); err != nil {
+			return err
+		}
+	}
+	if err := root.Chmod(name, header.FileInfo().Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky)); err != nil {
+		return err
+	}
+	if header.ModTime.IsZero() {
+		return nil
+	}
+	atime := header.AccessTime
+	if atime.IsZero() {
+		atime = header.ModTime
+	}
+	return root.Chtimes(name, atime, header.ModTime)
 }
 
 func writeFile(root *os.Root, path string, mode os.FileMode, r io.Reader) error {

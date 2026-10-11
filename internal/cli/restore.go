@@ -110,7 +110,9 @@ dump, and names the dump, its tag and its snapshot.
 --path is a file or directory inside the snapshot, absolute or relative to the
 source path. --include and --exclude patterns are relative to the source path.
 --to downloads with restic dump, which selects with --path alone, so
---include, --exclude and --delete are refused rather than ignored there.
+--include, --exclude and --delete are refused rather than ignored there. It
+keeps each file's and directory's mode and modification time, and its owner
+when b2bk runs as root.
 
 --to-new-pvc refuses a NAME that already exists, even a claim an earlier
 b2bk restore left: it may hold part of that restore. If the restore fails

@@ -70,3 +70,6 @@ var RotateWriteFailure = rotateWriteFailure
 
 // KeyCommands are the commands rotate-password prints for the old key.
 var KeyCommands = keyCommands
+
+// Untar unpacks a restic dump tar stream into dest.
+var Untar = untar
