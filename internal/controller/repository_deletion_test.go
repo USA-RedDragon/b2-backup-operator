@@ -521,6 +521,9 @@ func TestAPasswordWrittenBeforeStatusWasRecordedKeepsItsFinalizer(t *testing.T) 
 	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
 		t.Error("the only copy of a password written for a provisioned key lost its finalizer")
 	}
+	if keys := ownKeys(f); len(keys) != 0 {
+		t.Errorf("under Delete the Repository's own application key leaked: %+v", keys)
+	}
 }
 
 func TestAnUnlabelledInitJobOfAnotherIsReported(t *testing.T) {
