@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -522,5 +523,28 @@ func TestFilterRefusesNamesInOtherDatabases(t *testing.T) {
 		if _, _, err := filterString(t, stmt+";\n"); err != nil {
 			t.Errorf("%.80q: err = %v", stmt, err)
 		}
+	}
+}
+
+// A refused dump stops the client before it sees the end of its input: the
+// client would take that as the end of the statement it was reading, and run
+// it.
+func TestClientLoadKillsTheClientWhenTheDumpIsRefused(t *testing.T) {
+	c, dir := fakeClient(t)
+	script := "#!/bin/sh\ndata=$(cat)\necho \"$data\" >" + dir + "/eof\n"
+	if err := os.WriteFile(filepath.Join(dir, "mariadb"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	refused := errors.New("refused")
+	err := c.load(context.Background(), "app__b2bk_restore", func(w io.Writer) error {
+		_, _ = io.WriteString(w, "INSERT INTO `t` VALUES (1)")
+		return refused
+	})
+	if !errors.Is(err, refused) {
+		t.Errorf("err = %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, statErr := os.Stat(filepath.Join(dir, "eof")); statErr == nil {
+		t.Error("the client read to the end of its input")
 	}
 }

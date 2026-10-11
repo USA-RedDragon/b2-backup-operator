@@ -26,7 +26,9 @@ type conn interface {
 	// in binary mode, so that client commands such as \u and connect, which
 	// could switch databases, are sent to the server as text instead of run.
 	// write is called with the client's stdin and must return once it has
-	// written everything it will.
+	// written everything it will. If it fails, the client is killed before it
+	// sees the end of its input, which it would take as the end of the last
+	// statement and run.
 	load(ctx context.Context, database string, write func(io.Writer) error) error
 }
 
@@ -98,6 +100,12 @@ func (c *client) load(ctx context.Context, database string, write func(io.Writer
 		return err
 	}
 	writeErr := write(stdin)
+	if writeErr != nil && !errors.Is(writeErr, syscall.EPIPE) {
+		_ = cmd.Process.Kill()
+		_ = stdin.Close()
+		_ = cmd.Wait()
+		return writeErr
+	}
 	_ = stdin.Close()
 	waitErr := cmd.Wait()
 	if waitErr != nil && (writeErr == nil || errors.Is(writeErr, syscall.EPIPE)) {
