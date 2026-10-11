@@ -182,3 +182,33 @@ func TestSupersededKeysOutliveTheRotationByAGracePeriod(t *testing.T) {
 		t.Error("the superseded key outlived the grace period with nothing holding it")
 	}
 }
+
+func TestAJobReadingTheOldKeyUnderAnotherSecretNameHoldsIt(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	now := time.Now().Truncate(time.Second)
+	r, c := newHarness(t, f, prefixRepo(usePasswordSeed), seedSecretFixture())
+	r.Now = func() time.Time { return now }
+	reconcileN(t, r, 1)
+	succeedInitJob(t, c)
+	oldKey := getRepo(t, c).Status.ApplicationKeyID
+	loseSecret(t, c)
+	reconcileN(t, r, 1)
+
+	for _, obj := range []client.Object{
+		&corev1.Secret{Name: "old-credentials", Namespace: testNS, Data: map[string][]byte{KeyAccessKeyID: []byte(oldKey)}},
+		runningJob("web-backup-old", managedByValue, now.Add(-time.Minute), "old-credentials"),
+		&corev1.Secret{Name: "unrelated", Namespace: testNS, Data: map[string][]byte{KeyAccessKeyID: []byte("key9999")}},
+		runningJob("unrelated-job", managedByValue, now.Add(-time.Minute), "unrelated"),
+	} {
+		if err := c.Create(context.Background(), obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now = now.Add(time.Hour)
+	reconcileOnce(t, r)
+	if !slices.ContainsFunc(ownKeys(f), func(k b2.Key) bool { return k.ApplicationKeyID == oldKey }) {
+		t.Error("a Job still reading the old key from a Secret under an earlier name lost it")
+	}
+}
