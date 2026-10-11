@@ -241,6 +241,12 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]s
 	if p := controller.CronJob.ConcurrencyPolicy; p != "" {
 		sb.Spec.ConcurrencyPolicy = batchv1.ConcurrencyPolicy(p)
 	}
+	if sb.Spec.TimeZone == "" {
+		sb.Spec.TimeZone = controllerManagerZone
+		m.notes = append(m.notes, fmt.Sprintf("timeZone: the CronJob sets none, so it ran in the kube-controller-manager's\n"+
+			"zone, taken as %s, and keeps it. The operator's default would be %s.\n"+
+			"The operator sets TZ from timeZone, so a TZ in env is replaced.", controllerManagerZone, defaultTimeZone))
+	}
 	if err := migratePod(hr, controller, container, m); err != nil {
 		return nil, err
 	}
