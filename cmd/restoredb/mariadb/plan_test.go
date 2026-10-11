@@ -640,3 +640,29 @@ func TestFilterFollowsSQLMode(t *testing.T) {
 		}
 	}
 }
+
+// The last word of a statement is only finished by the semicolon that ends it,
+// so an engine named there has to be seen too.
+func TestFilterRefusesAnEngineNamedAtTheEndOfAStatement(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		"ALTER TABLE `t` ENGINE=MERGE",
+		"ALTER TABLE `t` ENGINE = mrg_myisam",
+		"CREATE TABLE `t` (`i` int) COMMENT='wrapper \"mysql\", srv \"s\", database \"other\"' ENGINE=SPIDER",
+		"CREATE TABLE `t` (`i` int) ENGINE=FEDERATED",
+		"CREATE TABLE `t` (`i` int) ENGINE=CONNECT",
+	} {
+		got, _, err := filterString(t, createTable+stmt+";\n")
+		if !errors.Is(err, ErrOtherDatabase) || got != createTable {
+			t.Errorf("%q: err = %v, passed on %q", stmt, err, got)
+		}
+	}
+	for _, stmt := range []string{
+		"ALTER TABLE `t` ENGINE=InnoDB",
+		"CREATE TABLE `t` (`i` int) ENGINE=Aria",
+	} {
+		if _, _, err := filterString(t, stmt+";\n"); err != nil {
+			t.Errorf("%q: err = %v", stmt, err)
+		}
+	}
+}

@@ -122,6 +122,10 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 	case byteText:
 		f.head = append(f.head, p[:min(len(p), max(0, headSize-len(f.head)))]...)
 		f.names.text(p, f.lex.inString)
+	case byteEnd:
+		// The semicolon is not part of the statement, but it ends its last
+		// word, which the watcher has to see.
+		f.names.text(p, 0)
 	case byteGap:
 		if len(f.head) < headSize {
 			f.head = append(f.head, ' ')
