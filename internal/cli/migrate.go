@@ -436,6 +436,10 @@ func migrateResticEnvs(envs map[string]string, container hrContainer, m *migrati
 			"backup's environment and is not carried over. Pass --from-secret to check and carry them.")
 		return nil
 	}
+	if envs[envResticPassword] == "" {
+		return fmt.Errorf("%w: %s holds no %s, which the Repository reads the password from",
+			ErrUnsupportedValues, passwordSecretName, envResticPassword)
+	}
 	var carried []string
 	for _, k := range sortedKeys(envs) {
 		_, overridden := container.Env[k]
@@ -677,6 +681,10 @@ func migrateEnv(container hrContainer, sb *b2backupv1.ScheduledBackup) error {
 		}
 		if slices.Contains(handledEnvVars, name) {
 			continue
+		}
+		if slices.Contains(resticEnvsRefused, name) {
+			return fmt.Errorf("%w: env sets %s, which would open the repository with another key or point "+
+				"restic elsewhere than the Repository", ErrUnsupportedValues, name)
 		}
 		s := container.env(name)
 		if s == "" {
