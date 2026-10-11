@@ -856,7 +856,11 @@ func compareScripts(r *parityReport, o, g parityView, tags []string) {
 	case problem != "":
 		r.differ("SCRIPT DOES NOT PARSE: bash -n rejects the generated script: %s", problem)
 	}
-	if added := shellOptionsAdded(o.script, g.script); len(added) > 0 {
+	if added, checked := shellOptionsAdded(o.script, g.script); !checked {
+		r.note("SHELL OPTIONS UNCHECKED: a script uses a function, an arithmetic command, a background " +
+			"command, case, a here-document or set inside if, while or for, which parity does not follow; " +
+			"check by hand whether set -euo pipefail changes what it runs")
+	} else if len(added) > 0 {
 		r.differ("SHELL OPTIONS ADDED: %s; the generated script runs under set -euo pipefail, so a failing command, "+
 			"unset variable or failing pipe stage stops what follows it, which the original ran on", strings.Join(added, ", "))
 	}

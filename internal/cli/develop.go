@@ -280,7 +280,20 @@ type shellCommand struct {
 // preamble and postamble around a backup script. A { or ( group piped
 // somewhere runs in a subshell, so what it sets ends with it; its closing line
 // is the command that runs the group, under the options outside it.
-func shellCommands(script string) []shellCommand {
+// unmodeledShell matches what shellCommands does not follow: a function, an
+// arithmetic command, a command put in the background, a case statement or a
+// here-document.
+var unmodeledShell = regexp.MustCompile(`(?m)\w\s*\(\)|\bfunction\s|\(\(|(^|[^&>])&(\s|$)|\bcase\s|\besac\b|<<-?\s*['"]?\w`)
+
+var (
+	setInside   = regexp.MustCompile(`(?m)(^|[;&|{(]|\bthen|\bdo|\belse)\s*set\s`)
+	controlFlow = regexp.MustCompile(`(?m)(^|[;&|{(])\s*(if|while|until|for|select)\s`)
+)
+
+func shellCommands(script string) ([]shellCommand, bool) {
+	if unmodeledShell.MatchString(script) || (setInside.MatchString(script) && controlFlow.MatchString(script)) {
+		return nil, false
+	}
 	on := map[string]bool{}
 	var saved []map[string]bool
 	var out []shellCommand
@@ -298,7 +311,10 @@ func shellCommands(script string) []shellCommand {
 			case len(words) == 0:
 			case words[0] == "set":
 				applySet(on, words[1:])
-			case (cmd[0] == '}' || cmd[0] == ')') && len(saved) > 0:
+			case cmd[0] == '}' || cmd[0] == ')':
+				if len(saved) == 0 {
+					return nil, false
+				}
 				outer := saved[len(saved)-1]
 				saved = saved[:len(saved)-1]
 				if cmd[0] == ')' || pipeline.MatchString(cmd) {
@@ -311,7 +327,7 @@ func shellCommands(script string) []shellCommand {
 			}
 		}
 	}
-	return out
+	return out, len(saved) == 0
 }
 
 func applySet(on map[string]bool, words []string) {
@@ -362,9 +378,11 @@ var pipeline = regexp.MustCompile(`(^|[^|])\|([^|]|$)`)
 // could change: errexit for one followed by another (in a && or || list only
 // the last command counts, as bash ignores errexit for the others), nounset
 // for one naming a variable, pipefail for one with a pipe.
-func shellOptionsAdded(original, generated string) []string {
+func shellOptionsAdded(original, generated string) ([]string, bool) {
+	checked := true
 	off := func(script string) map[string]int {
-		cmds := shellCommands(script)
+		cmds, ok := shellCommands(script)
+		checked = checked && ok
 		counts := map[string]int{}
 		for i, c := range cmds {
 			matters := map[string]bool{
@@ -381,13 +399,16 @@ func shellOptionsAdded(original, generated string) []string {
 		return counts
 	}
 	was, now := off(original), off(generated)
+	if !checked {
+		return nil, false
+	}
 	var out []string
 	for _, name := range []string{optErrexit, optNounset, optPipefail} {
 		if now[name] < was[name] {
 			out = append(out, name)
 		}
 	}
-	return out
+	return out, true
 }
 
 // unquoteExclude reads the quotes around an --exclude pattern as the shell
