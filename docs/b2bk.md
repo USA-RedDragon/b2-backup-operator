@@ -304,9 +304,57 @@ until it has seen pg_dump's `dump complete` trailer at the very end, with the
 same key on its `\unrestrict` line as on the `\restrict` line at its head, and
 stops psql before it can commit a dump that ends without it. A plain dump from a
 pg_dump older than 17.6 has no `\restrict` line, so only the trailer is checked;
-every dump `backup-cnpg.sh` took has one, since it always passed `--restrict-key`. A mariadb restore runs
-statement by statement with no such guard, so a failed one can leave the
-database partly restored.
+every dump `backup-cnpg.sh` took has one, since it always passed `--restrict-key`.
+
+A mariadb restore is all or nothing too, although a mariadb-dump cannot run in
+one transaction: its `DROP TABLE` and `CREATE TABLE` commit on their own. So
+`restoredb` streams the dump into a staging database, `<db>__b2bk_restore`,
+which it drops first if an earlier run left it behind. Only when the whole dump
+has gone in cleanly and ends with mariadb-dump's `-- Dump completed` trailer does
+it run one `RENAME TABLE` that moves every live table into `<db>__b2bk_old` and
+every staged table into `<db>`. MariaDB applies a multi-table `RENAME TABLE`
+atomically: if any part fails, none of it happens. So the database changes all
+at once or not at all. A dump cut short, a statement that fails, or anything
+refused below drops the staging database and leaves `<db>` as it was. Tables
+only in `<db>` move to `<db>__b2bk_old`; tables only in the dump appear in
+`<db>`. The dump is not staged on disk, so a large dump needs no room in the
+pod, but the database server holds two copies of the data until
+`<db>__b2bk_old` is dropped.
+A dump taken with `--skip-comments` or `--compact` has no trailer and is always
+refused. The swap waits at most 60 seconds (`lock_wait_timeout`) for
+transactions that hold a live table, then fails as a whole.
+
+`<db>__b2bk_old` keeps the replaced tables for a rollback. `restoredb` prints
+the `DROP DATABASE` that removes it and the statements that swap it back.
+`restoredb mariadb --drop-old` drops it after a successful swap instead; b2bk
+does not pass that flag. While `<db>__b2bk_old` still holds tables, the next
+restore is refused before anything is touched, so a rollback copy is never
+dropped silently. Writes the app makes to `<db>` while the dump loads land in
+the tables that move to `<db>__b2bk_old`, so stop the app first.
+
+`USE`, `CREATE DATABASE` and `DROP DATABASE` lines, which a dump taken with
+`--databases` or `--add-drop-database` has, are left out, so the dump always
+lands in the staging database and never in the database it names. The client
+reads the dump with `--binary-mode`, so a client command such as `\u` reaches the
+server as text and fails instead of switching databases. A dump of
+more than one database is refused. `RENAME TABLE` cannot move a view (MariaDB
+error 1450) or a table that has triggers (error 1435) to another database, and
+nothing moves stored routines or events, so the restore is refused, before
+`<db>` is touched, when `<db>` has views or triggers or the dump has views,
+triggers, routines or events. `dumpdb mariadb` includes triggers and views but
+not routines or events. Routines and events already in `<db>` are left as they
+are. To restore a refused dump anyway, pipe it into the mariadb client by hand,
+which is not atomic.
+
+The database user needs `ALL` on `<db>__b2bk_restore` and `<db>__b2bk_old`,
+which it creates and drops, and `ALTER`, `DROP`, `CREATE` and `INSERT` on
+`<db>` for the swap. `restoredb` checks the first two before it reads the dump.
+In a grant, escape the underscores, which are wildcards there:
+
+```sql
+GRANT ALL ON `app\_\_b2bk\_restore`.* TO 'app'@'%';
+GRANT ALL ON `app\_\_b2bk\_old`.* TO 'app'@'%';
+```
 
 | Flag | Targets | |
 | --- | --- | --- |
@@ -332,7 +380,7 @@ then ignored; do not read a successful run as having honored them.
 | `--to` | Lists the snapshot with `restic ls` instead of downloading it. Nothing is written |
 | `--to-new-pvc` | **Still creates the claim**, then runs `restic restore --dry-run --verbose=2` into it. The claim is left behind |
 | `--in-place` | Skips both the typed confirmation and the schedule suspension, then runs `restic restore --dry-run --verbose=2`, which lists every file it would write and delete |
-| `--to-database` | Skips the typed confirmation and passes `--dry-run` to `restoredb` |
+| `--to-database` | Skips the typed confirmation and passes `--dry-run` to `restoredb`. For postgres that only prints the command. For mariadb it restores into `<db>__b2bk_restore`, checks the trailer and the staged objects, prints the `RENAME TABLE` it would run and drops the staging database again. `<db>` is not changed |
 
 ## Maintenance
 

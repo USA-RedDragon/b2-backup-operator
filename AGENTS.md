@@ -135,6 +135,15 @@ one of these:
   `--single-transaction` commits at end of input, so `restoredb` runs it through
   `dumpdb.RunOpts.Complete` and kills it before closing stdin unless the dump
   ends with pg_dump's `dump complete` trailer.
+- **A MariaDB restore never touches the live database until the swap.**
+  mariadb-dump output cannot run in a transaction, so `restoredb mariadb`
+  restores into `<db>__b2bk_restore` with the dump's `USE` and `CREATE
+  DATABASE` lines left out, checks the `-- Dump completed` trailer, and only
+  then moves every table with one multi-table `RENAME TABLE`, which MariaDB
+  applies atomically. MariaDB refuses to move views and tables with triggers
+  across databases, so those are refused up front. `<db>__b2bk_old` is the
+  rollback copy: never drop it unless it is empty or `--drop-old` was given.
+  Verify changes with `make test-mariadb`, which runs a real server in Docker.
 - **The backup image's `restic` is a wrapper** ahead of the real binary on PATH.
   It supplies `--group-by` from `RESTIC_GROUP_BY` and the `--stdin-filename` a
   database dump lands under from `RESTIC_HOST`, neither of which is in the
@@ -160,6 +169,7 @@ Never hand-edit `config/crd/bases/*`, `config/rbac/role.yaml` or
 make test        # unit tests: plain go test, no cluster, no envtest binaries
 make test-crd    # CRD validation against a real API server (envtest)
 make test-e2e    # full deploy against a throwaway Kind cluster
+make test-mariadb # restoredb mariadb against a throwaway MariaDB container
 make lint        # golangci-lint with the logcheck plugin
 ```
 
@@ -173,8 +183,9 @@ does not recognize.
 
 Tests are standard `testing`, not Ginkgo, except the e2e suite: it is Ginkgo, and
 its `test/e2e/e2e_suite_test.go` is the only `suite_test.go` in the tree. Both it
-and the envtest CRD tests sit behind build tags (`e2e` and `envtest`), so `make
-test` -- a plain `go test` over everything but `/e2e` -- compiles neither.
+and the envtest CRD tests sit behind build tags (`e2e` and `envtest`), as do the
+Docker MariaDB tests (`mariadb`), so `make test` -- a plain `go test` over
+everything but `/e2e` -- compiles none of them.
 
 **Validation lives in CEL on the CRDs**, so `make test` cannot see it. A rule
 that fails to compile makes every CRD install fail, and one that never fires is
