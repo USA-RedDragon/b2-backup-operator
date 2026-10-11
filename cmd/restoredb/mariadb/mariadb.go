@@ -8,30 +8,57 @@ import (
 
 func New() *cobra.Command {
 	var mount, host, port, database, username, password string
-	var dryRun bool
+	var dryRun, dropOld bool
 
 	fs := &cobrax.Flags{}
 	cmd := &cobra.Command{
 		Use:   "mariadb",
 		Short: "Restore a MariaDB database",
+		Long: `Restore a MariaDB database from a mariadb-dump or mysqldump read from stdin.
+
+The restore is all or nothing. The dump is restored into a staging database,
+<database>` + StagingSuffix + `, which is dropped first if an earlier run left it
+behind. Only when the whole dump has gone in cleanly and ends with the dump
+tool's "-- Dump completed" trailer does one RENAME TABLE statement, which
+MariaDB applies atomically, move every live table into <database>` + OldSuffix + `
+and every staged table into the live database. Any failure before that drops
+the staging database and leaves the live database as it was.
+
+The replaced tables stay in <database>` + OldSuffix + ` for a rollback until it is
+dropped, by hand or with --drop-old. A restore refuses to start while that
+database still holds tables.
+
+USE and CREATE DATABASE lines from a --databases dump are left out, so the
+dump always lands in the database given; a dump of more than one database is
+refused. RENAME TABLE cannot move views or tables with triggers to another
+database, so a database or dump that has views, triggers, or (in the dump)
+stored routines or events is refused before the live database is touched.
+
+The user needs ALL on <database>` + StagingSuffix + ` and <database>` + OldSuffix + `,
+and ALTER, DROP, CREATE and INSERT on the database itself.
+
+--dry-run restores into the staging database, checks it, and drops it again
+without swapping.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := fs.Resolve(); err != nil {
 				return err
 			}
+			cmd.SilenceUsage = true
 
-			// `dumpdb mariadb` writes plain SQL including --add-drop-table, so the
-			// client replays it as-is.
-			args = append([]string{
-				"--host=" + host,
-				"--port=" + port,
-				"--user=" + username,
-				database,
-			}, args...)
-
-			return dumpdb.RunCmd(cmd, "mariadb", args, &dumpdb.RunOpts{
-				Envs:   []string{"MYSQL_PWD=" + password},
-				DryRun: dryRun,
-			})
+			db := &client{
+				host:     host,
+				port:     port,
+				user:     username,
+				password: password,
+				extra:    args,
+				stdout:   cmd.OutOrStdout(),
+				stderr:   cmd.ErrOrStderr(),
+			}
+			r, err := newRestore(db, database, dryRun, dropOld, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			return r.run(cmd.Context(), cmd.InOrStdin())
 		},
 	}
 
@@ -47,8 +74,11 @@ func New() *cobra.Command {
 		cobrax.Env("DB_USERNAME"))
 	fs.String(&password, dumpdb.FlagPassword, "p", "", "Database password",
 		cobrax.Env("DB_PASSWORD"), cobrax.SecretFile(&mount, "mariadb-password"))
-	fs.Bool(&dryRun, dumpdb.FlagDryRun, "", false, "Dry run",
+	fs.Bool(&dryRun, dumpdb.FlagDryRun, "", false,
+		"Restore into the staging database and drop it again, without swapping",
 		cobrax.Env("DB_DRY_RUN"))
+	fs.Bool(&dropOld, "drop-old", "", false,
+		"Drop the replaced tables after a successful swap instead of keeping them for a rollback")
 
 	return cmd
 }
