@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -163,7 +164,7 @@ func TestRestoreSteps(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := (&restoreOptions{path: tt.path}).steps(tt.snap)
+			got, err := (&restoreOptions{path: tt.path}).steps(tt.snap, nil)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("err = %v, want %q", err, tt.wantErr)
@@ -179,15 +180,28 @@ func TestRestoreSteps(t *testing.T) {
 
 type fakePod struct {
 	ls       string
+	files    []string
 	dump     []byte
 	commands []string
+}
+
+func (p *fakePod) nodes(paths []string) string {
+	var out strings.Builder
+	for _, path := range paths {
+		kind := "dir"
+		if slices.Contains(p.files, path) || strings.HasSuffix(path, ".dmp") || path == "/"+testNS {
+			kind = "file"
+		}
+		fmt.Fprintf(&out, "{\"type\":%q,\"path\":%q}\n", kind, path)
+	}
+	return out.String()
 }
 
 func (p *fakePod) exec(_ context.Context, argv []string, stdout io.Writer) error {
 	line := strings.Join(argv, " ")
 	p.commands = append(p.commands, line)
 	switch {
-	case len(argv) > 1 && argv[1] == "snapshots":
+	case len(argv) > 1 && argv[1] == GroupSnapshots:
 		var out []resticSnapshot
 		if strings.Contains(line, "--host=") {
 			out = snapshotsFixture()
@@ -203,6 +217,9 @@ func (p *fakePod) exec(_ context.Context, argv []string, stdout io.Writer) error
 				s.ID, s.Time.Format(time.RFC3339), strings.Join(s.Paths, `","`), s.Hostname, strings.Join(s.Tags, `","`))
 		}
 		_, err := io.WriteString(stdout, raw+"]")
+		return err
+	case len(argv) > 3 && argv[1] == "ls" && argv[2] == "--json" && !strings.Contains(argv[3], ":"):
+		_, err := io.WriteString(stdout, p.nodes(argv[4:]))
 		return err
 	case len(argv) > 1 && argv[1] == "ls":
 		_, err := io.WriteString(stdout, p.ls)
@@ -258,10 +275,9 @@ func TestVolumeRestoresPutFilesBackWhereTheyWere(t *testing.T) {
 		{
 			name:   "in place, one file",
 			sb:     filesBackupAt(),
-			o:      restoreOptions{snapshot: latest, path: "app/config.php", exclude: []string{"*.log"}},
+			o:      restoreOptions{snapshot: latest, path: "app/config.php"},
 			target: inPlaceTarget,
-			want: []string{"restic restore " + snapFiles + ":/data --target=/data --include=/app/config.php " +
-				"--exclude=*.log"},
+			want:   []string{"restic restore " + snapFiles + ":/data --target=/data --include=/app/config.php"},
 		},
 		{
 			name: "a new claim laid out like the source",
@@ -301,7 +317,7 @@ func TestVolumeRestoresPutFilesBackWhereTheyWere(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := pod.commands[1:]; !slices.Equal(got, tt.want) {
+			if got := pod.commands[2:]; !slices.Equal(got, tt.want) {
 				t.Errorf("commands =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(tt.want, "\n"))
 			}
 		})
@@ -450,5 +466,229 @@ func TestDownloadLaysFilesOutUnderTheirAbsolutePaths(t *testing.T) {
 				t.Errorf("last command = %q, want %q", last, tt.calls)
 			}
 		})
+	}
+}
+
+func TestDatabaseRestoreGoesIntoTheSourcesDatabase(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		database string
+		flag     string
+		want     string
+		target   string
+	}{
+		{"the source's database", "reporting", "", "--database='reporting'", `"reporting"`},
+		{"the flag wins", "reporting", "scratch", "--database='scratch'", `"scratch"`},
+		{"the Secret's dbname", "", "", "", "secret/postgresql-app names in dbname"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sb := newBackup(testBackupName, testRepoName)
+			sb.Spec.Database = &b2backupv1.DatabaseSpec{Engine: b2backupv1.DatabaseEngineCNPG}
+			sb.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Database: tt.database}}
+			o := &restoreOptions{snapshot: latest, database: tt.flag}
+			src, err := o.databaseSource(sb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := databaseTarget(sb.Spec.Database, src.database); !strings.Contains(got, tt.target) {
+				t.Errorf("confirmation names %q, want %q in it", got, tt.target)
+			}
+			pod := &fakePod{}
+			if err := o.restoreDatabase(context.Background(), pod, sb, src, "x", io.Discard, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			script := pod.commands[len(pod.commands)-1]
+			if tt.want != "" && !strings.Contains(script, tt.want) {
+				t.Errorf("expected %q in:\n%s", tt.want, script)
+			}
+			if tt.want == "" && strings.Contains(script, "--database") {
+				t.Errorf("a database was named although nothing chose one:\n%s", script)
+			}
+		})
+	}
+}
+
+func TestDatabaseRestoreRefusesWhatIsNotOneDump(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		snaps []resticSnapshot
+		files []string
+		want  string
+	}{
+		{"dumps of two databases under one tag", []resticSnapshot{
+			{ID: "a1", Time: day, Paths: []string{"/astro-processing.sql"}, Hostname: testNS, Tags: []string{"db", "astro-processing"}},
+			{ID: "s1", Time: day.Add(time.Minute), Paths: []string{"/schedulerdb.sql"}, Hostname: testNS, Tags: []string{"db", "schedulerdb"}},
+		}, []string{"/astro-processing.sql", "/schedulerdb.sql"}, "holds dumps of"},
+		{"a files snapshot under the dump's tag", []resticSnapshot{
+			{ID: "d1", Time: day, Paths: []string{"/" + testNS + ".dmp"}, Hostname: testNS, Tags: []string{"db"}},
+			{ID: "f1", Time: day.Add(time.Minute), Paths: []string{dataDir}, Hostname: testNS, Tags: []string{"db"}},
+		}, nil, "holds dumps of"},
+		{"a files snapshot alone", []resticSnapshot{
+			{ID: "f1", Time: day, Paths: []string{dataDir}, Hostname: testNS, Tags: []string{"db"}},
+		}, nil, "not a database dump"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sb := newBackup(testBackupName, testRepoName)
+			withDatabase(sb)
+			sb.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}}
+			o := &restoreOptions{snapshot: latest}
+			src, err := o.databaseSource(sb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pod := &listedPod{files: tt.files, snaps: tt.snaps}
+			err = o.restoreDatabase(context.Background(), pod, sb, src, "x", io.Discard, io.Discard)
+			if !errors.Is(err, ErrWrongSnapshot) || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want ErrWrongSnapshot saying %q", err, tt.want)
+			}
+			if slices.ContainsFunc(pod.commands, func(c string) bool { return strings.Contains(c, "restoredb") }) {
+				t.Error("restoredb ran")
+			}
+		})
+	}
+
+	migrated := []resticSnapshot{
+		{ID: "old", Time: day, Paths: []string{"/" + testNS}, Hostname: testNS, Tags: []string{"db"}},
+		{ID: verbNew, Time: day.Add(time.Hour), Paths: []string{"/" + testNS + ".dmp"}, Hostname: testNS, Tags: []string{"db"}},
+	}
+	got, err := (&restoreOptions{snapshot: latest}).chooseSnapshot(migrated, restoreSource{tag: "db", host: testNS})
+	if err != nil || got.ID != verbNew {
+		t.Errorf("chose %s, %v; want the newest dump, the old plain one being the same series", got.ID, err)
+	}
+}
+
+type listedPod struct {
+	fakePod
+	snaps []resticSnapshot
+}
+
+func (p *listedPod) exec(ctx context.Context, argv []string, stdout io.Writer) error {
+	if len(argv) > 1 && argv[1] == GroupSnapshots {
+		p.commands = append(p.commands, strings.Join(argv, " "))
+		raw, err := json.Marshal(p.snaps)
+		if err != nil {
+			return err
+		}
+		_, err = stdout.Write(raw)
+		return err
+	}
+	return p.fakePod.exec(ctx, argv, stdout)
+}
+
+func TestVolumeRestoreArguments(t *testing.T) {
+	t.Parallel()
+	snap := resticSnapshot{ID: snapFiles, Paths: []string{dataDir}}
+	src := restoreSource{tag: filesTag, paths: []string{dataDir},
+		exclude: []string{cacheDir, "**/tmp*", "/data/logs", "/elsewhere", "/data"}}
+	tests := []struct {
+		name string
+		o    restoreOptions
+		step restoreStep
+		want []string
+		not  []string
+	}{
+		{"the backup's own excludes protect what it never saved", restoreOptions{delete: true},
+			restoreStep{snapPath: dataDir},
+			[]string{"--exclude=cache", "--exclude=**/tmp*", "--exclude=/logs", "--delete"},
+			[]string{"/elsewhere", "--exclude=/data", "--exclude=/\n"}},
+		{"a path is matched literally, and the excludes left out", restoreOptions{path: "Movie [1080p]*.mkv"},
+			restoreStep{snapPath: dataDir, sub: "/Movie [1080p]*.mkv"},
+			[]string{`--include=/Movie \[1080p]\*.mkv`}, []string{"--exclude"}},
+		{"a dry run lists every deletion", restoreOptions{delete: true, dryRun: true},
+			restoreStep{snapPath: dataDir}, []string{"--dry-run", "--verbose=2"}, []string{"--verbose "}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			args, err := tt.o.restoreArgs(snap, tt.step, src, dataDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Join(args, " ") + " "
+			for _, want := range tt.want {
+				if !slices.Contains(args, want) {
+					t.Errorf("missing %q in %q", want, got)
+				}
+			}
+			for _, not := range tt.not {
+				if strings.Contains(got, not) {
+					t.Errorf("unexpected %q in %q", not, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRestoreArgumentsRestic(t *testing.T) {
+	t.Parallel()
+	snap := resticSnapshot{ID: snapFiles, Paths: []string{dataDir}}
+	excluding := restoreSource{paths: []string{dataDir}, exclude: []string{cacheDir}}
+	tests := []struct {
+		name string
+		o    restoreOptions
+		src  restoreSource
+		want string
+	}{
+		{"an include and an exclude", restoreOptions{include: []string{"app/**"}, exclude: []string{"*.log"}},
+			restoreSource{}, "--exclude cannot be combined"},
+		{"a path deleting under a source that excludes", restoreOptions{delete: true},
+			excluding, "would remove what the backup excludes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			step := restoreStep{snapPath: dataDir}
+			if tt.o.delete {
+				step.sub = "/app"
+			}
+			if _, err := tt.o.restoreArgs(snap, step, tt.src, dataDir); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want %q: restic would refuse, or delete what was never saved", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestASingleFileSourceRestoresFromItsDirectory(t *testing.T) {
+	t.Parallel()
+	sb := filesBackupAt()
+	sb.Spec.Sources[0].Paths = []string{appDB}
+	o := restoreOptions{snapshot: snapOlder}
+	src, err := o.filesSource(sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	single := func() *listedPod {
+		return &listedPod{files: []string{appDB}, dump: []byte("sqlite"),
+			snaps: []resticSnapshot{{ID: snapOlder, Time: day, Paths: []string{appDB}, Hostname: testNS,
+				Tags: []string{filesTag}}}}
+	}
+
+	pod := single()
+	if err := o.restoreVolumes(context.Background(), pod, src, inPlaceTarget(sb), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if want := "restic restore " + snapOlder + ":/data --target=/data --include=/app.db"; pod.commands[2] != want {
+		t.Errorf("in place ran %q, want %q", pod.commands[2], want)
+	}
+
+	pod = single()
+	plan, err := o.planVolumes(context.Background(), pod, src, newClaimTarget(sb, &sb.Spec.Volumes[0], restoreMountPath))
+	if err != nil || plan.targets[0] != restoreMountPath {
+		t.Errorf("new claim target = %v, %v; want %s", plan.targets, err, restoreMountPath)
+	}
+
+	pod = single()
+	dest := t.TempDir()
+	if err := o.download(context.Background(), pod, src, dest, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "data", "app.db")); err != nil || string(got) != "sqlite" {
+		t.Errorf("downloaded %q, %v", got, err)
 	}
 }

@@ -203,7 +203,7 @@ func TestMigrateKeepsASingleClaim(t *testing.T) {
 
 func TestParseBackupLineReadsSpaceSeparatedExcludes(t *testing.T) {
 	const wantPath = dataDir
-	bothExcludes := []string{"cache", "tmp"}
+	bothExcludes := []string{cacheDir, "tmp"}
 
 	tests := []struct {
 		name     string
@@ -223,7 +223,7 @@ func TestParseBackupLineReadsSpaceSeparatedExcludes(t *testing.T) {
 		{
 			name:     "space form before the path",
 			line:     "restic backup --exclude cache /data",
-			wantExcl: []string{"cache"},
+			wantExcl: []string{cacheDir},
 		},
 		{
 			name:     "mixed forms",
@@ -731,37 +731,6 @@ func TestMigrateTheShapesTheHomeClusterUses(t *testing.T) {
 	}
 }
 
-func TestMigrateCarriesSecurityContextsAndParityChecksReadAccess(t *testing.T) {
-	t.Parallel()
-	body := strings.Replace(homeClusterRelease, "            workingDir: /\n", `            workingDir: /
-            securityContext:
-              runAsUser: 1000
-`, 1)
-	dir := writeHomeClusterRelease(t, body)
-	var buf bytes.Buffer
-	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	_, sb := migrated(t, buf.String())
-	if sc := sb.Spec.ContainerSecurityContext; sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != 1000 {
-		t.Errorf("containerSecurityContext = %+v, want the HelmRelease's", sc)
-	}
-
-	generated := filepath.Join(t.TempDir(), "generated.yaml")
-	dropped := strings.Replace(buf.String(), "spec:\n  affinity:", "spec:\n  affinity:", 1)
-	dropped = strings.Replace(dropped, "  containerSecurityContext:\n    runAsUser: 1000\n",
-		"  containerSecurityContext:\n    capabilities:\n      drop: [ALL]\n", 1)
-	if err := os.WriteFile(generated, []byte(dropped), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	original := writeHomeClusterRelease(t, homeClusterRelease)
-	var out bytes.Buffer
-	err := runParity(&out, generated, original, migrateOptions{repository: sopsRepoURL})
-	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "READ ACCESS DIFFERS") {
-		t.Errorf("a backup that can no longer read every file passed parity: %v\n%s", err, out.String())
-	}
-}
-
 func TestMigrateKeepsLinesTheShellWouldRewriteVerbatim(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ name, line string }{
@@ -796,5 +765,36 @@ func TestMigrateKeepsLinesTheShellWouldRewriteVerbatim(t *testing.T) {
 	}
 	if shellSpecial(`restic backup --tag=files /data --exclude='**/temp*' --exclude="app/x"`) {
 		t.Error("quoted patterns were taken for shell expansion")
+	}
+}
+
+func TestMigrateCarriesSecurityContextsAndParityChecksReadAccess(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "            workingDir: /\n", `            workingDir: /
+            securityContext:
+              runAsUser: 1000
+`, 1)
+	dir := writeHomeClusterRelease(t, body)
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, buf.String())
+	if sc := sb.Spec.ContainerSecurityContext; sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != 1000 {
+		t.Errorf("containerSecurityContext = %+v, want the HelmRelease's", sc)
+	}
+
+	generated := filepath.Join(t.TempDir(), "generated.yaml")
+	dropped := strings.Replace(buf.String(), "spec:\n  affinity:", "spec:\n  affinity:", 1)
+	dropped = strings.Replace(dropped, "  containerSecurityContext:\n    runAsUser: 1000\n",
+		"  containerSecurityContext:\n    capabilities:\n      drop: [ALL]\n", 1)
+	if err := os.WriteFile(generated, []byte(dropped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := writeHomeClusterRelease(t, homeClusterRelease)
+	var out bytes.Buffer
+	err := runParity(&out, generated, original, migrateOptions{repository: sopsRepoURL})
+	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "READ ACCESS DIFFERS") {
+		t.Errorf("a backup that can no longer read every file passed parity: %v\n%s", err, out.String())
 	}
 }

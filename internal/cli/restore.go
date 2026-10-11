@@ -22,6 +22,7 @@ var (
 	ErrNoSourceVolume = errors.New("this backup has no source volume")
 	ErrNoFilesSource  = errors.New("this backup has no files source to restore")
 	ErrWrongSnapshot  = errors.New("the snapshot is not one this source took")
+	ErrBackupRunning  = errors.New("a backup is running")
 )
 
 const restoreMountPath = "/restore"
@@ -29,6 +30,7 @@ const restoreMountPath = "/restore"
 type restoreOptions struct {
 	snapshot string
 	tag      string
+	database string
 
 	inPlace    bool
 	toNewPVC   string
@@ -128,6 +130,8 @@ targets and exits, so a script never restores somewhere it did not name.
 
 	cmd.Flags().StringVar(&o.snapshot, "snapshot", latest, "Snapshot to restore")
 	cmd.Flags().StringVar(&o.tag, "tag", "", "Restore the source with this tag")
+	cmd.Flags().StringVar(&o.database, "database", "",
+		"With --to-database, restore into this database (default: the source's, else the Secret's dbname)")
 	cmd.Flags().BoolVar(&o.inPlace, "in-place", false, "Restore over the backup's source volume")
 	cmd.Flags().StringVar(&o.toNewPVC, "to-new-pvc", "", "Restore into a new claim of this name")
 	cmd.Flags().BoolVar(&o.toDatabase, "to-database", false, "Restore the dump into the database")
