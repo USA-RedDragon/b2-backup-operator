@@ -656,6 +656,10 @@ func TestMariaDBKeepsCraftedDumpsInsideStaging(t *testing.T) {
 		"a database name led by a digit": "INSERT INTO 1db.t VALUES (1);\n",
 		"a MERGE table over another database": "CREATE TABLE `m` (`id` INT) ENGINE=MRG_MyISAM UNION=(`other`.`mt`) " +
 			"INSERT_METHOD=LAST;\nINSERT INTO `m` VALUES (42);\n",
+		"an sql_mode from a variable": "SET @m='ANSI_QUOTES';\nSET sql_mode=@m;\n" +
+			"INSERT INTO \"other\".\"mt\" VALUES (43);\n",
+		"an sql_mode from a hex literal": "SET sql_mode=X'414E53495F51554F544553';\n" +
+			"INSERT INTO \"other\".\"mt\" VALUES (44);\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			backup, _ := seed(t)

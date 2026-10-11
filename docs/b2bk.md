@@ -394,7 +394,10 @@ options reach other tables: `MERGE` (`MRG_MyISAM`) and its `UNION`,
 that writes a file on the server, such as `SELECT ... INTO OUTFILE`; one too long
 to check before its table name; and an
 `sql_mode` such as `ANSI_QUOTES` or `NO_BACKSLASH_ESCAPES` that changes how
-quotes read. The client reads the dump with `--binary-mode`, and any client
+quotes read. `sql_mode` may only be set to a literal `restoredb` can check, to
+`DEFAULT`, or back to the mode the dump saved at its start
+(`SET SQL_MODE=@OLD_SQL_MODE`), so a mode hidden in a variable or a hex
+literal is refused. The client reads the dump with `--binary-mode`, and any client
 command but the `\-` a mariadb-dump starts with, such as `\u`, is refused. `RENAME TABLE` cannot move a view (MariaDB
 error 1450) or a table that has triggers (error 1435) to another database, and
 nothing moves stored routines or events, so the restore is refused, before

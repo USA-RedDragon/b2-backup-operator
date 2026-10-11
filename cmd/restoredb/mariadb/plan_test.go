@@ -605,3 +605,38 @@ func TestFilterRefusesEnginesThatReachOutside(t *testing.T) {
 		}
 	}
 }
+
+// sql_mode decides how quotes read, so it may only be set to a literal the
+// filter can check, or back to the mode a dump saved at its start.
+func TestFilterFollowsSQLMode(t *testing.T) {
+	t.Parallel()
+	const save = "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n"
+	const restore = "/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n"
+	for _, dump := range []string{
+		"SET @m='ANSI_QUOTES';\nSET sql_mode=@m;\n",
+		"SET sql_mode=X'414E53495F51554F544553';\n",
+		"SET sql_mode=0x414E53495F51554F544553;\n",
+		"SET SESSION sql_mode=CONCAT('AN', 'SI_QUOTES');\n",
+		"SET @@session.sql_mode=@m;\n",
+		"SET LOCAL sql_mode := @m;\n",
+		"SET sql_mode=@never_saved;\n",
+		save + "SET @OLD_SQL_MODE='ANSI_QUOTES';\n" + restore,
+		save + "SELECT 'ANSI_QUOTES' INTO @OLD_SQL_MODE;\n" + restore,
+		save + "DO @OLD_SQL_MODE:='ANSI_QUOTES';\n" + restore,
+		save + "SET @a=(@OLD_SQL_MODE:='ANSI_QUOTES');\n" + restore,
+		save + "INSERT INTO `t` VALUES (@`OLD_SQL_MODE`:='ANSI_QUOTES');\n" + restore,
+	} {
+		if _, _, err := filterString(t, createTable+dump); !errors.Is(err, ErrUnsupportedStatement) {
+			t.Errorf("%q: err = %v", dump, err)
+		}
+	}
+	for _, dump := range []string{
+		save + goodDump + restore,
+		"SET sql_mode=DEFAULT;\nSET @@SESSION.sql_mode='';\nSET sql_mode = 'STRICT_ALL_TABLES,NO_ZERO_DATE';\n",
+		save + "SET @saved_cs_client = @@character_set_client;\n" + restore,
+	} {
+		if _, _, err := filterString(t, dump); err != nil {
+			t.Errorf("%q: err = %v", dump, err)
+		}
+	}
+}

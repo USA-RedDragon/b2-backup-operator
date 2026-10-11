@@ -37,6 +37,10 @@ type qualifiedNames struct {
 	prevName  string
 	qualifier string
 	sawSelect bool
+	// ats counts the @ just before the current byte; one alone starts a user
+	// variable.
+	ats        int
+	sawUserVar bool
 	// afterEngine is set after the word ENGINE, until its value.
 	afterEngine bool
 	// reach names an engine or table option that reaches tables outside the
@@ -67,6 +71,14 @@ func (q *qualifiedNames) text(p []byte, inString byte) {
 }
 
 func (q *qualifiedNames) byte(c, inString byte) {
+	if c == '@' && inString == 0 {
+		q.ats++
+	} else {
+		if q.ats == 1 {
+			q.sawUserVar = true
+		}
+		q.ats = 0
+	}
 	if q.afterEngine && inString != 0 {
 		q.afterEngine = false
 		q.see("a quoted ENGINE")

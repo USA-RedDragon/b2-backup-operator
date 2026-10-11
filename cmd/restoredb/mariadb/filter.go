@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 const (
@@ -43,6 +44,8 @@ type dumpFilter struct {
 	out       []byte
 	sawObject bool
 	names     qualifiedNames
+	modes     sqlModes
+	isSet     bool
 	// createTable is set once the statement is known to be a CREATE TABLE or
 	// CREATE SEQUENCE.
 	createTable bool
@@ -109,7 +112,7 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 		f.active, f.mode = true, modeHold
 		f.head, f.held = f.head[:0], f.held[:0]
 		f.names.reset()
-		f.createTable, f.decided = false, false
+		f.createTable, f.decided, f.isSet = false, false, false
 	}
 	if !f.active {
 		f.out = append(f.out, p...)
@@ -139,9 +142,14 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 	switch {
 	case kind == byteEnd:
 		f.active = false
+		var err error
 		if f.mode == modeHold {
-			return f.decide(true)
+			err = f.decide(true)
 		}
+		if f.names.sawUserVar && !f.isSet {
+			f.modes.forget()
+		}
+		return err
 	case f.mode == modeHold && (len(f.head) >= headSize || len(f.held) >= holdSize):
 		return f.decide(false)
 	}
@@ -154,6 +162,13 @@ func (f *dumpFilter) decide(complete bool) error {
 	held := f.held
 	f.held = f.held[:0]
 	kind, arg := classify(string(f.head), complete)
+	toks := tokenize(skipLeadingComments(strings.TrimLeft(string(f.head), " \t\r\n")))
+	f.isSet = len(toks) > 0 && toks[0].kind == tokWord && strings.EqualFold(toks[0].text, "SET")
+	if f.isSet && complete && kind == stmtPass {
+		if err := f.modes.set(toks[1:], string(f.head)); err != nil {
+			return err
+		}
+	}
 	f.createTable, f.decided = createsTable(string(f.head)), true
 	if err := f.checkNames(); err != nil && kind != stmtRefused && kind != stmtServer {
 		return err
