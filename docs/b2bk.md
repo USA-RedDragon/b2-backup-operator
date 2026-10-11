@@ -195,29 +195,57 @@ never restores somewhere it did not name.
 | Target | | |
 | --- | --- | --- |
 | `--to DIR` | `reads` | Streams the files to this machine. Nothing staged on disk at either end |
-| `--to-new-pvc NAME` | `writes` | A fresh claim, taking its size, access modes and storage class from the source, to inspect before committing. It outlives the restore and is never garbage collected |
-| `--in-place` | `DESTROYS` | Over the source volume. Suspends the schedule for the duration |
+| `--to-new-pvc NAME` | `writes` | A fresh claim, laid out like the source claim, taking its size, access modes and storage class, to inspect before committing. It outlives the restore and is never garbage collected |
+| `--in-place` | `DESTROYS` | Over the source claims. Suspends the schedule for the duration |
 | `--to-database` | `DESTROYS` | Streams the dump back through `restoredb` |
 
-The filtering flags do not mean the same thing at every target, because the
-three targets run three different restic commands: `--to` runs `restic dump`,
-the two volume targets run `restic restore`, and `--to-database` runs
-`restic dump | restoredb` over one file.
+**Which snapshot.** Every target restores one source. A files target takes the
+backup's files source, or the one `--tag` names when there are several. The
+database target takes the database source, or, for a `spec.script` backup that
+has none, the dump tagged `--tag`. Without `--snapshot`, b2bk lists the
+repository's snapshots and picks the newest one that carries the source's tag,
+was taken on the backup's host (`spec.resticHost` or the namespace) and, for
+files, holds exactly the source's paths. A database dump is a snapshot of one
+file. A snapshot named with `--snapshot` must carry the source's tag, and every
+path in it must lie under one of the source's paths, or hold one dump for
+`--to-database`; anything else is refused before a byte is written, so a
+database dump is never restored over a volume and a files snapshot never into a
+database. A named snapshot taken under another host is accepted, which is how a
+backup from before a namespace rename is restored.
+
+**Where files go.** restic records the absolute path each snapshot was taken
+from, such as `/data`, and stores the files under it. b2bk restores each path
+the snapshot holds as `restic restore <snapshot>:<path>`, so `/data` from the
+snapshot lands in `/data` on the claim mounted there, and a snapshot of `/data`
+and `/blobs` restores each into its own claim.
+
+| Target | Where `<snapshot>:/data` goes |
+| --- | --- |
+| `--in-place` | `/data` on the claim mounted there |
+| `--to-new-pvc` | The same place relative to the new claim's root, so the new claim can stand in for the old one. A source spanning two claims is refused; restore it `--in-place` or `--to DIR` |
+| `--to DIR` | `DIR/data/...` |
+
+`--to-database` streams the dump's file out of the snapshot into `restoredb`,
+which tells pg_dump's custom format from plain SQL by its first bytes. Dumps
+taken by `dumpdb cnpg` (stored as `<host>.dmp`) go through `pg_restore`; old
+ones taken by `backup-cnpg.sh` (plain SQL, stored as `<host>` with no
+extension) go through `psql`. Both run in a single transaction, so a failed
+restore leaves the database as it was.
 
 | Flag | Targets | |
 | --- | --- | --- |
-| `--snapshot` | all | Default `latest` |
+| `--snapshot` | all | Default `latest`, as described above |
+| `--tag` | all | The source to restore, when a backup has several, or a script backup's dump |
 | `--size` | `--to-new-pvc` | Override the new claim's size |
 | `--yes` | `--in-place`, `--to-database` | Skip the typed confirmation. The other two never ask |
-| `--path` | `--to`, `--to-new-pvc`, `--in-place` | With `--to` it is the path `restic dump` reads, defaulting to `/`. On the volume targets it becomes a `restic restore --include` |
-| `--include`, `--exclude` | `--to-new-pvc`, `--in-place` | Passed through to `restic restore`. `restic dump` cannot filter, so `--to` refuses them rather than ignoring them |
-| `--delete` | `--to-new-pvc`, `--in-place` | Remove files at the target that are not in the snapshot. Meaningless for a download, so `--to` refuses it |
+| `--path` | `--to`, `--to-new-pvc`, `--in-place` | A file or directory in the snapshot, absolute (`/data/app/config.php`) or relative to the source path (`app/config.php`). Only that is restored, to the same place it would go in a full restore |
+| `--include`, `--exclude` | `--to-new-pvc`, `--in-place` | Passed through to `restic restore`, relative to the source path. `restic dump` cannot filter, so `--to` refuses them rather than ignoring them |
+| `--delete` | `--to-new-pvc`, `--in-place` | Remove files under the restored path that are not in the snapshot. Nothing outside the restored path, or outside `--path` and `--include`, is touched. Meaningless for a download, so `--to` refuses it |
 | `--dry-run` | all, but see below | Report without restoring |
 
-`--to-database` restores exactly one file — the database dump the snapshot was
-taken from — so it has nothing to select within. `--path`, `--include`,
-`--exclude` and `--delete` are accepted there and then ignored; do not read a
-successful run as having honored them.
+`--to-database` restores exactly one file, the dump, so it has nothing to select
+within. `--path`, `--include`, `--exclude` and `--delete` are accepted there and
+then ignored; do not read a successful run as having honored them.
 
 `--dry-run` is not uniformly free of side effects:
 
@@ -251,9 +279,12 @@ Verifies repository structure. Metadata only by default, which is fast.
 ### `prune <name>` — `DESTROYS`
 
 Applies the ScheduledBackup's own retention policy, so a manual prune does what
-the scheduled one does. Backups already prune themselves after each run; this is
-for reclaiming space after a retention change. On B2 the pruned packs are only
-hidden, and the bucket's lifecycle rule deletes them a day later by default.
+the scheduled one does: it forgets only snapshots carrying one of the backup's
+source tags, on its host, so another backup writing into the same repository
+keeps its own retention. Backups already prune themselves after each run; this
+is for reclaiming space after a retention change. On B2 the pruned packs are
+only hidden, and the bucket's lifecycle rule deletes them later, 30 days unless
+a rule says otherwise.
 
 | Flag | |
 | --- | --- |
@@ -261,7 +292,8 @@ hidden, and the bucket's lifecycle rule deletes them a day later by default.
 | `--yes` | Skip the confirmation |
 
 The retention policy comes from the ScheduledBackup, so a backup with no
-`spec.retention` has nothing to forget and is refused.
+`spec.retention` has nothing to forget and is refused, and so is a `spec.script`
+backup, which has no source tags to scope forget to.
 
 ### `stats <name>` — `reads`
 
@@ -288,12 +320,21 @@ operator waits out the delay, deletes the failed Job, and builds a fresh one on
 the pass after that. It never gives up on its own, so a repository stuck on
 `Initialized=False` with reason `InitFailed` is still trying.
 
-`reinit` is how you skip the wait. It deletes the Job now and clears
-`status.initialized`, so a fix — usually a `passwordSecretRef` holding the wrong
-password for an adopted repository — is retried immediately rather than up to
-five minutes from now. Does not touch repository contents: the init Job probes
-with `restic cat config` first, and `restic init` refuses a repository that
-already holds a config rather than re-keying it.
+`reinit` is how you skip the wait. It sets the annotation
+`b2backup.mcswain.dev/reinit-at` to the current time, and the operator deletes
+its init Job, clears `status.initialized`, records the time in
+`status.lastReinitTime` and starts over at once. A fix, usually a
+`passwordSecretRef` holding the wrong password for an adopted repository, is
+retried immediately rather than up to five minutes from now. An annotation no
+later than `status.lastReinitTime` is ignored, so it is safe to leave in Git.
+
+b2bk never writes a Repository's status: what status records decides what the
+operator may delete, so only the operator writes it, and `b2bk-operator` has no
+write access to it.
+
+Does not touch repository contents: the init Job probes with `restic cat config`
+first, and `restic init` refuses a repository that already holds a config rather
+than re-keying it.
 
 ### `rotate-password <repository>` — `DESTROYS`
 
@@ -316,6 +357,12 @@ Archive it as soon as the command returns:
 ```sh
 b2bk env repo/prod --show-password
 ```
+
+Any copy of the old password, such as the `passwordSecretRef` seed and its
+source in Git or SOPS, is now stale, and the command says so. Replace it with
+the new password. Until the seed holds it again, the operator keeps the
+credentials Secret behind its `protect-password` finalizer, since that Secret
+is the only copy.
 
 ## Escape hatch
 
@@ -389,47 +436,65 @@ Does not run the CRD's CEL rules; the API server owns those.
 
 ### `parity <generated.yaml> <helmrelease.yaml | directory>` — `reads`
 
-Confirms that migrating an app does not change what gets backed up. Needs
-nothing on PATH: both sides are parsed in-process, the HelmRelease with
-`sigs.k8s.io/yaml`. `migrate` is the one command that shells out, and only to
-`sops`. The second argument takes the same directory `migrate` does.
+Confirms that migrating an app does not change what gets backed up, or where.
+Needs nothing on PATH: both sides are parsed in-process, the HelmRelease with
+`sigs.k8s.io/yaml`. Only `--from-secret` shells out, to `sops`. The second
+argument takes the same directory `migrate` does.
 
-It compares the rendered script, the schedule, the time zone, the claim mounted
-(name, path and read-only flag) and the database Secret.
+It compares the rendered script, the schedule, the time zone, the claims and
+scratch space mounted (name, path and read-only flag), the working directory,
+the snapshot host, the extra environment, the database Secret and, given the
+original `RESTIC_REPOSITORY`, the Repository's bucket and path.
+
+| Flag | |
+| --- | --- |
+| `--repository` | The original `s3:` URL, as it appears in `RESTIC_REPOSITORY` |
+| `--from-secret` | A SOPS-encrypted Secret to read it from. Its `metadata.namespace` must be the HelmRelease's |
 
 The script comparison ignores the quoting around `--exclude` patterns and the
 `--retry-lock` and `--secret-mount` flags, which the operator renders and the
-hand-written script does not. A cnpg dump through `backup-cnpg.sh` and one
-through `dumpdb cnpg` compare equal as commands, with `--dbname` and
-`--database` read as the same thing, but the change is then reported on its own
-line: `backup-cnpg.sh` writes plain SQL that the image's restic wrapper stores
-as `<host>`, while `dumpdb cnpg` writes pg_dump's custom format stored as
-`<host>.dmp`, which is what `b2bk restore --to-database` reads. Snapshots taken
-before the change keep the old format and name. Everything else has to match.
+hand-written script does not. It also takes out of `restic forget` the
+`--host="$RESTIC_HOST"` and `--tag` flags the operator adds, when the tags are
+exactly the backup's own, and notes the change as `FORGET SCOPED`: restic
+already defaults `--host` to `$RESTIC_HOST`, so only the tags change what forget
+considers. A `CNPG_SECRET_PATH` pointing at wherever the database Secret is
+mounted compares equal on both sides.
+
+A cnpg dump through `backup-cnpg.sh` and one through `dumpdb cnpg` compare equal
+as commands, with `--dbname` and `--database` read as the same thing, but the
+change is then reported on its own line: `backup-cnpg.sh` writes plain SQL that
+the image's restic wrapper stores as `<host>`, while `dumpdb cnpg` writes
+pg_dump's custom format stored as `<host>.dmp`. `b2bk restore --to-database`
+restores both. Everything else has to match.
 
 **Schedules are compared by cadence, not verbatim.** Migration hands a
 hand-jittered expression back to the operator as a shorthand, which deliberately
 moves the minute. Both expressions are expanded over 364 days — exactly 52
 weeks, so no weekday is over-counted and monthly and yearly schedules are still
 distinguishable — and checked for firing equally often with the same spacing, so
-"hourly became daily" fails while a re-jittered minute does not.
+"hourly became daily" fails while a re-jittered minute does not. The move is
+printed with the time of day in the schedule's time zone, such as
+`RESCHEDULED: "44 0 * * *" (daily at 00:44 America/Chicago) -> "7 15 * * *" (daily at 15:07 America/Chicago)`.
 
 | Output | Exit | |
 | --- | --- | --- |
 | `IDENTICAL` | 0 | Nothing moved |
-| `RESCHEDULED` + `EQUIVALENT` | 0 | The time moved, the cadence did not |
+| `RESCHEDULED` / `FORGET SCOPED` + `EQUIVALENT` | 0 | The time moved, or forget was scoped; nothing else did |
 | `SCRIPT DIFFERS` | 1 | Followed by both scripts |
 | `DUMP FORMAT CHANGES` | 1 | A cnpg dump moves from `backup-cnpg.sh` to `dumpdb cnpg` |
 | `CADENCE DIFFERS` | 1 | It no longer runs as often |
 | `TIMEZONE DIFFERS` | 1 | |
-| `VOLUME DIFFERS` | 1 | Another claim, path or read-only flag |
+| `VOLUME DIFFERS` | 1 | Another claim, path, read-only flag or scratch space |
+| `WORKING DIR DIFFERS` | 1 | |
+| `RESTIC HOST DIFFERS` | 1 | Snapshots would start a new series under another host |
+| `ENV DIFFERS` | 1 | Another extra variable, or another `TZ` |
 | `DATABASE SECRET DIFFERS` | 1 | |
+| `REPOSITORY DIFFERS` | 1 | The Repository is not at the original bucket and path |
 | `error: ...` | 1 | Either side could not be read or rendered |
 
-These are lines, not verdicts: a run prints every one that applies. `RESCHEDULED`
-is a note rather than a difference, so it can precede a difference on a run
-that still exits 1. `IDENTICAL` and `EQUIVALENT` print only when no difference
-was found.
+These are lines, not verdicts: a run prints every one that applies. The notes
+can precede a difference on a run that still exits 1. `IDENTICAL` and
+`EQUIVALENT` print only when no difference was found.
 
 ### `migrate <resources/restic directory | helmrelease.yaml>` — `reads`
 
@@ -438,7 +503,7 @@ Converts an app's hand-written backup, an app-template HelmRelease with a
 is applied and nothing in the GitOps repository is modified.
 
 Given a directory it reads `helmrelease.yaml`, or `helm.yaml`; given a file it
-reads that. A `kustomization.yaml` beside it that sets `namespace` wins over the
+reads that, such as a second HelmRelease named `restic.yaml` beside an app. A `kustomization.yaml` beside it that sets `namespace` wins over the
 HelmRelease's own, as it does when Flux applies it. The ScheduledBackup is named
 after the HelmRelease and backs up into a Repository named `restic`, so two
 HelmReleases that share one `restic-envs` Secret, and therefore one repository,
@@ -453,11 +518,12 @@ encrypted Secret, so pass it:
 | Flag | |
 | --- | --- |
 | `--repository` | The `s3:` URL, as it appears in `RESTIC_REPOSITORY` |
-| `--from-secret` | A SOPS-encrypted Secret to decrypt with `sops` and read `RESTIC_REPOSITORY` from, such as `<app>-restic.yaml` in the secrets repository |
+| `--from-secret` | A SOPS-encrypted Secret to decrypt with `sops` and read `RESTIC_REPOSITORY` from, such as `<app>-restic.yaml` in the secrets repository. Its `metadata.namespace` must be the HelmRelease's |
 
 Both the `s3:https://host/bucket/path` form and the scheme-less
 `s3:host/bucket/path` form are accepted, and the bucket name must be one a
-Repository accepts.
+Repository accepts. A URL carrying credentials or a query is refused, and the
+error shows it with those parts replaced by `***`.
 
 `--from-secret` delegates decryption to the `sops` binary rather than linking
 the sops library, which would add every KMS backend it supports (61MB on a 93MB
@@ -468,25 +534,31 @@ What maps across:
 
 | HelmRelease | ScheduledBackup |
 | --- | --- |
-| `restic backup --tag=T <path>` | A `files` source, when `<path>` is inside the one claim mounted |
+| `restic backup --tag=T <path>...` | A `files` source with those `paths`, in one snapshot, when every path is absolute and on a mounted claim or `emptyDir` |
 | `restic backup --tag=T --stdin-from-command -- backup-cnpg.sh [--dbname=D]` | A `cnpg` source, which dumps with `dumpdb cnpg`; see `parity` for what that changes |
 | `restic backup ... -- dumpdb <engine>` | A source of that engine |
-| `restic forget --prune --keep-...` | `spec.retention` |
-| The one `existingClaim` mounted in the restic container | `spec.volume`, with the mount path and read-only flag app-template gives it |
+| `restic forget --prune --keep-...` | `spec.retention`, which the operator scopes to the backup's own tags |
+| Every `existingClaim` mounted in the restic container | `spec.volumes`, with the mount path and read-only flag app-template gives each, the working directory's claim first |
+| An `emptyDir` mounted in the restic container | `spec.scratch`, with its `sizeLimit` |
+| The container's `workingDir` | `spec.workingDir`, when it is not the default the operator would use |
 | The one Secret mounted | `spec.database.secretName`; a `<cluster>-app` or `<cluster>-superuser` name also sets `cnpgCluster` |
 | `defaultPodOptions.affinity` or the controller's `pod.affinity` | `spec.affinity`, verbatim |
 | Container `resources`, CronJob `timeZone` and `concurrencyPolicy` | The same fields |
 | Plain `env` values other than `TZ`, `RESTIC_HOST` and `CNPG_SECRET_PATH` | `spec.env` |
 
 A script any of whose lines cannot become sources, such as a backup with two
-tags or its own `--stdin-filename`, or a shell command that is not restic, is
-kept verbatim as `spec.script` instead, minus the preamble and `restic cache
+tags or its own `--stdin-filename`, a relative path, or a shell command that is
+not restic, is kept verbatim as `spec.script` instead, minus the preamble and `restic cache
 --cleanup` the operator adds itself. If it calls `backup-cnpg.sh`,
 `CNPG_SECRET_PATH` is pointed at the operator's database mount. b2bk's tag
 filtering does not work on a script backup.
 
-`migrate` refuses what a ScheduledBackup cannot mount: more than one claim, more
-than one Secret, an `emptyDir` or any other volume type, or a `subPath`.
+`migrate` refuses what a ScheduledBackup cannot mount: more than one Secret, more
+than one `emptyDir`, any other volume type, or a `subPath`.
+
+The Repository it writes has no `lifecycle` block and the default
+`deletionPolicy: Retain`. A bucket rule on a parent prefix, such as `k8s/`,
+covers the path, and the operator adds no rule of its own.
 
 Once the operator reports the Repository ready, `restic-envs` only needs
 `RESTIC_PASSWORD`, and the app no longer reads `restic-b2`. Do not remove
@@ -517,6 +589,7 @@ b2bk unlock web-files   # if it died mid-run
 b2bk snapshots web-files
 b2bk restore web-files --snapshot 4f2a1b0c \
   --path app/config.php --to ./recovered
+# lands in ./recovered/data/app/config.php when the source is /data
 ```
 
 **Full recovery, carefully**
@@ -545,7 +618,8 @@ b2bk resume web-files
 b2bk migrate apps/kosync/resources/restic \
   --from-secret ../home-cluster-secrets/kosync-restic.yaml > generated.yaml
 b2bk validate generated.yaml
-b2bk parity generated.yaml apps/kosync/resources/restic
+b2bk parity generated.yaml apps/kosync/resources/restic \
+  --from-secret ../home-cluster-secrets/kosync-restic.yaml
 ```
 
 ## Installing
@@ -569,7 +643,10 @@ Apply `config/rbac/b2bk_user_role.yaml` and bind one of:
 - **`b2bk-viewer`** — read-only. Cannot read the credentials Secret.
 - **`b2bk-operator`** — runs backups and restores. **Reads and writes the
   credentials Secret**, which holds the key that decrypts every snapshot. Bind
-  it only to people who should hold that key.
+  it only to people who should hold that key. It patches Repositories and
+  ScheduledBackups (`suspend`, `reinit`, `backup`), which RBAC cannot narrow to
+  those fields, so it can also change `deletionPolicy`. It cannot write
+  Repository status, which decides what the operator deletes.
 
 The operator's own role does not cover the CLI. `manager-role` never reads pods
 and never execs, both of which `b2bk` needs, so `b2bk` runs as you and needs a
