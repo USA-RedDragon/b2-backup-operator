@@ -666,3 +666,34 @@ func TestFilterRefusesAnEngineNamedAtTheEndOfAStatement(t *testing.T) {
 		}
 	}
 }
+
+// A dump that changes the default engine makes a CREATE TABLE with no ENGINE
+// of its own use it, so only the engines a real dump needs are allowed.
+func TestFilterRefusesADefaultEngineItCannotCheck(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		"SET default_storage_engine=SPIDER",
+		"SET SESSION default_storage_engine='CONNECT'",
+		"SET @@default_storage_engine=MRG_MyISAM",
+		"SET LOCAL default_tmp_storage_engine=FEDERATED",
+		"SET SESSION enforce_storage_engine=FEDERATED",
+		"SET storage_engine=MERGE",
+		"SET default_storage_engine=@e",
+		"SET default_storage_engine=DEFAULT",
+		"SET @a=1, default_storage_engine=SPIDER",
+	} {
+		got, _, err := filterString(t, createTable+stmt+";\n")
+		if !errors.Is(err, ErrUnsupportedStatement) || got != createTable {
+			t.Errorf("%q: err = %v, passed on %q", stmt, err, got)
+		}
+	}
+	for _, stmt := range []string{
+		"SET default_storage_engine=InnoDB",
+		"SET SESSION default_storage_engine='Aria'",
+		"SET default_tmp_storage_engine=MyISAM",
+	} {
+		if _, _, err := filterString(t, stmt+";\n"); err != nil {
+			t.Errorf("%q: err = %v", stmt, err)
+		}
+	}
+}

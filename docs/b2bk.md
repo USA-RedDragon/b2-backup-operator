@@ -390,7 +390,10 @@ past the staging database or run code there. `CREATE TABLE` is the exception,
 since mariadb-dump qualifies a foreign key to another database there, but a
 `CREATE TABLE ... SELECT` is refused, and so is a table whose engine or
 options reach other tables: `MERGE` (`MRG_MyISAM`) and its `UNION`,
-`FEDERATED`, `CONNECT`, `SPIDER`, `OQGRAPH` and `CONNECTION`. Also refused: one that changes the server, replication or accounts, such as
+`FEDERATED`, `CONNECT`, `SPIDER`, `OQGRAPH` and `CONNECTION`. A `SET` of the
+default engine (`default_storage_engine` and the like) is allowed only to the
+engines a dump of tables needs, since a `CREATE TABLE` without an `ENGINE` of
+its own would take it. Also refused: one that changes the server, replication or accounts, such as
 `SET GLOBAL`, `CHANGE MASTER TO` (from `--master-data` or `--dump-slave`) or
 `GRANT`; one that builds SQL at run time, such as `PREPARE` or `EXECUTE`; one
 that writes a file on the server, such as `SELECT ... INTO OUTFILE`; one too long
