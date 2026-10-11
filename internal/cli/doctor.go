@@ -205,10 +205,10 @@ func checkRepository(ctx context.Context, c client.Client, repo *b2backupv1.Repo
 	case repo.Status.BucketID == "":
 		r.add(levelWarn, "no B2 bucket recorded yet")
 	case repo.Status.Adopted:
-		r.add(levelInfo, fmt.Sprintf("adopted the existing restic repository at %s/%s",
-			repo.Status.BucketName, repositoryPath(repo)))
+		r.add(levelInfo, "adopted the existing restic repository at "+
+			describeLocation(repo.Status.BucketName, repo.Status.Path))
 	default:
-		r.add(levelInfo, fmt.Sprintf("stored at %s/%s", repo.Status.BucketName, repositoryPath(repo)))
+		r.add(levelInfo, "stored at "+describeLocation(repo.Status.BucketName, repo.Status.Path))
 	}
 
 	if cond := FindCondition(repo.Status.Conditions, b2backupv1.RepositoryConditionLifecycleRule); cond != nil &&

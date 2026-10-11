@@ -1102,9 +1102,11 @@ func isResticInit(c appTemplateController) bool {
 	return script == "restic init" || script == "restic init || true"
 }
 
+const bucketRoot = "(bucket root)"
+
 func describeLocation(bucket, path string) string {
 	if path == "" {
-		return bucket + " (bucket root)"
+		return bucket + " " + bucketRoot
 	}
 	return bucket + "/" + path
 }

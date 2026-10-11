@@ -48,3 +48,12 @@ func RestoreToNewPVC(ctx context.Context, f *Factory, sb *b2backupv1.ScheduledBa
 	}
 	return restoreToNewPVC(ctx, f, c, sb, &restoreOptions{toNewPVC: name, snapshot: "latest"})
 }
+
+// Doctor runs b2bk doctor arg.
+var Doctor = runDoctor
+
+// Status runs b2bk status arg.
+var Status = runStatus
+
+// PrintRepositories prints b2bk get repositories.
+var PrintRepositories = printRepositories

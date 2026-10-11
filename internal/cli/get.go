@@ -215,7 +215,7 @@ func repositoryPath(r *b2backupv1.Repository) string {
 	case r.Status.BucketID == "":
 		return orNone("")
 	case r.Status.Path == "":
-		return "/"
+		return bucketRoot
 	default:
 		return r.Status.Path
 	}
