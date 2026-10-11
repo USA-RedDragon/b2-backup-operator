@@ -2,20 +2,135 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/USA-RedDragon/b2-backup-operator/cmd/restoredb/postgres"
 	"github.com/USA-RedDragon/b2-backup-operator/cmd/restoredb/sqlite"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/dbtools/testutil"
+	"github.com/spf13/cobra"
 )
 
 const (
 	argDryRun     = "--dry-run"
 	testDB        = "app"
 	engineMariaDB = "mariadb"
+	engineCNPG    = "cnpg"
+	customDump    = "PGDMP\x01\x10\x00\x04\x08\x01\x01\x01"
+	plainDump     = "--\n-- PostgreSQL database dump\n--\n\\restrict abc\nSET statement_timeout = 0;\n"
 )
+
+func withStdin(s string) *cobra.Command {
+	cmd := New()
+	cmd.SetIn(strings.NewReader(s))
+	return cmd
+}
+
+func TestPostgresPicksRestoreToolFromDumpFormat(t *testing.T) {
+	const conn = " --host=db --port=5432 --username=app --dbname=app"
+	tests := []struct {
+		name    string
+		stdin   string
+		extra   []string
+		want    string
+		wantErr error
+	}{
+		{
+			name:  "custom format uses pg_restore",
+			stdin: customDump,
+			want:  "+ pg_restore --clean --if-exists --no-owner --single-transaction" + conn + "\n",
+		},
+		{
+			name:  "plain sql uses psql",
+			stdin: plainDump,
+			want:  "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + "\n",
+		},
+		{
+			name:  "input shorter than the magic is plain sql",
+			stdin: "PGD",
+			want:  "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + "\n",
+		},
+		{
+			name:  "lowercase magic is plain sql",
+			stdin: "pgdmp",
+			want:  "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + "\n",
+		},
+		{
+			name:  "psql passthrough after separator",
+			stdin: plainDump,
+			extra: []string{"--", "--echo-errors"},
+			want:  "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + " --echo-errors\n",
+		},
+		{
+			name:    "empty input is refused",
+			stdin:   "",
+			wantErr: postgres.ErrEmptyDump,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.ClearEnv(t)
+			args := append([]string{engineCNPG, argDryRun, "-H", "db", "-d", testDB, "-u", testDB}, tt.extra...)
+			got, err := testutil.RunGolden(t, withStdin(tt.stdin), args...)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("expected %v, got %v", tt.wantErr, err)
+				}
+				if got != "" {
+					t.Errorf("nothing should be traced, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("argv mismatch\n got: %q\nwant: %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPostgresStreamsWholeDumpToRestoreTool(t *testing.T) {
+	bin := t.TempDir()
+	for _, name := range []string{"psql", "pg_restore"} {
+		script := "#!/bin/sh\nprintf '%s:' " + name + "\nexec cat\n"
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name  string
+		stdin string
+		tool  string
+	}{
+		{name: "custom", stdin: customDump + strings.Repeat("x", 1<<16), tool: "pg_restore"},
+		{name: "plain", stdin: plainDump + strings.Repeat("SELECT 1;\n", 1<<13), tool: "psql"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.ClearEnv(t)
+			var stdout strings.Builder
+			cmd := withStdin(tt.stdin)
+			cmd.SetArgs([]string{engineCNPG, "-H", "db"})
+			cmd.SetOut(&stdout)
+			cmd.SetErr(io.Discard)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if want := tt.tool + ":" + tt.stdin; stdout.String() != want {
+				t.Errorf("%s got %d bytes, want %d starting %q", tt.tool, stdout.Len(), len(want), want[:16])
+			}
+		})
+	}
+}
 
 func TestGoldenArgs(t *testing.T) {
 	tests := []struct {
@@ -31,7 +146,7 @@ func TestGoldenArgs(t *testing.T) {
 		},
 		{
 			name: "cnpg alias matches postgres",
-			args: []string{"cnpg", argDryRun, "-H", "db", "-d", testDB, "-u", "postgres"},
+			args: []string{engineCNPG, argDryRun, "-H", "db", "-d", testDB, "-u", "postgres"},
 			want: "+ pg_restore --clean --if-exists --no-owner --single-transaction" +
 				" --host=db --port=5432 --username=postgres --dbname=app\n",
 		},
@@ -56,7 +171,7 @@ func TestGoldenArgs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			testutil.ClearEnv(t)
-			got, err := testutil.RunGolden(t, New(), tt.args...)
+			got, err := testutil.RunGolden(t, withStdin(customDump), tt.args...)
 			if err != nil {
 				t.Fatalf("execute: %v", err)
 			}
@@ -85,7 +200,7 @@ func TestPostgresResolvesFromSecretMount(t *testing.T) {
 		}
 	}
 
-	got, err := testutil.RunGolden(t, New(), "cnpg", argDryRun, "--secret-mount", dir)
+	got, err := testutil.RunGolden(t, withStdin(customDump), engineCNPG, argDryRun, "--secret-mount", dir)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -105,7 +220,8 @@ func TestExplicitFlagBeatsSecretMount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := testutil.RunGolden(t, New(), "cnpg", argDryRun, "--secret-mount", dir, "-H", "from-flag")
+	got, err := testutil.RunGolden(t, withStdin(customDump),
+		engineCNPG, argDryRun, "--secret-mount", dir, "-H", "from-flag")
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
