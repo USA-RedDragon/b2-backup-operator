@@ -1327,3 +1327,13 @@ func TestMigrateLetsAnEmptyPodMapClearTheDefault(t *testing.T) {
 		t.Errorf("parity disagrees:\n%s", parityOut)
 	}
 }
+
+func TestParityTakesTheImagesZoneForAMissingTZ(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "          timeZone: America/Chicago\n", "", 1)
+	body = strings.Replace(body, "              TZ: America/Chicago\n", "", 1)
+	_, _, parityOut, _ := migrateAndParity(t, body, migrateOptions{repository: sopsRepoURL})
+	if strings.Contains(parityOut, "ENV DIFFERS") {
+		t.Errorf("the image sets no TZ, so the original ran in UTC as the generated backup does:\n%s", parityOut)
+	}
+}

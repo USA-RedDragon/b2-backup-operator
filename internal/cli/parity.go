@@ -924,7 +924,7 @@ func compareContainer(r *parityReport, o, g parityView) {
 		delete(g.env, cnpgSecretPathEnv)
 	}
 	if _, ok := o.env["TZ"]; !ok {
-		o.env["TZ"] = ""
+		o.env["TZ"] = imageZone(o.image)
 	}
 	for _, c := range []struct{ label, original, generated string }{
 		{volumeDiffers, o.volumes, g.volumes},
@@ -1010,6 +1010,15 @@ func comparePod(r *parityReport, o, g parityView) {
 	if len(lostAnnotations) > 0 {
 		r.differ("POD ANNOTATIONS DIFFER: the generated pods do not carry %s", strings.Join(lostAnnotations, ", "))
 	}
+}
+
+// imageZone is the zone a container runs in without TZ. The upstream image,
+// and the operator's built on it, set no TZ and ship no /etc/localtime, so UTC.
+func imageZone(image string) string {
+	if isUpstreamImage(image) || isOperatorImage(image) {
+		return controllerManagerZone
+	}
+	return ""
 }
 
 func onlyPreferred(a *corev1.Affinity) bool {

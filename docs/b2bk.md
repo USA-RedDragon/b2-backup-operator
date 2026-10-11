@@ -678,7 +678,7 @@ printed with the time of day in the schedule's time zone, such as
 | `READ ACCESS DIFFERS` | 1 | The original could read every file on its claims, as root with `DAC_OVERRIDE`, and the generated backup cannot |
 | `WORKING DIR DIFFERS` | 1 | |
 | `RESTIC HOST DIFFERS` | 1 | Snapshots would start a new series under another host |
-| `ENV DIFFERS` | 1 | Another extra variable, or another `TZ` |
+| `ENV DIFFERS` | 1 | Another extra variable, or another `TZ`. An original without `TZ` on the upstream image ran in UTC: the image sets no `TZ` and has no `/etc/localtime` |
 | `GROUPING DIFFERS` | 1 | The original's forget grouped by something other than tags: its own `--group-by`, or `RESTIC_GROUP_BY`, which the image's wrapper adds and the image sets to `tags`. The operator's forget always passes `--group-by=tags` |
 | `ENVFROM DIFFERS` | 1 | The original reads a Secret or ConfigMap other than `restic-envs` and `restic-b2` |
 | `DATABASE SECRET DIFFERS` | 1 | |
