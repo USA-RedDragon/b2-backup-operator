@@ -750,6 +750,14 @@ func (r *RepositoryReconciler) deleteStaleKeys(
 	if len(stale) == 0 {
 		return 0, nil
 	}
+	inUse, err := r.liveKeyIDs(ctx, repo)
+	if err != nil {
+		return 0, err
+	}
+	if !slices.Contains(inUse, repo.Status.ApplicationKeyID) {
+		return staleKeyRecheck, nil
+	}
+	stale = slices.DeleteFunc(stale, func(k b2.Key) bool { return slices.Contains(inUse, k.ApplicationKeyID) })
 
 	if rotated := repo.Status.KeyRotationTime; rotated != nil {
 		holders, err := r.jobsStartedBefore(ctx, repo, rotated.Time)
@@ -777,6 +785,32 @@ func (r *RepositoryReconciler) deleteStaleKeys(
 			"Deleted superseded application key %s", k.ApplicationKeyID)
 	}
 	return 0, nil
+}
+
+// liveKeyIDs reads, past the informer cache, the key ID the Repository records and
+// the one its credentials Secret holds. A pass working from a cache that has not
+// caught up with a rotation must not take the new key for a stale one.
+func (r *RepositoryReconciler) liveKeyIDs(ctx context.Context, repo *b2backupv1.Repository) ([]string, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var ids []string
+	var live b2backupv1.Repository
+	switch err := reader.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name}, &live); {
+	case err == nil:
+		ids = append(ids, live.Status.ApplicationKeyID)
+	case !apierrors.IsNotFound(err):
+		return nil, err
+	}
+	var secret corev1.Secret
+	switch err := reader.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: repo.SecretName()}, &secret); {
+	case err == nil:
+		ids = append(ids, string(secret.Data[KeyAccessKeyID]))
+	case !apierrors.IsNotFound(err):
+		return nil, err
+	}
+	return ids, nil
 }
 
 // jobsStartedBefore returns the unfinished Jobs in the Repository's namespace that

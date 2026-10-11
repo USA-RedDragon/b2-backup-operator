@@ -91,3 +91,25 @@ func TestSupersededKeysWaitForJobsThatMayHoldThem(t *testing.T) {
 		})
 	}
 }
+
+func TestAStalePassNeverDeletesTheNewKey(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	r, c := newHarness(t, f, prefixRepo(usePasswordSeed), seedSecretFixture())
+	reconcileN(t, r, 1)
+	succeedInitJob(t, c)
+	stale := getRepo(t, c).DeepCopy()
+
+	loseSecret(t, c)
+	reconcileN(t, r, 1)
+	newKey := getRepo(t, c).Status.ApplicationKeyID
+
+	keys := f.Keys()
+	if _, err := r.deleteStaleKeys(context.Background(), stale, r.NewAPI(masterKeyID, masterKey), keys); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(ownKeys(f), func(k b2.Key) bool { return k.ApplicationKeyID == newKey }) {
+		t.Error("a pass reading a Repository from before the rotation deleted the key now in use")
+	}
+}
