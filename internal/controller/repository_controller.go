@@ -1561,6 +1561,10 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 	switch {
 	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.BucketID != "":
 		if err := deletionProven(repo); err != nil {
+			if keyErr := r.deleteKeysOnly(ctx, repo); keyErr != nil && !r.forceFinalize(repo, keyErr) {
+				r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", keyErr.Error())
+				return ctrl.Result{}, keyErr
+			}
 			if !r.forceFinalize(repo, err) {
 				return r.refuseDeletion(ctx, repo, err)
 			}
@@ -1647,9 +1651,10 @@ func deletionScope(repo *b2backupv1.Repository) error {
 	return nil
 }
 
-// deleteKeysOnly deletes the Repository's own application keys when status
-// recorded a key but never the location: the pass that would have recorded it
-// failed. Without a recorded location no data is deleted.
+// deleteKeysOnly deletes the Repository's own application keys, matched by the
+// name that embeds its UID, and nothing else. Under deletionPolicy Delete it
+// runs when status recorded a key but never the location, and when deletion of
+// the data is not proven, so no key with writeFiles outlives the Repository.
 func (r *RepositoryReconciler) deleteKeysOnly(ctx context.Context, repo *b2backupv1.Repository) error {
 	api, err := r.apiFor(ctx, repo)
 	if err != nil {

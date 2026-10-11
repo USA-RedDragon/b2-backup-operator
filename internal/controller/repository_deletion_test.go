@@ -695,3 +695,33 @@ func TestAnInitializationRecordedWithoutItsJobIsNotProof(t *testing.T) {
 		t.Error("an initialized flag no recorded init Job backs deleted the data")
 	}
 }
+
+func TestAnUnprovenDeletionStillDeletesItsOwnKey(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	bucket := f.AddBucket(sharedBucket)
+	f.PutFile(bucket.BucketID, configPath(myappPath), 1)
+	r, c := newHarness(t, f, prefixRepo(func(r *b2backupv1.Repository) {
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+		usePasswordSeed(r)
+	}), seedSecretFixture())
+	reconcileN(t, r, 1)
+	failInitJob(t, c, time.Now())
+	reconcileN(t, r, 1)
+	if len(ownKeys(f)) == 0 {
+		t.Fatal("precondition: the Repository holds a key")
+	}
+	deleteRepo(t, c)
+	for range 3 {
+		_ = reconcileErr(r)
+	}
+	if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason != reasonNotProven {
+		t.Fatalf("Ready = %+v, want %s", cond, reasonNotProven)
+	}
+	if keys := ownKeys(f); len(keys) != 0 {
+		t.Errorf("a key with writeFiles on a repository this Repository never opened was kept: %+v", keys)
+	}
+	if n := len(f.FileNames(bucket.BucketID)); n != 1 {
+		t.Errorf("%d files left, want 1", n)
+	}
+}
