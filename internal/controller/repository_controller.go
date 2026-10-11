@@ -967,6 +967,14 @@ func readsSecret(pod *corev1.PodSpec, name string) bool {
 		if v.Secret != nil && v.Secret.SecretName == name {
 			return true
 		}
+		if v.Projected == nil {
+			continue
+		}
+		for _, src := range v.Projected.Sources {
+			if src.Secret != nil && src.Secret.Name == name {
+				return true
+			}
+		}
 	}
 	for _, list := range [][]corev1.Container{pod.InitContainers, pod.Containers} {
 		for _, c := range list {
