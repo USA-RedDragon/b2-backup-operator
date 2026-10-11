@@ -411,7 +411,8 @@ the dump: in one where a character can end in a backslash, such as `gbk`,
 `big5`, `sjis`, `cp932`, `gb18030` or `euckr`, the server would end a quoted
 string where `restoredb` does not. So `SET NAMES`, `SET CHARACTER SET` and
 `character_set_client` are allowed only to `utf8mb4`, `utf8mb3`, `utf8`,
-`latin1`, `ascii`, `binary` or the value the dump saved at its start, wherever
+`latin1`, `ascii`, `binary` or the value the dump saved at its start, not to
+`DEFAULT`, which is whatever the server is configured with, wherever
 they are in a `SET` list, and a `SET` item `restoredb` does not know how to
 check is refused. `restoredb` connects with `--default-character-set=utf8mb4`,
 so the server's own default cannot be a multibyte one before the dump's own

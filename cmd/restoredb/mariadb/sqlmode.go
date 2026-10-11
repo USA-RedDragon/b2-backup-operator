@@ -122,13 +122,12 @@ func charsetRefusal(stmt string) string {
 var safeCharsets = []string{"utf8mb4", "utf8mb3", "utf8", "latin1", "ascii", "binary"}
 
 // knownCharset reports whether rhs sets a charset the filter can follow.
+// DEFAULT is not one: it is the server's configured charset, which the filter
+// cannot see.
 func (m *sqlModes) knownCharset(rhs []token) bool {
 	if len(rhs) == 1 {
 		switch rhs[0].kind {
 		case tokWord, tokString, tokIdent:
-			if strings.EqualFold(rhs[0].text, "DEFAULT") {
-				return true
-			}
 			return slices.ContainsFunc(safeCharsets, func(cs string) bool { return strings.EqualFold(rhs[0].text, cs) })
 		}
 	}
