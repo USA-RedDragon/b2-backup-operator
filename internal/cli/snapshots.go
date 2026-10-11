@@ -45,7 +45,8 @@ snapshots, since it passes --group-by= over the image's RESTIC_GROUP_BY.
 
 With no NAME, it lists the namespace's only ScheduledBackup, or its only
 Repository when it has no ScheduledBackup.`,
-		Args: argCount(0, 1, "name"),
+		Args:              argCount(0, 1, "name"),
+		ValidArgsFunction: f.completeName(anyKind),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.hostSet = cmd.Flags().Changed("host")
 

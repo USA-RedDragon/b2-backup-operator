@@ -32,7 +32,8 @@ recent history rather than a complete record.
 
 With no NAME, it shows the namespace's only ScheduledBackup, or its only
 Repository when it has no ScheduledBackup.`,
-		Args: argCount(0, 1, "name"),
+		Args:              argCount(0, 1, "name"),
+		ValidArgsFunction: f.completeName(anyKind),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

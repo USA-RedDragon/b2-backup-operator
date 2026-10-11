@@ -24,7 +24,8 @@ func newCancelCommand(f *Factory) *cobra.Command {
 
 restic leaves a lock behind when it is killed mid-run. If the next backup then
 reports a stale lock, clear it with: b2bk unlock REPOSITORY`,
-		Args: f.requiredName(backupsOnly, "kills a running backup"),
+		Args:              f.requiredName(backupsOnly, "kills a running backup"),
+		ValidArgsFunction: f.completeName(backupsOnly),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -93,7 +94,8 @@ func newWaitCommand(f *Factory) *cobra.Command {
 Exits non-zero if it fails, so it can gate a deploy or a migration.
 
 With no NAME, it waits on the namespace's only ScheduledBackup.`,
-		Args: argCount(0, 1, "name"),
+		Args:              argCount(0, 1, "name"),
+		ValidArgsFunction: f.completeName(backupsOnly),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

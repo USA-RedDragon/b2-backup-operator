@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -258,6 +259,38 @@ func TestDestructiveCommandsNeedANameEvenForTheOnlyOne(t *testing.T) {
 			}
 			if errOut.Len() > 0 {
 				t.Errorf("stderr = %q, want nothing", errOut.String())
+			}
+		})
+	}
+}
+
+func TestNamesComplete(t *testing.T) {
+	t.Parallel()
+	shared := []client.Object{argsRepository(argsNS, argsRepo), argsBackup(argsNS, argsRepo), argsBackup(argsNS, "app")}
+	tests := []struct {
+		args []string
+		objs []client.Object
+		want string
+	}{
+		{args: []string{cmdStatus, ""}, objs: argsBackups(2), want: "app-01\napp-02\nvault\n:4\n"},
+		{args: []string{cmdRestore, ""}, objs: argsBackups(2), want: "app-01\napp-02\n:4\n"},
+		{args: []string{"reinit", ""}, objs: argsBackups(2), want: "vault\n:4\n"},
+		{args: []string{cmdStatus, ""}, objs: shared, want: "app\nscheduledbackup/vault\nrepository/vault\n:4\n"},
+		{args: []string{cmdStatus, argsApp01, ""}, objs: argsBackups(2), want: ":4\n"},
+		{args: []string{cmdExec, ""}, objs: argsBackups(1), want: "app-01\nvault\n:4\n"},
+		{args: []string{"render", ""}, objs: argsBackups(1), want: "app-01\n:0\n"},
+		{args: []string{cmdStatus, "-n", "elsewhere", ""}, objs: argsBackups(1), want: ":4\n"},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			f := cli.NewTestFactoryIn(argsNS, argsClient(t, tt.objs...), &out, io.Discard, nil)
+			if err := cli.Execute(f, append([]string{cobra.ShellCompRequestCmd}, tt.args...)...); err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != tt.want {
+				t.Errorf("completions = %q, want %q", out.String(), tt.want)
 			}
 		})
 	}

@@ -61,7 +61,8 @@ backing up by hand is the main reason to suspend one. A run is refused only
 when one is already in flight and concurrencyPolicy is Forbid.
 
 With no NAME, it runs the namespace's only ScheduledBackup.`,
-		Args: argCount(0, 1, "name"),
+		Args:              argCount(0, 1, "name"),
+		ValidArgsFunction: f.completeName(backupsOnly),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

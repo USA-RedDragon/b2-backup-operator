@@ -39,7 +39,8 @@ waiting for it. This is the usual fix.
 Only locks restic considers stale are removed. Use --remove-all to remove them
 all, which is safe only when nothing is running: it is refused while any Job of
 a ScheduledBackup on the repository, or of the Repository itself, is running.`,
-		Args: f.requiredName(anyKind, "can remove the lock of a running backup"),
+		Args:              f.requiredName(anyKind, "can remove the lock of a running backup"),
+		ValidArgsFunction: f.completeName(anyKind),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if removeAll {
 				if err := confirm(f, yes, "every lock on the repository, including live ones", args[0]); err != nil {
@@ -92,7 +93,8 @@ but costs a full download of that share.
 
 With no NAME, it checks the namespace's only ScheduledBackup's repository, or
 its only Repository when it has no ScheduledBackup.`,
-		Args: argCount(0, 1, "name"),
+		Args:              argCount(0, 1, "name"),
+		ValidArgsFunction: f.completeName(anyKind),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			arg, err := f.nameArg(cmd, args, anyKind)
 			if err != nil {
@@ -136,7 +138,8 @@ It runs only once the operator has rendered the backup's CronJob from the
 ScheduledBackup and Repository as they are now and reports it Ready, and only
 while nothing else in the namespace forgets under its tags: a ScheduledBackup,
 a CronJob left without one, or a backup Job still running an older spec.`,
-		Args: f.requiredName(backupsOnly, "deletes snapshots"),
+		Args:              f.requiredName(backupsOnly, "deletes snapshots"),
+		ValidArgsFunction: f.completeName(backupsOnly),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !dryRun {
 				if err := confirm(f, yes, "snapshots outside the retention policy, permanently", args[0]); err != nil {
@@ -216,10 +219,11 @@ func newStatsCommand(f *Factory) *cobra.Command {
 	var mode string
 
 	cmd := &cobra.Command{
-		Use:     "stats [NAME]",
-		Short:   "Show repository size",
-		GroupID: GroupMaintenance,
-		Args:    argCount(0, 1, "name"),
+		Use:               "stats [NAME]",
+		Short:             "Show repository size",
+		GroupID:           GroupMaintenance,
+		Args:              argCount(0, 1, "name"),
+		ValidArgsFunction: f.completeName(anyKind),
 		Long: `Show restic's own view of the repository size.
 
 The operator's measurement in ` + "`b2bk status`" + ` is the size of the files

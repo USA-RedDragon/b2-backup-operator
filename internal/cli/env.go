@@ -37,7 +37,8 @@ With --show-password the output is suitable for:
 
 With no NAME, it uses the namespace's only ScheduledBackup, or its only
 Repository when it has no ScheduledBackup.`,
-		Args: argCount(0, 1, "name"),
+		Args:              argCount(0, 1, "name"),
+		ValidArgsFunction: f.completeName(anyKind),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

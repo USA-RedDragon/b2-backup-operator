@@ -93,7 +93,8 @@ and a most-recent run that did not succeed.
 
 With no argument every resource in the namespace is checked. Exits non-zero if
 any check fails.`,
-		Args: argCount(0, 1, "name"),
+		Args:              argCount(0, 1, "name"),
+		ValidArgsFunction: f.completeName(anyKind),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

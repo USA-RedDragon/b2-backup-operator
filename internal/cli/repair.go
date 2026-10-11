@@ -42,7 +42,8 @@ operator may delete, so only the operator writes it.
 This does not touch the repository's contents. The init Job probes with
 restic cat config first, and restic init refuses a repository that already
 holds a config.`,
-		Args: f.requiredName(repositoriesOnly, "starts the repository's initialization over"),
+		Args:              f.requiredName(repositoriesOnly, "starts the repository's initialization over"),
+		ValidArgsFunction: f.completeName(repositoriesOnly),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -104,7 +105,8 @@ The password is the only thing that can decrypt this repository. If the Secret
 is lost and the password was not archived off-cluster, every snapshot is
 unreadable forever -- which is why this refuses to run without the flag saying
 you have somewhere to put it.`,
-		Args: f.requiredName(anyKind, "changes the key that decrypts the repository"),
+		Args:              f.requiredName(anyKind, "changes the key that decrypts the repository"),
+		ValidArgsFunction: f.completeName(anyKind),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !archived {
 				return errors.New(

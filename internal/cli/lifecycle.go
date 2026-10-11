@@ -43,11 +43,12 @@ Repository when it has no ScheduledBackup.`
 	}
 
 	cmd := &cobra.Command{
-		Use:     use,
-		Short:   capitalize(verb) + " a repository or scheduled backup",
-		Long:    long,
-		GroupID: GroupLifecycle,
-		Args:    argCheck,
+		Use:               use,
+		Short:             capitalize(verb) + " a repository or scheduled backup",
+		Long:              long,
+		GroupID:           GroupLifecycle,
+		Args:              argCheck,
+		ValidArgsFunction: f.completeName(anyKind),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

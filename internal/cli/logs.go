@@ -41,7 +41,8 @@ func newLogsCommand(f *Factory) *cobra.Command {
 Jobs are removed an hour after they finish, so this reaches only recent runs.
 
 With no NAME, it shows the namespace's only ScheduledBackup.`,
-		Args: argCount(0, 1, "name"),
+		Args:              argCount(0, 1, "name"),
+		ValidArgsFunction: f.completeName(backupsOnly),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

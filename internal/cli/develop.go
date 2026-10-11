@@ -42,6 +42,10 @@ Takes either a local manifest or the name of one in the cluster, so it answers
 both "what would this change do" and "what is this actually running".
 With neither, it renders the namespace's only ScheduledBackup.`,
 		Args: argCount(0, 1, "argument"),
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, s string) ([]cobra.Completion, cobra.ShellCompDirective) {
+			names, _ := f.completeName(backupsOnly)(cmd, args, s)
+			return names, cobra.ShellCompDirectiveDefault
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			arg, err := f.nameArg(cmd, args, backupsOnly)
 			if err != nil {

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -159,4 +160,40 @@ func execArgs(cmd *cobra.Command, args []string) error {
 		return usageError(cmd, "needs a command after --")
 	}
 	return nil
+}
+
+// completeName offers the names of kinds in the namespace for a command's
+// one name, qualifying a name that both kinds use.
+func (f *Factory) completeName(kinds nameKinds) cobra.CompletionFunc {
+	return func(cmd *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		if len(args) > 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		c, err := f.Client()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		ns, err := f.Namespace()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		backups, repos, err := namesIn(cmd.Context(), c, ns, kinds)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		names := make([]cobra.Completion, 0, len(backups)+len(repos))
+		for _, name := range backups {
+			if slices.Contains(repos, name) {
+				name = string(TargetScheduledBackup) + "/" + name
+			}
+			names = append(names, name)
+		}
+		for _, name := range repos {
+			if slices.Contains(backups, name) {
+				name = string(TargetRepository) + "/" + name
+			}
+			names = append(names, name)
+		}
+		return names, cobra.ShellCompDirectiveNoFileComp
+	}
 }
