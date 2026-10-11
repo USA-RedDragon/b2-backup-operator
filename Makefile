@@ -60,25 +60,32 @@ test-crd: manifests generate setup-envtest ## Run CRD validation and Event tests
 
 KIND_CLUSTER ?= b2-backup-operator-test-e2e
 KIND_NODE_IMAGE ?= kindest/node:v1.37.0
+override E2E_KUBECONFIG = $(LOCALBIN)/e2e-$(KIND_CLUSTER).kubeconfig
 
 .PHONY: setup-test-e2e
-setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
-	@case "$$("$(KIND)" get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)' from $(KIND_NODE_IMAGE)..."; \
-			"$(KIND)" create cluster --name $(KIND_CLUSTER) --image $(KIND_NODE_IMAGE) ;; \
-	esac
+setup-test-e2e: kind $(LOCALBIN) ## Set up a Kind cluster for e2e tests if it does not exist
+	@if "$(KIND)" get clusters 2>/dev/null | grep -qxF '$(KIND_CLUSTER)'; then \
+		echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation."; \
+	else \
+		echo "Creating Kind cluster '$(KIND_CLUSTER)' from $(KIND_NODE_IMAGE)..."; \
+		"$(KIND)" create cluster --name $(KIND_CLUSTER) --image $(KIND_NODE_IMAGE) --kubeconfig "$(E2E_KUBECONFIG)"; \
+	fi; \
+	"$(KIND)" get kubeconfig --name $(KIND_CLUSTER) > "$(E2E_KUBECONFIG).tmp"; \
+	mv -f "$(E2E_KUBECONFIG).tmp" "$(E2E_KUBECONFIG)"
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests against the Kind cluster only, through its own kubeconfig.
 	trap '$(MAKE) cleanup-test-e2e' EXIT; \
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -count=1 -ginkgo.v
+	KUBECONFIG="$(E2E_KUBECONFIG)" KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -count=1 -ginkgo.v
 
 .PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@"$(KIND)" delete cluster --name $(KIND_CLUSTER)
+cleanup-test-e2e: kind ## Tear down the Kind cluster used for e2e tests, if it exists
+	@if "$(KIND)" get clusters 2>/dev/null | grep -qxF '$(KIND_CLUSTER)'; then \
+		"$(KIND)" delete cluster --name $(KIND_CLUSTER) --kubeconfig "$(E2E_KUBECONFIG)"; \
+	else \
+		echo "Kind cluster '$(KIND_CLUSTER)' does not exist. Nothing to clean up."; \
+	fi; \
+	rm -f "$(E2E_KUBECONFIG)" "$(E2E_KUBECONFIG).tmp"
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

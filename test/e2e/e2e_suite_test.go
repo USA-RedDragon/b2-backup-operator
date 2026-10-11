@@ -27,6 +27,9 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	By("checking that KUBECONFIG points at the Kind cluster and nothing else")
+	ExpectWithOffset(1, utils.UseKindCluster()).To(Succeed(), "Refusing to run outside the Kind cluster")
+
 	By("building the manager image")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
 	_, err := utils.Run(cmd)

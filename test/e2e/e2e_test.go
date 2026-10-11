@@ -841,12 +841,12 @@ func serviceAccountToken() string {
 		), "-f", "-")
 		cmd.Stdin = strings.NewReader(tokenRequestRawString)
 
-		output, err := cmd.CombinedOutput()
+		output, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred())
 
 		By("parsing the JSON output to extract the token")
 		var token tokenRequest
-		err = json.Unmarshal(output, &token)
+		err = json.Unmarshal([]byte(output), &token)
 		g.Expect(err).NotTo(HaveOccurred())
 
 		out = token.Status.Token

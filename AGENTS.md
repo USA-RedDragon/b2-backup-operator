@@ -198,6 +198,17 @@ its `test/e2e/e2e_suite_test.go` is the only `suite_test.go` in the tree. Both i
 and the envtest CRD tests sit behind build tags (`e2e` and `envtest`), so
 `make test` -- a plain `go test` over everything but `/e2e` -- compiles neither.
 
+The e2e suite never uses the current kube context. `make setup-test-e2e`
+writes the Kind cluster's own kubeconfig to `bin/e2e-<cluster>.kubeconfig`,
+and `make test-e2e` passes it as `KUBECONFIG`. Before anything else,
+`BeforeSuite` checks that this file's current context is `kind-<cluster>` and
+that its server is the one `kind get kubeconfig` reports. `utils.Run` refuses
+every command until that check passes, gives kubectl that file and context
+explicitly, and sets `KUBECONFIG` for everything else, `make deploy` included.
+Run every e2e command through `utils.Run`; a unit test fails on direct
+`Output`, `CombinedOutput`, `Run` or `Start` calls in `test/e2e`.
+`make cleanup-test-e2e` does nothing when the Kind cluster does not exist.
+
 **Validation lives in CEL on the CRDs**, so `make test` cannot see it. A rule
 that fails to compile makes every CRD install fail, and one that never fires is
 invisible. Anything added under `+kubebuilder:validation:XValidation` needs a
