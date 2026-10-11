@@ -379,7 +379,7 @@ func TestDoctorStopsAtARepositoryConflict(t *testing.T) {
 	repo.Status.Conditions = []metav1.Condition{{
 		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse,
 		Reason:  "RepositoryConflict",
-		Message: "BorgBase repository abcd1234 is already managed by Repository other/incumbent",
+		Message: "bucket acme-backups path restic/prod overlaps Repository other/incumbent, which claimed it first",
 	}}
 	c := newClient(t, repo)
 
@@ -390,7 +390,7 @@ func TestDoctorStopsAtARepositoryConflict(t *testing.T) {
 	if !strings.Contains(out, "other/incumbent") {
 		t.Errorf("expected the incumbent to be named:\n%s", out)
 	}
-	for _, unwanted := range []string{"not initialized", "does not exist", "no BorgBase repository ID"} {
+	for _, unwanted := range []string{"not initialized", "does not exist", "no B2 bucket recorded"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("expected no %q consequence of the conflict:\n%s", unwanted, out)
 		}

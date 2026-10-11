@@ -61,7 +61,7 @@ func NewFactory(streams genericiooptions.IOStreams) *Factory {
 	}
 }
 
-// Scheme returns the runtime scheme, including the borgbase types.
+// Scheme returns the runtime scheme, including the b2backup types.
 func (f *Factory) Scheme() *runtime.Scheme {
 	f.once.scheme.Do(func() {
 		s := runtime.NewScheme()
