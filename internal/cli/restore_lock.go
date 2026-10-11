@@ -44,6 +44,10 @@ type restoreHold struct {
 
 	// targets are the AnnotationRestorePartial entries this restore writes.
 	targets []string
+	// clears are the entries a complete restore of the whole source makes up
+	// for: those of the claims its paths are on, never one mounted under them,
+	// which the source may exclude.
+	clears []string
 	// full is true once the restore is known to write the whole of each target,
 	// so its success makes up for an earlier partial restore of it.
 	full bool
@@ -101,7 +105,8 @@ func restoredClaims(sb *b2backupv1.ScheduledBackup, paths []string) []string {
 
 type claimVolume struct {
 	b2backupv1.VolumeSpec
-	rel string
+	rel    string
+	nested bool
 }
 
 func claimVolumes(sb *b2backupv1.ScheduledBackup, paths []string) []claimVolume {
@@ -113,7 +118,7 @@ func claimVolumes(sb *b2backupv1.ScheduledBackup, paths []string) []claimVolume 
 		}
 		for _, v := range sb.Spec.Volumes {
 			if m := v.EffectiveMountPath(); m != p && under(m, p) {
-				out = append(out, claimVolume{VolumeSpec: v, rel: "/"})
+				out = append(out, claimVolume{VolumeSpec: v, rel: "/", nested: true})
 			}
 		}
 	}
@@ -131,18 +136,27 @@ func claimTargets(sb *b2backupv1.ScheduledBackup, paths []string) []string {
 	return targets
 }
 
-// databaseHost is the host a database restore writes to, as restoredb resolves
-// it: spec.database.host for mariadb, else DB_HOST from spec.env, else the one
-// the credentials Secret names.
+// directClaimTargets are the claimTargets entries of the claims the paths are
+// on, leaving out claims mounted under them.
+func directClaimTargets(sb *b2backupv1.ScheduledBackup, paths []string) []string {
+	var targets []string
+	for _, v := range claimVolumes(sb, paths) {
+		if !v.nested {
+			targets = append(targets, "pvc/"+v.ExistingClaim+":"+v.rel)
+		}
+	}
+	return targets
+}
+
+// databaseHost is the host a database restore writes to when the spec names
+// one: spec.database.host for mariadb, else DB_HOST from spec.env. It is ""
+// when the credentials Secret names it.
 func databaseHost(sb *b2backupv1.ScheduledBackup) string {
 	db := sb.Spec.Database
 	if db.Engine == b2backupv1.DatabaseEngineMariaDB {
 		return db.Host
 	}
-	if host := sb.Spec.Env["DB_HOST"]; host != "" {
-		return host
-	}
-	return "from-secret"
+	return sb.Spec.Env["DB_HOST"]
 }
 
 // databaseKey is the AnnotationRestorePartial entry for a database restore.
@@ -157,7 +171,11 @@ func databaseKey(sb *b2backupv1.ScheduledBackup, database string) string {
 	default:
 		database = "dbname"
 	}
-	return fmt.Sprintf("db/%s/%s/%s/%s", db.Engine, db.EffectiveSecretName(), databaseHost(sb), database)
+	host := databaseHost(sb)
+	if host == "" {
+		host = "from-secret"
+	}
+	return fmt.Sprintf("db/%s/%s/%s/%s", db.Engine, db.EffectiveSecretName(), host, database)
 }
 
 // sharingBackups returns the ScheduledBackups in sb's namespace that back up
@@ -183,7 +201,7 @@ func sharingBackups(
 		if database && other.Spec.Database != nil && sb.Spec.Database != nil &&
 			other.Spec.Database.Engine == sb.Spec.Database.Engine &&
 			other.Spec.Database.EffectiveSecretName() == sb.Spec.Database.EffectiveSecretName() &&
-			databaseHost(other) == databaseHost(sb) {
+			(databaseHost(other) == "" || databaseHost(sb) == "" || databaseHost(other) == databaseHost(sb)) {
 			shares = true
 		}
 		if shares {
@@ -199,7 +217,7 @@ func sharingBackups(
 // that loses lets go of what it took.
 func holdForRestore(
 	ctx context.Context, c client.Client, plan *b2backupv1.ScheduledBackup, claims []string, database bool,
-	targets []string,
+	targets, clears []string,
 ) (*restoreHold, error) {
 	backups, err := sharingBackups(ctx, c, plan, claims, database)
 	if err != nil {
@@ -211,7 +229,8 @@ func holdForRestore(
 		}
 	}
 	h := &restoreHold{
-		c: c, id: restoreLockID(), plan: plan.DeepCopy(), claims: claims, database: database, targets: targets,
+		c: c, id: restoreLockID(), plan: plan.DeepCopy(), claims: claims, database: database,
+		targets: targets, clears: clears,
 	}
 	for i := range backups {
 		key := types.NamespacedName{Namespace: backups[i].Namespace, Name: backups[i].Name}
@@ -283,7 +302,7 @@ func (h *restoreHold) release(outcome restoreOutcome) ([]string, error) {
 			case outcome == outcomePartial:
 				targets = append(targets, h.targets...)
 			case outcome == outcomeComplete && h.full:
-				targets = slices.DeleteFunc(targets, func(t string) bool { return slices.Contains(h.targets, t) })
+				targets = slices.DeleteFunc(targets, func(t string) bool { return slices.Contains(h.clears, t) })
 			}
 			setPartialTargets(&latest, targets)
 			if err := h.c.Patch(ctx, &latest, patch); err != nil {
