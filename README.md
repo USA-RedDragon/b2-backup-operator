@@ -243,6 +243,8 @@ No user or group id is imposed. A backup has to read the app's own data, whose o
 
 `spec.database.secretName` chooses the Secret; it does not choose where the Secret is mounted. The operator mounts it at one fixed path, `/var/run/secrets/b2backup/database`, and passes that same path to `dumpdb` and `restoredb` as `--secret-mount`, so where the credentials are put and where they are read from cannot drift apart.
 
+A mariadb restore (`b2bk restore --to-database`) stages the dump in `<db>__b2bk_restore` and swaps it in with one atomic `RENAME TABLE`, keeping the replaced tables in `<db>__b2bk_old`. The user in the Secret therefore needs `ALL` on those two databases as well as `ALTER`, `DROP`, `CREATE` and `INSERT` on `<db>`. A database or dump with views or triggers is refused. See [docs/b2bk.md](docs/b2bk.md).
+
 ### Schedules
 
 A five-field cron expression is passed through untouched. A shorthand is expanded with a jitter derived from the resource's namespace and name, so copy-pasted backups spread across the period instead of all firing on the hour. The result appears in `status.effectiveSchedule`. The jitter is stable: a backup keeps its slot unless it is renamed.
