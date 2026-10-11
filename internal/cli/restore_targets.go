@@ -2,11 +2,13 @@ package cli
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/kube"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/runner"
 )
@@ -24,6 +27,16 @@ const (
 	purposeDownload = "download"
 )
 
+type runnerPod struct {
+	run    *runner.Runner
+	pod    *corev1.Pod
+	stderr io.Writer
+}
+
+func (p runnerPod) exec(ctx context.Context, argv []string, stdout io.Writer) error {
+	return p.run.Exec(ctx, p.pod, kube.ExecOptions{Command: argv, Stdout: stdout, Stderr: p.stderr})
+}
+
 func restoreToDir(
 	ctx context.Context, f *Factory, sb *b2backupv1.ScheduledBackup, o *restoreOptions,
 ) error {
@@ -32,68 +45,119 @@ func restoreToDir(
 			"%s cannot be used with --to: a download runs restic dump, which takes only --path",
 			strings.Join(set, " and "))
 	}
+	src, err := o.filesSource(sb)
+	if err != nil {
+		return err
+	}
 
 	dest, err := filepath.Abs(o.toDir)
 	if err != nil {
 		return err
 	}
-
-	if o.dryRun {
-		return listSnapshot(ctx, f, sb, o, dest)
-	}
-
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return err
+	if !o.dryRun {
+		if err := os.MkdirAll(dest, 0o755); err != nil {
+			return err
+		}
 	}
 
 	run, err := f.Runner()
 	if err != nil {
 		return err
 	}
-
-	p := newPrinter(f.Streams.ErrOut)
-	p.printf("downloading %s from snapshot %s into %s\n", o.dumpPath(), o.snapshot, dest)
-	if err := p.Err(); err != nil {
-		return err
-	}
-
 	return run.Attach(ctx, sb, runner.Options{Purpose: purposeDownload}, defaultResticTimeout,
 		func(pod *corev1.Pod) error {
-			n, err := untarFrom(dest, func(w io.Writer) error {
-				return run.Exec(ctx, pod, kube.ExecOptions{
-					Command: resticCommand(o.resticDumpArgs()...),
-					Stdout:  w,
-					Stderr:  f.Streams.ErrOut,
-				})
-			})
-			if err != nil {
-				return err
-			}
-
-			done := newPrinter(f.Streams.ErrOut)
-			done.printf("restored %d files into %s\n", n, dest)
-			return done.Err()
+			return o.download(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, src, dest,
+				f.Streams.Out, f.Streams.ErrOut)
 		})
 }
 
-func listSnapshot(
-	ctx context.Context, f *Factory, sb *b2backupv1.ScheduledBackup, o *restoreOptions, dest string,
+func (o *restoreOptions) download(
+	ctx context.Context, pod restorePod, src restoreSource, dest string, out, errOut io.Writer,
 ) error {
-	run, err := f.Runner()
+	snap, err := o.resolve(ctx, pod, src)
+	if err != nil {
+		return err
+	}
+	steps, err := o.steps(snap)
 	if err != nil {
 		return err
 	}
 
-	p := newPrinter(f.Streams.ErrOut)
-	p.printf("listing %s in snapshot %s; nothing is written to %s\n", o.dumpPath(), o.snapshot, dest)
-	if err := p.Err(); err != nil {
+	total := 0
+	for _, step := range steps {
+		p := newPrinter(errOut)
+		root := filepath.Join(dest, filepath.FromSlash(step.snapPath))
+		if o.dryRun {
+			p.printf("listing %s:%s%s; nothing is written to %s\n", snap.short(), step.snapPath, step.sub, dest)
+			if err := p.Err(); err != nil {
+				return err
+			}
+			if err := pod.exec(ctx, resticCommand(listArgs(snap, step)...), out); err != nil {
+				return err
+			}
+			continue
+		}
+		p.printf("downloading %s:%s%s into %s\n", snap.short(), step.snapPath, step.sub, root)
+		if err := p.Err(); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return err
+		}
+
+		if step.sub != "" {
+			var listing bytes.Buffer
+			argv := []string{"ls", "--json", snap.ID + ":" + step.snapPath, step.sub}
+			if err := pod.exec(ctx, resticCommand(argv...), &listing); err != nil {
+				return err
+			}
+			switch nodeType(listing.Bytes(), step.sub) {
+			case "":
+				return fmt.Errorf("%s is not in snapshot %s:%s", step.sub, snap.short(), step.snapPath)
+			case "file":
+				if err := downloadFile(ctx, pod, snap, step, root); err != nil {
+					return err
+				}
+				total++
+				continue
+			}
+		}
+
+		n, err := untarFrom(root, func(w io.Writer) error {
+			return pod.exec(ctx, resticCommand(dumpArgs(snap, step)...), w)
+		})
+		total += n
+		if err != nil {
+			return err
+		}
+	}
+	if o.dryRun {
+		return nil
+	}
+	done := newPrinter(errOut)
+	done.printf("restored %d files into %s\n", total, dest)
+	return done.Err()
+}
+
+func downloadFile(ctx context.Context, pod restorePod, snap resticSnapshot, step restoreStep, root string) error {
+	r, err := os.OpenRoot(root)
+	if err != nil {
 		return err
 	}
-
-	return run.Run(ctx, sb, runner.Options{
-		Purpose: purposeDownload,
-		Command: resticCommand(o.resticListArgs()...),
-	}, f.Streams.Out, defaultResticTimeout)
+	defer func() { _ = r.Close() }()
+	name := strings.TrimPrefix(step.sub, "/")
+	if err := r.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+		return err
+	}
+	file, err := r.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := pod.exec(ctx, resticCommand("dump", snap.ID+":"+step.snapPath, step.sub), file); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func untarFrom(dest string, produce func(w io.Writer) error) (int, error) {
@@ -186,11 +250,16 @@ func writeFile(root *os.Root, path string, mode os.FileMode, r io.Reader) error 
 func restoreToNewPVC(
 	ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup, o *restoreOptions,
 ) error {
-	if len(sb.Spec.Volumes) == 0 {
-		return fmt.Errorf("%w: scheduledbackup/%s has no spec.volume", ErrNoSourceVolume, sb.Name)
+	src, err := o.filesSource(sb)
+	if err != nil {
+		return err
+	}
+	claim, err := sourceVolume(sb, src)
+	if err != nil {
+		return err
 	}
 
-	spec, err := newClaimSpec(ctx, c, sb, o.size)
+	spec, err := newClaimSpec(ctx, c, sb, claim, o.size)
 	if err != nil {
 		return err
 	}
@@ -207,7 +276,7 @@ func restoreToNewPVC(
 
 	size := spec.Resources.Requests[corev1.ResourceStorage]
 	p := newPrinter(f.Streams.ErrOut)
-	p.printf("created pvc/%s (%s)\n", pvc.Name, size.String())
+	p.printf("created pvc/%s (%s), laid out like pvc/%s\n", pvc.Name, size.String(), claim.ExistingClaim)
 	if err := p.Err(); err != nil {
 		return err
 	}
@@ -216,10 +285,8 @@ func restoreToNewPVC(
 	if err != nil {
 		return err
 	}
-
-	err = run.Run(ctx, sb, runner.Options{
+	opts := runner.Options{
 		Purpose: purposeRestore,
-		Command: resticCommand(o.resticRestoreArgs(restoreMountPath)...),
 		ExtraVolumes: []corev1.Volume{{
 			Name: "restore-target",
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
@@ -227,7 +294,11 @@ func restoreToNewPVC(
 			},
 		}},
 		ExtraMounts: []corev1.VolumeMount{{Name: "restore-target", MountPath: restoreMountPath}},
-	}, f.Streams.Out, defaultResticTimeout)
+	}
+	err = run.Attach(ctx, sb, opts, defaultResticTimeout, func(pod *corev1.Pod) error {
+		return o.restoreVolumes(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, src,
+			newClaimTarget(sb, claim, restoreMountPath), f.Streams.Out)
+	})
 	if err != nil {
 		return err
 	}
@@ -238,14 +309,14 @@ func restoreToNewPVC(
 }
 
 func newClaimSpec(
-	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, override string,
+	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, claim *b2backupv1.VolumeSpec, override string,
 ) (corev1.PersistentVolumeClaimSpec, error) {
 	spec := corev1.PersistentVolumeClaimSpec{
 		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 	}
 
 	var source corev1.PersistentVolumeClaim
-	key := types.NamespacedName{Namespace: sb.Namespace, Name: sb.Spec.Volumes[0].ExistingClaim}
+	key := types.NamespacedName{Namespace: sb.Namespace, Name: claim.ExistingClaim}
 	switch err := c.Get(ctx, key, &source); {
 	case err == nil:
 		if len(source.Spec.AccessModes) > 0 {
@@ -255,7 +326,7 @@ func newClaimSpec(
 	case override == "":
 		return spec, fmt.Errorf(
 			"reading pvc/%s to size the new claim: %w; pass --size to set it directly",
-			sb.Spec.Volumes[0].ExistingClaim, err)
+			claim.ExistingClaim, err)
 	}
 
 	size, err := claimSize(&source, override)
@@ -282,12 +353,24 @@ func claimSize(source *corev1.PersistentVolumeClaim, override string) (resource.
 func restoreInPlace(
 	ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup, o *restoreOptions,
 ) error {
-	if len(sb.Spec.Volumes) == 0 {
-		return fmt.Errorf("%w: scheduledbackup/%s has no spec.volume", ErrNoSourceVolume, sb.Name)
+	src, err := o.filesSource(sb)
+	if err != nil {
+		return err
+	}
+	var claims []string
+	for _, p := range src.paths {
+		v := backup.MountFor(sb, p)
+		if v == nil {
+			return fmt.Errorf("%w: %s is on none of scheduledbackup/%s's claims", ErrNoSourceVolume, p, sb.Name)
+		}
+		if !slices.Contains(claims, "pvc/"+v.ExistingClaim) {
+			claims = append(claims, "pvc/"+v.ExistingClaim)
+		}
 	}
 
-	claim := sb.Spec.Volumes[0].ExistingClaim
-	if err := confirm(f, o.yes || o.dryRun, fmt.Sprintf("pvc/%s in namespace %s", claim, sb.Namespace), sb.Name); err != nil {
+	what := fmt.Sprintf("%s under %s in %s in namespace %s",
+		strings.Join(src.paths, ", "), src.tag, strings.Join(claims, ", "), sb.Namespace)
+	if err := confirm(f, o.yes || o.dryRun, what, sb.Name); err != nil {
 		return err
 	}
 
@@ -295,7 +378,6 @@ func restoreInPlace(
 	if err != nil {
 		return err
 	}
-
 	defer func() {
 		if err := restore(); err != nil {
 			p := newPrinter(f.Streams.ErrOut)
@@ -308,18 +390,11 @@ func restoreInPlace(
 	if err != nil {
 		return err
 	}
-
-	p := newPrinter(f.Streams.ErrOut)
-	p.printf("restoring snapshot %s over pvc/%s\n", o.snapshot, claim)
-	if err := p.Err(); err != nil {
-		return err
-	}
-
-	return run.Run(ctx, sb, runner.Options{
-		Purpose:   purposeRestore,
-		MountData: true,
-		Command:   resticCommand(o.resticRestoreArgs(sb.Spec.Volumes[0].EffectiveMountPath())...),
-	}, f.Streams.Out, defaultResticTimeout)
+	return run.Attach(ctx, sb, runner.Options{Purpose: purposeRestore, MountData: true}, defaultResticTimeout,
+		func(pod *corev1.Pod) error {
+			return o.restoreVolumes(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, src,
+				inPlaceTarget(sb), f.Streams.Out)
+		})
 }
 
 func suspendForRestore(
@@ -357,6 +432,10 @@ func restoreToDatabase(
 	if db == nil {
 		return fmt.Errorf("%w: scheduledbackup/%s has no spec.database", ErrNoDatabase, sb.Name)
 	}
+	src, err := o.databaseSource(sb)
+	if err != nil {
+		return err
+	}
 
 	target := fmt.Sprintf("the %s database %q on %s", db.Engine, db.Name, db.Host)
 	if db.Host == "" {
@@ -370,59 +449,25 @@ func restoreToDatabase(
 	if err != nil {
 		return err
 	}
+	return run.Attach(ctx, sb, runner.Options{Purpose: "restoredb", MountDatabase: true}, defaultResticTimeout,
+		func(pod *corev1.Pod) error {
+			return o.restoreDatabase(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, sb, src, target,
+				f.Streams.Out, f.Streams.ErrOut)
+		})
+}
 
-	p := newPrinter(f.Streams.ErrOut)
-	p.printf("restoring %s from snapshot %s\n", target, o.snapshot)
+func (o *restoreOptions) restoreDatabase(
+	ctx context.Context, pod restorePod, sb *b2backupv1.ScheduledBackup, src restoreSource, target string,
+	out, errOut io.Writer,
+) error {
+	snap, err := o.resolve(ctx, pod, src)
+	if err != nil {
+		return err
+	}
+	p := newPrinter(errOut)
+	p.printf("restoring %s from %s in snapshot %s\n", target, snap.Paths[0], snap.short())
 	if err := p.Err(); err != nil {
 		return err
 	}
-
-	return run.Run(ctx, sb, runner.Options{
-		Purpose:       "restoredb",
-		MountDatabase: true,
-		Command:       restoreDatabaseCommand(sb, o),
-	}, f.Streams.Out, defaultResticTimeout)
-}
-
-func restoreDatabaseCommand(sb *b2backupv1.ScheduledBackup, o *restoreOptions) []string {
-	db := sb.Spec.Database
-	dumpFile := sb.EffectiveResticHost() + dumpExtension(db.Engine)
-
-	dump := "dump"
-	if tag := databaseSourceTag(sb); tag != "" {
-		dump += " --tag=" + shellQuote(tag)
-	}
-
-	pipeline := fmt.Sprintf("restic %s %s %s | restoredb %s --secret-mount=%s",
-		dump, shellQuote(o.snapshot), shellQuote(dumpFile), string(db.Engine),
-		b2backupv1.DBSecretMountPath)
-	if o.dryRun {
-		pipeline += " --dry-run"
-	}
-
-	guarded := fmt.Sprintf(
-		"set -o pipefail\ncommand -v restoredb >/dev/null 2>&1 || { echo %s >&2; exit 1; }\n%s",
-		shellQuote("this backup image has no restoredb; re-pull ghcr.io/usa-reddragon/b2-backup-operator-restic "+
-			"or unpin spec.image"), pipeline)
-
-	return []string{"sh", "-c", guarded}
-}
-
-func dumpExtension(engine b2backupv1.DatabaseEngine) string {
-	switch engine {
-	case b2backupv1.DatabaseEngineCNPG:
-		return ".dmp"
-	default:
-		return ".sql"
-	}
-}
-
-func databaseSourceTag(sb *b2backupv1.ScheduledBackup) string {
-	for i := range sb.Spec.Sources {
-		switch sb.Spec.Sources[i].Type {
-		case b2backupv1.SourceTypeCNPG, b2backupv1.SourceTypeMariaDB:
-			return sb.Spec.Sources[i].EffectiveTag()
-		}
-	}
-	return ""
+	return pod.exec(ctx, restoreDatabaseCommand(sb, snap, o.dryRun), out)
 }
