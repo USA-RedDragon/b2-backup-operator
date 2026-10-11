@@ -422,7 +422,7 @@ type ScheduledBackupStatus struct {
 	// +optional
 	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`
 
-	// LastSuccessfulTime is when a backup last succeeded.
+	// LastSuccessfulTime is when a backup last succeeded, scheduled or triggered.
 	// +optional
 	LastSuccessfulTime *metav1.Time `json:"lastSuccessfulTime,omitempty"`
 

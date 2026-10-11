@@ -57,3 +57,6 @@ var Status = runStatus
 
 // PrintRepositories prints b2bk get repositories.
 var PrintRepositories = printRepositories
+
+// PrintScheduledBackups prints b2bk get backups.
+var PrintScheduledBackups = printScheduledBackups

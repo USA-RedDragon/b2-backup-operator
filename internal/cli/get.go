@@ -244,7 +244,7 @@ func printScheduledBackups(out io.Writer, items []b2backupv1.ScheduledBackup, al
 			b.Spec.RepositoryRef.Name,
 			orNone(b.Status.EffectiveSchedule),
 			ConditionStatus(b.Status.Conditions, b2backupv1.ScheduledBackupConditionReady),
-			Since(b.Status.LastSuccessfulTime),
+			Since(lastSuccess(b)),
 			yesNo(b.Spec.Suspend),
 			b.Status.Active,
 			Age(b.CreationTimestamp),
@@ -279,4 +279,26 @@ func writeNamespace(w *printer, allNamespaces bool, ns string) {
 	if allNamespaces {
 		w.printf("%s\t", ns)
 	}
+}
+
+// lastSuccess is when the backup last succeeded: status.lastSuccessfulTime or
+// the newest succeeded run in its history, whichever is later, since an older
+// operator took lastSuccessfulTime from the CronJob alone and left out
+// triggered runs.
+func lastSuccess(sb *b2backupv1.ScheduledBackup) *metav1.Time {
+	latest := sb.Status.LastSuccessfulTime
+	for i := range sb.Status.History {
+		run := &sb.Status.History[i]
+		if run.Result != b2backupv1.BackupRunSucceeded {
+			continue
+		}
+		at := run.CompletionTime
+		if at == nil {
+			at = run.StartTime
+		}
+		if at != nil && (latest == nil || at.After(latest.Time)) {
+			latest = at
+		}
+	}
+	return latest
 }

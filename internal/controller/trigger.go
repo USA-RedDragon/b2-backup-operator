@@ -213,3 +213,35 @@ func compareRunTimes(a, b *metav1.Time) int {
 	}
 	return a.Compare(b.Time)
 }
+
+// lastSucceeded is when the newest succeeded run in the history finished, or
+// started when no completion was recorded. The CronJob's own
+// lastSuccessfulTime counts only the Jobs it started, not triggered ones.
+func lastSucceeded(history []b2backupv1.BackupRun) *metav1.Time {
+	var latest *metav1.Time
+	for i := range history {
+		run := &history[i]
+		if run.Result != b2backupv1.BackupRunSucceeded {
+			continue
+		}
+		at := run.CompletionTime
+		if at == nil {
+			at = run.StartTime
+		}
+		latest = laterTime(latest, at)
+	}
+	return latest
+}
+
+// laterTime returns whichever of a and b is later, so a recorded time never
+// moves back when the run that set it leaves the history.
+func laterTime(a, b *metav1.Time) *metav1.Time {
+	switch {
+	case b == nil:
+		return a
+	case a == nil || b.After(a.Time):
+		return b.DeepCopy()
+	default:
+		return a
+	}
+}

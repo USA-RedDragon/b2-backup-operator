@@ -117,7 +117,7 @@ func writeBackupStatus(
 	}
 	field(w, "Active", fmt.Sprintf("%d", sb.Status.Active))
 	field(w, "Last scheduled", Since(sb.Status.LastScheduleTime))
-	field(w, "Last successful", Since(sb.Status.LastSuccessfulTime))
+	field(w, "Last successful", Since(lastSuccess(sb)))
 	field(w, "Age", Age(sb.CreationTimestamp))
 	_ = flushTable(w, tw)
 

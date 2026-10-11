@@ -226,7 +226,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 			}
 		}
 		sb.Status.LastScheduleTime = current.Status.LastScheduleTime
-		sb.Status.LastSuccessfulTime = current.Status.LastSuccessfulTime
+		sb.Status.LastSuccessfulTime = laterTime(sb.Status.LastSuccessfulTime, current.Status.LastSuccessfulTime)
 		sb.Status.Active = int32(len(current.Status.Active))
 		cronJobUID = current.UID
 	}
@@ -246,6 +246,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 	sb.Status.History = mergeHistory(sb.Status.History, runs)
+	sb.Status.LastSuccessfulTime = laterTime(sb.Status.LastSuccessfulTime, lastSucceeded(sb.Status.History))
 
 	if err := r.reconcileTrigger(ctx, sb, &repo, runs, hold); err != nil {
 		return ctrl.Result{}, err

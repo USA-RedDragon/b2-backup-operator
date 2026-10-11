@@ -1931,7 +1931,8 @@ spec:
                 format: date-time
                 type: string
               lastSuccessfulTime:
-                description: LastSuccessfulTime is when a backup last succeeded.
+                description: LastSuccessfulTime is when a backup last succeeded, scheduled
+                  or triggered.
                 format: date-time
                 type: string
               lastTriggerJob:
