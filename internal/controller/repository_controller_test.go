@@ -1275,7 +1275,7 @@ func TestDeleteLeavesDataAnotherRepositoryStillUses(t *testing.T) {
 		r.Finalizers = []string{FinalizerName}
 		r.Status = b2backupv1.RepositoryStatus{
 			BucketID: bucket.BucketID, BucketName: sharedBucket, Path: myappPath, ApplicationKeyID: "key-gone",
-			Initialized: true,
+			Initialized: true, InitJobUID: "uid-init-job",
 		}
 	})
 	r, c := newHarness(t, f, other, leaving)

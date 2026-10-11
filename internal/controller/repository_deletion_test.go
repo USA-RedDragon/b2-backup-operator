@@ -668,3 +668,30 @@ func TestOnlyTheInitJobTheOperatorCreatedProvesAnything(t *testing.T) {
 		})
 	}
 }
+
+func TestAnInitializationRecordedWithoutItsJobIsNotProof(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	r, c := newHarness(t, f, bucketRepo(func(r *b2backupv1.Repository) {
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+	}))
+	provision(t, r, c)
+	bucket := f.Bucket(ownBucket)
+	f.PutFile(bucket.BucketID, "config", 1)
+	repo := getRepo(t, c)
+	base := repo.DeepCopy()
+	repo.Status.InitJobUID = ""
+	if err := c.Status().Patch(context.Background(), repo, client.MergeFrom(base)); err != nil {
+		t.Fatal(err)
+	}
+	deleteRepo(t, c)
+	for range 3 {
+		_ = reconcileErr(r)
+	}
+	if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason != reasonNotProven {
+		t.Errorf("Ready = %+v, want %s", cond, reasonNotProven)
+	}
+	if f.Bucket(ownBucket) == nil || len(f.FileNames(bucket.BucketID)) != 1 {
+		t.Error("an initialized flag no recorded init Job backs deleted the data")
+	}
+}

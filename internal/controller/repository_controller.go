@@ -1663,9 +1663,11 @@ func (r *RepositoryReconciler) deleteKeysOnly(ctx context.Context, repo *b2backu
 // succeeded: it either created the repository or read its config with the
 // password in this Repository's credentials Secret. A Repository that stopped
 // before that, for want of a password or a Secret of its own, may have
-// recorded a location holding someone else's repository.
+// recorded a location holding someone else's repository. An initialized flag
+// with no recorded init Job UID was set by a release that did not check who
+// created the Job, so it proves nothing either.
 func deletionProven(repo *b2backupv1.Repository) error {
-	if repo.Status.Initialized {
+	if repo.Status.Initialized && repo.Status.InitJobUID != "" {
 		return nil
 	}
 	return &scopeError{reason: reasonNotProven, msg: fmt.Sprintf(
