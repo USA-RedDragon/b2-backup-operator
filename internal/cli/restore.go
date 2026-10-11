@@ -98,8 +98,10 @@ so a database dump is never restored over files or files into a database.
 Files go back where they were backed up from: restic records absolute paths,
 and each one is restored as <snapshot>:<path> into that same path.
 
---tag picks the source when a backup has several files sources, and the dump
-when a script backup has no database source.
+--tag picks the source when a backup has several files or database sources,
+and is required then; it also picks the dump when a script backup has no
+database source. --to-database asks for confirmation only once it has found the
+dump, and names the dump, its tag and its snapshot.
 
 --path is a file or directory inside the snapshot, absolute or relative to the
 source path. --include and --exclude patterns are relative to the source path.

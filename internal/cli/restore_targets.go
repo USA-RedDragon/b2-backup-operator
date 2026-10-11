@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -523,9 +524,6 @@ func restoreToDatabase(
 	}
 
 	target := databaseTarget(db, src.database)
-	if err := confirm(f, o.yes || o.dryRun, target, sb.Name); err != nil {
-		return err
-	}
 
 	run, err := f.Runner()
 	if err != nil {
@@ -534,13 +532,21 @@ func restoreToDatabase(
 	return run.Attach(ctx, sb, runner.Options{Purpose: "restoredb", MountDatabase: true}, defaultResticTimeout,
 		func(pod *corev1.Pod) error {
 			return o.restoreDatabase(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, sb, src, target,
-				f.Streams.Out, f.Streams.ErrOut)
+				f.Streams.Out, f.Streams.ErrOut, func(snap resticSnapshot) error {
+					return confirm(f, o.yes || o.dryRun, dumpConfirmation(target, src, snap), sb.Name)
+				})
 		})
+}
+
+// dumpConfirmation names what a database restore overwrites and with which dump.
+func dumpConfirmation(target string, src restoreSource, snap resticSnapshot) string {
+	return fmt.Sprintf("%s with the dump %s tagged %s from snapshot %s taken %s on %s",
+		target, snap.Paths[0], src.tag, snap.short(), snap.Time.Format(time.RFC3339), snap.Hostname)
 }
 
 func (o *restoreOptions) restoreDatabase(
 	ctx context.Context, pod restorePod, sb *b2backupv1.ScheduledBackup, src restoreSource, target string,
-	out, errOut io.Writer,
+	out, errOut io.Writer, confirmDump func(resticSnapshot) error,
 ) error {
 	snap, kinds, err := o.resolve(ctx, pod, src)
 	if err != nil {
@@ -549,6 +555,11 @@ func (o *restoreOptions) restoreDatabase(
 	if kind := kinds[snap.Paths[0]]; kind != fileNode {
 		return fmt.Errorf("%w: %s in snapshot %s is a %s, not a database dump",
 			ErrWrongSnapshot, snap.Paths[0], snap.short(), orNone(kind))
+	}
+	if confirmDump != nil {
+		if err := confirmDump(snap); err != nil {
+			return err
+		}
 	}
 	p := newPrinter(errOut)
 	p.printf("restoring %s from %s in snapshot %s\n", target, snap.Paths[0], snap.short())
