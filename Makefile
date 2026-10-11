@@ -71,19 +71,16 @@ test-postgres: ## Run the restoredb postgres tests against a throwaway Postgres 
 	POSTGRES_IMAGE=$(POSTGRES_IMAGE) go test -tags postgres ./cmd/restoredb/postgres/ -count=1 -v
 
 KIND_CLUSTER ?= b2-backup-operator-test-e2e
+KIND_NODE_IMAGE ?= kindest/node:v1.37.0
 
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
-	@case "$$($(KIND) get clusters)" in \
+setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
+	@case "$$("$(KIND)" get clusters)" in \
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+			echo "Creating Kind cluster '$(KIND_CLUSTER)' from $(KIND_NODE_IMAGE)..."; \
+			"$(KIND)" create cluster --name $(KIND_CLUSTER) --image $(KIND_NODE_IMAGE) ;; \
 	esac
 
 .PHONY: test-e2e
@@ -93,7 +90,7 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+	@"$(KIND)" delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -177,13 +174,14 @@ $(LOCALBIN):
 	mkdir -p "$(LOCALBIN)"
 
 KUBECTL ?= kubectl
-KIND ?= kind
+KIND ?= $(LOCALBIN)/kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 KUSTOMIZE_VERSION ?= v5.8.1
+KIND_VERSION ?= v0.33.0
 CONTROLLER_TOOLS_VERSION ?= v0.21.0
 
 ENVTEST_VERSION ?= $(call required,$(call gomodver,sigs.k8s.io/controller-runtime),Set ENVTEST_VERSION manually (controller-runtime replace has no tag))
@@ -195,6 +193,11 @@ GOLANGCI_LINT_VERSION ?= v2.13.2
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
 	$(call go-install-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v5,$(KUSTOMIZE_VERSION))
+
+.PHONY: kind
+kind: $(KIND) ## Download kind locally if necessary.
+$(KIND): $(LOCALBIN)
+	$(call go-install-tool,$(KIND),sigs.k8s.io/kind,$(KIND_VERSION))
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
