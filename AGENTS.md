@@ -89,7 +89,10 @@ one of these:
   at `SecretHoldsRetainedPassword` before recording anything in status.
 - **`spec.secretName` is immutable** (a CEL transition rule on the effective
   name): a name edited to another Repository's Secret would back up into, and
-  forget in, that Repository's restic repository.
+  forget in, that Repository's restic repository. As a second line, backup Jobs
+  read `status.secretName` (`backup.CredentialsSecret`), and a ScheduledBackup
+  suspends its CronJob with `RepositoryNotItsOwn` while `RepositoryNotOwn` says
+  the Repository's Secret or location may not be its own.
 - **The operator only writes to Secrets it created**, identified by the
   `app.kubernetes.io/managed-by` label.
 - **The B2 credentials are resolved lazily**, so a Retain deletion works without them.

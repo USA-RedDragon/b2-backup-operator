@@ -303,6 +303,16 @@ func BuildCachePVC(sb *b2backupv1.ScheduledBackup, cfg Config) (*corev1.Persiste
 	return pvc, nil
 }
 
+// CredentialsSecret is the Secret a Job reads the repository's credentials
+// from: the one the Repository recorded writing, or the one its spec names
+// before it has recorded any.
+func CredentialsSecret(repo *b2backupv1.Repository) string {
+	if repo.Status.SecretName != "" {
+		return repo.Status.SecretName
+	}
+	return repo.SecretName()
+}
+
 func commonLabels(sb *b2backupv1.ScheduledBackup) map[string]string {
 	return map[string]string{
 		labelName:      sb.Name,
@@ -343,7 +353,7 @@ func BuildJobTemplate(
 		Image:           image,
 		Command:         []string{"sh", "-c", script},
 		Env:             env,
-		EnvFrom:         []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{Name: repo.SecretName()}}},
+		EnvFrom:         []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{Name: CredentialsSecret(repo)}}},
 		VolumeMounts:    mounts,
 		WorkingDir:      sb.EffectiveWorkingDir(),
 		Resources:       resources(sb),

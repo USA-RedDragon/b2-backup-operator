@@ -734,3 +734,15 @@ func TestSchedulingConstraintsReachThePod(t *testing.T) {
 			pod.NodeSelector, pod.Tolerations, pod.PriorityClassName)
 	}
 }
+
+func TestTheCronJobReadsTheSecretTheRepositoryRecorded(t *testing.T) {
+	repo := testRepo()
+	repo.Status.SecretName = "recorded-credentials"
+	cj, err := BuildCronJob(testBackup(nil), repo, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].EnvFrom[0].SecretRef.Name; got != "recorded-credentials" {
+		t.Errorf("envFrom secret = %q, want the one status records", got)
+	}
+}
