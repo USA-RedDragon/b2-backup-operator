@@ -260,6 +260,8 @@ Accepted shorthands are `@hourly`, `@daily` (`@midnight`), `@weekly`, `@monthly`
 
 Steps that do not divide their period evenly (`@every 7h`) are rejected, since cron restarts the sequence each period and would leave an irregular gap.
 
+`spec.suspend: true` suspends the CronJob. The ScheduledBackup stays `Ready=True`, since its CronJob is still rendered from the current spec and `b2bk restore --in-place` and `prune` need that, but with reason `Suspended` and a message that says it does not fire. A CronJob a restore holds is `Ready=True` with reason `RestoreHeld`, naming the hold. A suspended Repository is different: it stops reconciling, so it is `Ready=False` with reason `Suspended`.
+
 ### Extra environment variables
 
 `spec.env` is a plain map of extra variables for the backup container. It is merged after everything the operator sets, and a container's `env` overrides its `envFrom` as a whole, so a name the operator already uses would win silently, sending a backup to another repository or encrypting it under another key.

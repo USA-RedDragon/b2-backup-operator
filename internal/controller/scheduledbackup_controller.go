@@ -235,12 +235,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 
 	sb.Status.EffectiveSchedule = desired.Spec.Schedule
 
-	r.setCondition(sb, metav1.Condition{
-		Type:    b2backupv1.ScheduledBackupConditionReady,
-		Status:  metav1.ConditionTrue,
-		Reason:  "Ready",
-		Message: fmt.Sprintf("Backing up on schedule %s", desired.Spec.Schedule),
-	})
+	r.setCondition(sb, scheduleCondition(sb, desired.Spec.Schedule, hold))
 
 	runs, err := r.observedRuns(ctx, sb, cronJobUID)
 	if err != nil {
@@ -254,6 +249,31 @@ func (r *ScheduledBackupReconciler) reconcile(
 	}
 
 	return ctrl.Result{RequeueAfter: backupRequeueInterval}, nil
+}
+
+// scheduleCondition is a Ready condition, True whenever the CronJob is rendered from the current
+// spec, since a b2bk restore or prune of a suspended backup needs that, and its
+// reason says whether the CronJob fires. A suspended Repository is not Ready
+// because it stops reconciling; a suspended ScheduledBackup goes on rendering
+// its CronJob and only stops it firing.
+func scheduleCondition(sb *b2backupv1.ScheduledBackup, schedule, hold string) metav1.Condition {
+	cond := metav1.Condition{
+		Type:    b2backupv1.ScheduledBackupConditionReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Ready",
+		Message: fmt.Sprintf("Backing up on schedule %s", schedule),
+	}
+	switch {
+	case sb.Spec.Suspend:
+		cond.Reason = "Suspended"
+		cond.Message = fmt.Sprintf("Suspended by spec.suspend: the CronJob is current but does not fire; "+
+			"it backs up on schedule %s once resumed", schedule)
+	case hold != "":
+		cond.Reason = "RestoreHeld"
+		cond.Message = fmt.Sprintf("Held by a restore, so the CronJob does not fire: %s. It backs up on schedule "+
+			"%s once released", hold, schedule)
+	}
+	return cond
 }
 
 // tagConflict finds anything whose forget would reach this backup's snapshots,
