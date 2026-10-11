@@ -34,17 +34,20 @@ const stubEndpoint = "https://s3.us-east-005.b2-stub.invalid"
 
 const passwordFinalizer = "b2backup.mcswain.dev/protect-password"
 
-// deleteTestNamespace removes the password finalizer the operator puts on a
-// credentials Secret holding a generated password, which a test has no copy of
-// to archive, and then deletes the namespace.
+// deleteTestNamespace deletes a namespace whose Repositories may hold generated
+// passwords. Finalizing such a Repository puts the password finalizer on its
+// credentials Secret, which a test has no copy of to archive, so once the
+// Repositories are gone the finalizer is removed and the namespace can go.
 func deleteTestNamespace(ns string) {
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", ns, "--ignore-not-found", "--wait=false"))
+	_, _ = utils.Run(exec.Command("kubectl", "wait", "--for=delete", "repository", "--all", "-n", ns, "--timeout=2m"))
 	out, _ := utils.Run(exec.Command("kubectl", "get", "secret", "-n", ns,
 		"-l", "app.kubernetes.io/managed-by=b2-backup-operator", "-o", "name"))
 	for name := range strings.FieldsSeq(out) {
 		_, _ = utils.Run(exec.Command("kubectl", "patch", name, "-n", ns, "--type=json",
 			"-p", `[{"op":"remove","path":"/metadata/finalizers"}]`))
 	}
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", ns, "--ignore-not-found"))
+	_, _ = utils.Run(exec.Command("kubectl", "wait", "--for=delete", "ns/"+ns, "--timeout=2m"))
 }
 
 var _ = Describe("Manager", Ordered, func() {
