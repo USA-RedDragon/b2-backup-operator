@@ -245,7 +245,7 @@ func (v *parityView) readMounts(pod corev1.PodSpec, container corev1.Container, 
 			secretNames = append(secretNames, vol.Secret.SecretName)
 			secrets = append(secrets, "Secret "+vol.Secret.SecretName+" at "+mountPath)
 			secretMounts[mountPath] = true
-		case cacheDir != "" && mountPath == cacheDir && !scriptNames(v.script, cacheDir):
+		case cacheDir != "" && mountPath == cacheDir && !scriptNames(v.script, cacheDir, container.WorkingDir):
 		default:
 			mounts = append(mounts, describeMount(vol, m))
 		}
@@ -363,10 +363,14 @@ func effectiveCacheDir(env map[string]string, script, image string) string {
 
 var cacheDirFlag = regexp.MustCompile(`--cache-dir[= ](\S+)`)
 
-// scriptNames reports whether the script names dir or a path under it, other
-// than as --cache-dir, which makes a volume mounted there data rather than
-// restic's cache.
-func scriptNames(script, dir string) bool {
+// scriptNames reports whether the script may read dir or a path under it,
+// which makes a volume mounted there data rather than restic's cache: it names
+// such a path other than as --cache-dir, or it runs in such a working
+// directory, where any relative path, . included, lands in dir.
+func scriptNames(script, dir, workingDir string) bool {
+	if wd := pathpkg.Clean(cmpOr(workingDir, "/")); wd == dir || strings.HasPrefix(wd, dir+"/") {
+		return true
+	}
 	script = cacheDirFlag.ReplaceAllString(script, "")
 	for _, word := range strings.FieldsFunc(script, func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '\n' || r == '"' || r == '\'' || r == '='

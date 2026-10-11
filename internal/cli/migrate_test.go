@@ -1349,3 +1349,27 @@ func TestMigrateDoesNotTakeACacheDirFlagForData(t *testing.T) {
 		t.Errorf("scratch = %+v; the emptyDir --cache-dir names is restic's cache", sb.Spec.Scratch)
 	}
 }
+
+func TestMigrateTakesACacheDirTheScriptBacksUpRelativelyForData(t *testing.T) {
+	t.Parallel()
+	const script = "restic backup --tag=db --stdin-from-command -- backup-cnpg.sh\n                restic backup --tag=mirror /mirror\n"
+	body := strings.Replace(homeClusterRelease, script, "restic backup --tag=files .\n", 1)
+	body = strings.Replace(body, "      postgresql-app:\n        type: secret\n        name: postgresql-app\n", "", 1)
+
+	srv := strings.Replace(body, "            workingDir: /\n", "            workingDir: /srv\n", 1)
+	srv = strings.Replace(srv, "              TZ: America/Chicago\n", "              TZ: America/Chicago\n              RESTIC_CACHE_DIR: /srv\n", 1)
+	srv = strings.Replace(srv, "              - path: /mirror\n", "              - path: /srv\n", 1)
+	sb, _, parityOut, _ := migrateAndParity(t, srv, migrateOptions{repository: sopsRepoURL})
+	if len(sb.Spec.Volumes) != 1 || sb.Spec.Volumes[0].EffectiveMountPath() != "/srv" {
+		t.Errorf("volumes = %+v, want app-mirror at /srv, which restic backup . reads from /srv", sb.Spec.Volumes)
+	}
+	if strings.Contains(parityOut, volumeDiffers) {
+		t.Errorf("parity:\n%s", parityOut)
+	}
+
+	cache := strings.Replace(body, "            workingDir: /\n", "            workingDir: /cache\n", 1)
+	cache = strings.Replace(cache, "              - path: /mirror\n", "              - path: /cache\n", 1)
+	if out, err := migrate(t, cache); !errors.Is(err, ErrUnsupportedMount) {
+		t.Errorf("err = %v, want app-mirror at /cache, backed up as ., refused\n%s", err, out)
+	}
+}
