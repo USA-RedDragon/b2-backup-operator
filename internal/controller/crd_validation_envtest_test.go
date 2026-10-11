@@ -478,6 +478,7 @@ func TestCRDRejectsUnparseableRetryLock(t *testing.T) {
 const (
 	pathImmutable       = "path cannot be added, changed or removed"
 	secretNameImmutable = "secretName cannot be changed"
+	seedRefused         = "the operator never writes to the seed"
 
 	fieldMode   = "mode"
 	fieldBucket = "bucket"
@@ -536,11 +537,21 @@ func TestCRDRepositoryValidation(t *testing.T) {
 		{name: "secretName naming the seed", mutate: func(r *b2backupv1.Repository) {
 			r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: seedSecret, Key: KeyResticPassword}
 			r.Spec.SecretName = seedSecret
-		}, wantErr: "the operator never writes to the seed"},
+		}, wantErr: seedRefused},
 		{name: "secretName naming the credentials", mutate: func(r *b2backupv1.Repository) {
 			r.Spec.CredentialsSecretRef = &corev1.LocalObjectReference{Name: teamSecret}
 			r.Spec.SecretName = teamSecret
 		}, wantErr: "credentialsSecretRef"},
+		{name: "the seed naming the default credentials Secret", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: r.Name + "-credentials", Key: KeyResticPassword}
+		}, wantErr: seedRefused},
+		{name: "credentialsSecretRef naming the default credentials Secret", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.CredentialsSecretRef = &corev1.LocalObjectReference{Name: r.Name + "-credentials"}
+		}, wantErr: "credentialsSecretRef"},
+		{name: "an empty secretName and the default as seed", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.SecretName = ""
+			r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: r.Name + "-credentials", Key: KeyResticPassword}
+		}, wantErr: seedRefused},
 		{name: "distinct Secrets", mutate: func(r *b2backupv1.Repository) {
 			r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: seedSecret, Key: KeyResticPassword}
 			r.Spec.CredentialsSecretRef = &corev1.LocalObjectReference{Name: teamSecret}
