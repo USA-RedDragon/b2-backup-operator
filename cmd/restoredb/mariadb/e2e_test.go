@@ -381,7 +381,8 @@ func TestMariaDBKeepsADatabasesDumpOutOfTheNamedDatabase(t *testing.T) {
 
 func TestMariaDBDryRunDropsStagingWithoutSwapping(t *testing.T) {
 	backup, _ := seed(t)
-	sql(t, "CREATE DATABASE app__b2bk_restore; CREATE TABLE app__b2bk_restore.leftover (id INT)")
+	sql(t, "CREATE DATABASE app__b2bk_restore COMMENT '"+mariadb.SchemaComment+"'; "+
+		"CREATE TABLE app__b2bk_restore.leftover (id INT)")
 	before := fingerprint(t, appDB)
 	out, err := restore(t, backup, argDryRun)
 	if err != nil {
@@ -529,6 +530,31 @@ func TestMariaDBKeepsTheDumpInsideStaging(t *testing.T) {
 				sql(t, "SET GLOBAL max_connections = "+maxConnections)
 			}
 			assertNoStaging(t)
+		})
+	}
+}
+
+// restoredb drops a staging or rollback database only when it made it.
+func TestMariaDBKeepsAStagingNameItDidNotCreate(t *testing.T) {
+	for name, setup := range map[string]string{
+		"staging":         "CREATE DATABASE app__b2bk_restore; CREATE TABLE app__b2bk_restore.precious (id INT)",
+		"rollback, empty": "CREATE DATABASE app__b2bk_old",
+	} {
+		t.Run(name, func(t *testing.T) {
+			backup, _ := seed(t)
+			sql(t, setup)
+			defer sql(t, "DROP DATABASE IF EXISTS app__b2bk_restore; DROP DATABASE IF EXISTS app__b2bk_old")
+			before := strings.Fields(sql(t, "SELECT CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) FROM information_schema.TABLES "+
+				"WHERE TABLE_SCHEMA LIKE 'app\\_\\_b2bk%' ORDER BY 1"))
+			schemasBefore := schemas(t)
+			for _, args := range [][]string{nil, {argDryRun}} {
+				refused(t, backup, mariadb.ErrForeignSchema, args...)
+			}
+			after := strings.Fields(sql(t, "SELECT CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) FROM information_schema.TABLES "+
+				"WHERE TABLE_SCHEMA LIKE 'app\\_\\_b2bk%' ORDER BY 1"))
+			if !slices.Equal(before, after) || !slices.Equal(schemasBefore, schemas(t)) {
+				t.Errorf("tables %v became %v, databases %v became %v", before, after, schemasBefore, schemas(t))
+			}
 		})
 	}
 }

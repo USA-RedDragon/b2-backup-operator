@@ -14,6 +14,9 @@ const (
 	StagingSuffix = "__b2bk_restore"
 	// OldSuffix names the schema the replaced tables are moved into.
 	OldSuffix = "__b2bk_old"
+	// SchemaComment marks the staging and rollback schemas restoredb creates.
+	// It drops only schemas that carry it.
+	SchemaComment = "created by b2bk restoredb for a restore"
 
 	maxIdentifier = 64
 )
@@ -40,6 +43,10 @@ var (
 	ErrOtherDatabase = errors.New("the dump writes to a table it names with a database, outside the staging database")
 	// ErrOldExists is returned when the rollback schema of an earlier restore is still there.
 	ErrOldExists = errors.New("the rollback database of an earlier restore still holds tables")
+	// ErrForeignSchema is returned when a database by the staging or rollback
+	// name exists that restoredb did not create.
+	ErrForeignSchema = errors.New("a database by the name restoredb stages or keeps a rollback in exists, " +
+		"and restoredb did not create it")
 	// ErrNoDatabase is returned when the target database does not exist or is not visible.
 	ErrNoDatabase = errors.New("the database does not exist, or the user cannot see it")
 	// ErrPrivileges is returned when the user cannot create and drop the staging and rollback schemas.

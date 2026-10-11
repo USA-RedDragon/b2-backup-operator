@@ -334,7 +334,10 @@ transaction. A plain dump taken with `--create` has a `\connect` and is refused.
 A mariadb restore is all or nothing too, although a mariadb-dump cannot run in
 one transaction: its `DROP TABLE` and `CREATE TABLE` commit on their own. So
 `restoredb` streams the dump into a staging database, `<db>__b2bk_restore`,
-which it drops first if an earlier run left it behind. Only when the whole dump
+which it drops first if an earlier run left it behind. It creates that database
+and `<db>__b2bk_old` with the comment `created by b2bk restoredb for a restore`
+(MariaDB 10.5 or later), and refuses to start while a database by either name
+exists without it, so it never drops a database it did not create. Only when the whole dump
 has gone in cleanly and ends with mariadb-dump's `-- Dump completed` trailer does
 it run one `RENAME TABLE` that moves every live table into `<db>__b2bk_old` and
 every staged table into `<db>`. MariaDB applies a multi-table `RENAME TABLE`

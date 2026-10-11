@@ -23,6 +23,7 @@ type fakeConn struct {
 	tables  map[string][]string
 	objects map[string][]string
 	oldHeld bool
+	foreign string
 	failOn  string
 	loaded  bytes.Buffer
 	execs   []string
@@ -33,7 +34,13 @@ func (f *fakeConn) query(_ context.Context, sql string) ([][]string, error) {
 	var rows [][]string
 	switch {
 	case strings.Contains(sql, "SCHEMA_NAME IN"):
-		rows = [][]string{{testStaging}, {testOld}}
+		for _, name := range []string{testStaging, testOld} {
+			comment := SchemaComment
+			if name == f.foreign {
+				comment = ""
+			}
+			rows = append(rows, []string{name, comment})
+		}
 	case strings.Contains(sql, "information_schema.SCHEMATA"):
 		rows = [][]string{{"utf8mb4", "utf8mb4_uca1400_ai_ci"}}
 	case strings.Contains(sql, "UNION ALL SELECT ROUTINE_NAME"):
@@ -120,6 +127,12 @@ func TestRestoreSwapsOnlyAfterACompleteDump(t *testing.T) {
 	if !f.ran(want) {
 		t.Errorf("no swap among %q", f.execs)
 	}
+	for _, schema := range []string{testStaging, testOld} {
+		if !f.ran("CREATE DATABASE `" + schema + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci COMMENT '" +
+			SchemaComment + "'") {
+			t.Errorf("%s was not created with the mark: %q", schema, f.execs)
+		}
+	}
 	if !f.ran("DROP DATABASE `app__b2bk_restore`") || f.ran("DROP DATABASE `app__b2bk_old`") {
 		t.Errorf("staging should be dropped and the rollback copy kept: %q", f.execs)
 	}
@@ -166,6 +179,14 @@ func TestRestoreNeverSwapsAfterAFailure(t *testing.T) {
 			prepare: true},
 		{name: "missing grants", dump: goodDump, setup: func(f *fakeConn) { f.failOn = "DROP DATABASE IF EXISTS" },
 			want: ErrPrivileges, prepare: true},
+		{name: "a staging database restoredb did not create", dump: goodDump,
+			setup: func(f *fakeConn) { f.foreign = testStaging }, want: ErrForeignSchema},
+		{name: "a rollback database restoredb did not create", dump: goodDump,
+			setup: func(f *fakeConn) { f.foreign = testOld }, want: ErrForeignSchema},
+		{name: "a rollback database restoredb did not create, with tables", dump: goodDump,
+			setup: func(f *fakeConn) {
+				f.foreign, f.oldHeld, f.tables[testOld] = testOld, true, []string{"t"}
+			}, want: ErrForeignSchema},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -189,6 +210,9 @@ func TestRestoreNeverSwapsAfterAFailure(t *testing.T) {
 			}
 			if tt.prepare && !f.ran("DROP DATABASE IF EXISTS `app__b2bk_old`") {
 				t.Errorf("the empty rollback database was not cleaned up: %q", f.execs)
+			}
+			if !tt.prepare && f.ran("DROP DATABASE") {
+				t.Errorf("a database was dropped before the restore began: %q", f.execs)
 			}
 		})
 	}

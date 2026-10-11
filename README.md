@@ -243,7 +243,7 @@ No user or group id is imposed. A backup has to read the app's own data, whose o
 
 `spec.database.secretName` chooses the Secret; it does not choose where the Secret is mounted. The operator mounts it at one fixed path, `/var/run/secrets/b2backup/database`, and passes that same path to `dumpdb` and `restoredb` as `--secret-mount`, so where the credentials are put and where they are read from cannot drift apart.
 
-A mariadb restore (`b2bk restore --to-database`) stages the dump in `<db>__b2bk_restore` and swaps it in with one atomic `RENAME TABLE`, keeping the replaced tables in `<db>__b2bk_old`. The user in the Secret therefore needs `ALL` on those two databases as well as `ALTER`, `DROP`, `CREATE` and `INSERT` on `<db>`. A database or dump with views or triggers is refused. See [docs/b2bk.md](docs/b2bk.md).
+A mariadb restore (`b2bk restore --to-database`) stages the dump in `<db>__b2bk_restore` and swaps it in with one atomic `RENAME TABLE`, keeping the replaced tables in `<db>__b2bk_old`. The user in the Secret therefore needs `ALL` on those two databases as well as `ALTER`, `DROP`, `CREATE` and `INSERT` on `<db>`, and the server must be MariaDB 10.5 or later, since restoredb marks the two databases with a comment and never drops one without it. A database or dump with views or triggers is refused. See [docs/b2bk.md](docs/b2bk.md).
 
 ### Schedules
 

@@ -98,6 +98,9 @@ func (r *restore) check(ctx context.Context) error {
 			"and the swap leaves them as they are\n", QuoteIdent(r.live), strings.Join(kept, ", "))
 	}
 
+	if err := r.refuseForeign(ctx); err != nil {
+		return err
+	}
 	held, err := r.db.query(ctx, "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = "+
 		literal(r.old)+" UNION ALL SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = "+
 		literal(r.old)+" UNION ALL SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA = "+
@@ -109,6 +112,40 @@ func (r *restore) check(ctx context.Context) error {
 		return fmt.Errorf("%w: %s holds the tables an earlier restore replaced. Once you no longer need to roll "+
 			"back to them, drop it with DROP DATABASE %s; and run the restore again",
 			ErrOldExists, QuoteIdent(r.old), QuoteIdent(r.old))
+	}
+	return nil
+}
+
+// existing returns the staging and rollback schemas that exist, and whether
+// each carries SchemaComment.
+func (r *restore) existing(ctx context.Context) (map[string]bool, error) {
+	rows, err := r.db.query(ctx, "SELECT SCHEMA_NAME, SCHEMA_COMMENT FROM information_schema.SCHEMATA "+
+		"WHERE SCHEMA_NAME IN ("+literal(r.staging)+", "+literal(r.old)+")")
+	if err != nil {
+		return nil, err
+	}
+	marked := map[string]bool{}
+	for _, row := range rows {
+		if len(row) == 2 {
+			marked[row[0]] = row[1] == SchemaComment
+		}
+	}
+	return marked, nil
+}
+
+// refuseForeign fails when a schema by the staging or rollback name exists
+// that restoredb did not create, so that it is never dropped or filled.
+func (r *restore) refuseForeign(ctx context.Context) error {
+	marked, err := r.existing(ctx)
+	if err != nil {
+		return err
+	}
+	for _, schema := range []string{r.staging, r.old} {
+		if mine, ok := marked[schema]; ok && !mine {
+			return fmt.Errorf("%w: %s has no %q comment. If an earlier restore left it, drop it with "+
+				"DROP DATABASE %s; once nothing in it is needed, and run the restore again; otherwise restore "+
+				"into another database", ErrForeignSchema, QuoteIdent(schema), SchemaComment, QuoteIdent(schema))
+		}
 	}
 	return nil
 }
@@ -169,9 +206,9 @@ func (r *restore) refuseObjects(ctx context.Context, schema string, all bool) er
 // user can create, rename and drop tables in both, so a missing grant fails
 // before the dump is read.
 func (r *restore) prepare(ctx context.Context) error {
-	opts := ""
+	opts := " COMMENT '" + SchemaComment + "'"
 	if r.charset != "" && r.collation != "" {
-		opts = " CHARACTER SET " + r.charset + " COLLATE " + r.collation
+		opts = " CHARACTER SET " + r.charset + " COLLATE " + r.collation + opts
 	}
 	stagingProbe, oldProbe := qualified(r.staging, probeTable), qualified(r.old, probeTable)
 	sql := strings.Join([]string{
@@ -266,8 +303,8 @@ func (r *restore) swap(ctx context.Context, stmt string) error {
 	r.printf("the replaced tables are kept in %s. Drop them once the restore checks out:\n  DROP DATABASE %s;\n",
 		QuoteIdent(r.old), QuoteIdent(r.old))
 	if back := RenameStatement(r.live, r.old, r.staging, r.incoming, r.liveTables); back != "" {
-		r.printf("To roll back instead:\n  CREATE DATABASE %s;\n  %s;\n  DROP DATABASE %s;\n",
-			QuoteIdent(r.staging), back, QuoteIdent(r.staging))
+		r.printf("To roll back instead:\n  CREATE DATABASE %s COMMENT '%s';\n  %s;\n  DROP DATABASE %s;\n",
+			QuoteIdent(r.staging), SchemaComment, back, QuoteIdent(r.staging))
 	}
 	return nil
 }
@@ -283,22 +320,16 @@ func (r *restore) abort(ctx context.Context, err error) error {
 }
 
 func (r *restore) cleanup(ctx context.Context) error {
-	rows, err := r.db.query(ctx, "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN ("+
-		literal(r.staging)+", "+literal(r.old)+")")
+	marked, err := r.existing(ctx)
 	if err != nil {
 		return err
 	}
-	exists := map[string]bool{}
-	for _, row := range rows {
-		exists[row[0]] = true
+	if marked[r.staging] {
+		if err := r.db.execute(ctx, "DROP DATABASE IF EXISTS "+QuoteIdent(r.staging)); err != nil {
+			return fmt.Errorf("drop the staging database %s by hand: %w", QuoteIdent(r.staging), err)
+		}
 	}
-	if !exists[r.staging] && !exists[r.old] {
-		return nil
-	}
-	if err := r.db.execute(ctx, "DROP DATABASE IF EXISTS "+QuoteIdent(r.staging)); err != nil {
-		return fmt.Errorf("drop the staging database %s by hand: %w", QuoteIdent(r.staging), err)
-	}
-	if !exists[r.old] {
+	if !marked[r.old] {
 		return nil
 	}
 	held, err := r.tables(ctx, r.old)

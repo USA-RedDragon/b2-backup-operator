@@ -158,6 +158,8 @@ one of these:
   checked it: a table named with a database, a server, replication or account
   statement, or dynamic SQL would reach past the staging database. `<db>__b2bk_old` is the
   rollback copy: never drop it unless it is empty or `--drop-old` was given.
+  Both are created with `mariadb.SchemaComment`, and a database by either name
+  without it is never dropped (`ErrForeignSchema`).
   Verify changes with `make test-mariadb`, which runs a real server in Docker.
 - **The backup image's `restic` is a wrapper** ahead of the real binary on PATH.
   It supplies `--group-by` from `RESTIC_GROUP_BY` and the `--stdin-filename` a
