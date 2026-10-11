@@ -674,6 +674,7 @@ func TestSourceExcludesFollowTheRestoreRoot(t *testing.T) {
 		{"a relative path inside", "app/cache", dataDir, []string{"app/cache"}, false},
 		{"a relative path crossing a deeper root", "data/app/*.tmp", "/srv/data", []string{"data/app/*.tmp", "/app/*.tmp"}, false},
 		{"leading **", tmpAnywhere, dataDir, []string{tmpAnywhere}, false},
+		{"leading ** crossing the root", "**/data/cache", dataDir, []string{"**/data/cache", "/cache"}, false},
 		{"** after the crossing", "data/**/cache", dataDir, []string{"data/**/cache", "/**/cache"}, false},
 		{"** where the root is", "**x/cache", dataDir, nil, true},
 		{"a re-include", "!/data/cache/keep", dataDir, []string{"!/cache/keep"}, false},
