@@ -71,6 +71,16 @@ const (
 
 	hidesLiveFiles = "HidesLiveFiles"
 	reasonConflict = "RepositoryConflict"
+	reasonForeign  = "ForeignData"
+	reasonCovered  = "CoveredByExistingRule"
+	reasonScope    = "DeletionScopeMismatch"
+
+	// SecretFinalizer keeps a credentials Secret holding the only copy of an
+	// operator-generated restic password from being deleted with its namespace.
+	SecretFinalizer = "b2backup.mcswain.dev/protect-password"
+
+	staleKeyDeadline = 24 * time.Hour
+	staleKeyRecheck  = 5 * time.Minute
 )
 
 // SecretKeys are the keys the operator writes to every credentials Secret.
@@ -410,26 +420,15 @@ func (r *RepositoryReconciler) reconcileLifecycle(
 		return nil
 	}
 
+	days, explicit := int(repo.DaysFromHidingToDeleting()), repo.ExplicitDaysFromHidingToDeleting()
 	for attempt := 0; ; attempt++ {
 		if attempt == maxLifecycleUpdates {
 			return fmt.Errorf("bucket %s still does not hold the lifecycle rule for %q after %d updates",
 				bucket.BucketName, prefix, maxLifecycleUpdates)
 		}
-		rules, outcome, at := b2.MergeLifecycleRule(bucket.LifecycleRules, wantedRule(repo))
-		switch outcome {
-		case b2.RuleCovered:
-			r.setCondition(repo, metav1.Condition{
-				Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionTrue,
-				Reason: "Covered", Message: fmt.Sprintf(
-					"the bucket's rule for %q already deletes hidden files at least as soon", at),
-			})
-			return nil
-		case b2.RuleUnchanged:
-			r.setCondition(repo, metav1.Condition{
-				Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionTrue,
-				Reason: "Managed", Message: fmt.Sprintf("hidden files under %q are deleted after %d day(s)",
-					prefix, repo.DaysFromHidingToDeleting()),
-			})
+		rules, outcome, decider := b2.MergeLifecycleRule(bucket.LifecycleRules, prefix, days, explicit)
+		if outcome == b2.RuleCovered || outcome == b2.RuleUnchanged {
+			r.setLifecycleCondition(repo, bucket, prefix, outcome, decider)
 			return nil
 		}
 
@@ -444,10 +443,42 @@ func (r *RepositoryReconciler) reconcileLifecycle(
 			return fmt.Errorf("updating lifecycle rules on bucket %s: %w", bucket.BucketName, err)
 		}
 		*bucket = *updated
-		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "LifecycleRuleUpdated", "Lifecycle",
-			"Set bucket %s to delete hidden files under %q after %d day(s)",
-			bucket.BucketName, prefix, repo.DaysFromHidingToDeleting())
+		if outcome == b2.RuleRemoved {
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "LifecycleRuleRemoved", "Lifecycle",
+				"Removed bucket %s's rule for %q, which the rule for %q covers",
+				bucket.BucketName, prefix, decider.FileNamePrefix)
+		} else {
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "LifecycleRuleUpdated", "Lifecycle",
+				"Set bucket %s to delete hidden files under %q after %d day(s)", bucket.BucketName, prefix, days)
+		}
+		r.setLifecycleCondition(repo, bucket, prefix, outcome, decider)
+		return nil
 	}
+}
+
+func (r *RepositoryReconciler) setLifecycleCondition(
+	repo *b2backupv1.Repository, bucket *b2.Bucket, prefix string, outcome b2.RuleOutcome, decider b2.LifecycleRule,
+) {
+	cond := metav1.Condition{
+		Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionTrue, Reason: "Managed",
+	}
+	effective, _ := b2.EffectiveHidingDays(bucket.LifecycleRules, prefix)
+	switch outcome {
+	case b2.RuleCovered, b2.RuleRemoved:
+		cond.Reason = reasonCovered
+		cond.Message = fmt.Sprintf(
+			"bucket %s's rule for %q already deletes hidden files after %d day(s), so no rule was added; "+
+				"hidden files under %q are deleted after %d day(s). Set spec.lifecycle.daysFromHidingToDeleting "+
+				"to keep a rule of this repository's own",
+			bucket.BucketName, decider.FileNamePrefix, *decider.DaysFromHidingToDeleting, prefix, effective)
+	default:
+		cond.Message = fmt.Sprintf("hidden files under %q are deleted after %d day(s)", prefix, effective)
+		if want := int(repo.DaysFromHidingToDeleting()); effective < want {
+			cond.Message += fmt.Sprintf("; a shorter rule on a parent prefix overrides the %d this repository asks for",
+				want)
+		}
+	}
+	r.setCondition(repo, cond)
 }
 
 type credentials struct {

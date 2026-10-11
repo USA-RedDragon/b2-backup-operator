@@ -108,16 +108,26 @@ spec:
                   path.
                 properties:
                   daysFromHidingToDeleting:
-                    default: 1
-                    description: DaysFromHidingToDeleting is how long a hidden file
-                      version is kept before B2 deletes it.
+                    description: |-
+                      DaysFromHidingToDeleting is how long a hidden file version is kept before
+                      B2 deletes it.
+
+                      Unset, the operator adds no rule when a rule on the repository's path or
+                      any parent of it already sets daysFromHidingToDeleting, whatever its
+                      value; the LifecycleRule condition then reports CoveredByExistingRule.
+                      Only a path no rule covers gets a rule, of 30 days.
+
+                      Set, the operator keeps a rule for exactly the path with this value even
+                      under a parent rule. B2 applies the smallest value of every rule that
+                      matches a file, so a value shorter than a parent rule's shortens the
+                      window for this path and a longer one has no effect.
                     format: int32
                     minimum: 1
                     type: integer
                   manage:
                     description: |-
-                      Manage adds or updates a lifecycle rule scoped to the repository's path, so
-                      that files restic deletes, which B2 only hides, are removed for good.
+                      Manage lets the operator add a lifecycle rule for the repository's path,
+                      so that files restic deletes, which B2 only hides, are removed for good.
                       Rules for other prefixes are never changed. Set false to leave the
                       bucket's rules alone. Defaults to true.
                     type: boolean

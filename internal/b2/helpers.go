@@ -132,42 +132,109 @@ func DeleteVersionsUnder(ctx context.Context, api API, bucketID, prefix string, 
 type RuleOutcome int
 
 const (
-	// RuleUnchanged means a rule for exactly this prefix already says what is wanted.
+	// RuleUnchanged means the rule for exactly this prefix already says what is wanted.
 	RuleUnchanged RuleOutcome = iota
-	// RuleAdded means no rule covered the prefix and one was appended.
+	// RuleAdded means a rule for the prefix was appended.
 	RuleAdded
-	// RuleUpdated means the rule for this prefix had other settings and was replaced.
+	// RuleUpdated means the rule for exactly this prefix had another daysFromHidingToDeleting
+	// and was changed, keeping every other field it had.
 	RuleUpdated
-	// RuleCovered means a rule for a shorter prefix already deletes hidden files at least as soon.
+	// RuleCovered means a rule on this prefix or a parent already sets
+	// daysFromHidingToDeleting, so nothing was added.
 	RuleCovered
+	// RuleRemoved means a rule for exactly this prefix that only set
+	// daysFromHidingToDeleting was dropped because a parent rule covers the prefix.
+	RuleRemoved
 )
 
-// MergeLifecycleRule returns rules with want added or updated, leaving every
-// rule for any other prefix untouched. B2 applies the smallest value of every
-// rule whose prefix matches a file, so a rule on a parent prefix that already
-// deletes hidden files as soon as want covers it, and nothing is added.
-func MergeLifecycleRule(rules []LifecycleRule, want LifecycleRule) ([]LifecycleRule, RuleOutcome, string) {
+// MergeLifecycleRule decides the bucket's rules for files under prefix.
+//
+// B2 applies the smallest non-null value of every rule whose prefix matches a
+// file. Unless explicit is set, a rule on prefix or any parent of it that
+// already sets daysFromHidingToDeleting covers the prefix whatever its days
+// are, and nothing is added; a rule for exactly prefix that sets nothing but
+// daysFromHidingToDeleting is then removed if a parent covers it, since such a
+// rule could only shorten the parent's window. Only when nothing covers the
+// prefix is a rule with days added.
+//
+// With explicit set, the rule for exactly prefix is added or set to days even
+// under a parent rule, which shortens the window when days is the smaller.
+//
+// It returns the new rules, what it decided, and the rule that decided it.
+func MergeLifecycleRule(rules []LifecycleRule, prefix string, days int, explicit bool) (
+	[]LifecycleRule, RuleOutcome, LifecycleRule,
+) {
 	out := slices.Clone(rules)
-	for i, r := range out {
-		if r.FileNamePrefix != want.FileNamePrefix {
+	exact := slices.IndexFunc(out, func(r LifecycleRule) bool { return r.FileNamePrefix == prefix })
+	want := LifecycleRule{FileNamePrefix: prefix, DaysFromHidingToDeleting: &days}
+
+	if explicit {
+		if exact < 0 {
+			return append(out, want), RuleAdded, want
+		}
+		r := out[exact]
+		if r.DaysFromHidingToDeleting != nil && *r.DaysFromHidingToDeleting == days {
+			return out, RuleUnchanged, r
+		}
+		r.DaysFromHidingToDeleting = &days
+		out[exact] = r
+		return out, RuleUpdated, r
+	}
+
+	if parent, ok := coveringParent(out, prefix); ok {
+		if exact >= 0 && onlyHidingDays(out[exact]) {
+			return slices.Delete(out, exact, exact+1), RuleRemoved, parent
+		}
+		return out, RuleCovered, parent
+	}
+	if exact >= 0 {
+		r := out[exact]
+		if r.DaysFromHidingToDeleting != nil {
+			if onlyHidingDays(r) && *r.DaysFromHidingToDeleting == days {
+				return out, RuleUnchanged, r
+			}
+			return out, RuleCovered, r
+		}
+		r.DaysFromHidingToDeleting = &days
+		out[exact] = r
+		return out, RuleUpdated, r
+	}
+	return append(out, want), RuleAdded, want
+}
+
+func coveringParent(rules []LifecycleRule, prefix string) (LifecycleRule, bool) {
+	var best LifecycleRule
+	found := false
+	for _, r := range rules {
+		if r.FileNamePrefix == prefix || !strings.HasPrefix(prefix, r.FileNamePrefix) || r.DaysFromHidingToDeleting == nil {
 			continue
 		}
-		if sameDays(r.DaysFromHidingToDeleting, want.DaysFromHidingToDeleting) &&
-			sameDays(r.DaysFromUploadingToHiding, want.DaysFromUploadingToHiding) {
-			return out, RuleUnchanged, r.FileNamePrefix
-		}
-		out[i] = want
-		return out, RuleUpdated, r.FileNamePrefix
-	}
-	if want.DaysFromHidingToDeleting != nil && want.DaysFromUploadingToHiding == nil {
-		for _, r := range out {
-			if strings.HasPrefix(want.FileNamePrefix, r.FileNamePrefix) &&
-				r.DaysFromHidingToDeleting != nil && *r.DaysFromHidingToDeleting <= *want.DaysFromHidingToDeleting {
-				return out, RuleCovered, r.FileNamePrefix
-			}
+		if !found || *r.DaysFromHidingToDeleting < *best.DaysFromHidingToDeleting {
+			best, found = r, true
 		}
 	}
-	return append(out, want), RuleAdded, want.FileNamePrefix
+	return best, found
+}
+
+func onlyHidingDays(r LifecycleRule) bool {
+	return r.DaysFromHidingToDeleting != nil && r.DaysFromUploadingToHiding == nil &&
+		r.DaysFromStartingToCancelingUnfinishedLargeFiles == nil && len(r.Extra) == 0
+}
+
+// EffectiveHidingDays returns how many days B2 keeps a hidden file under
+// prefix: the smallest daysFromHidingToDeleting of every rule on prefix or a
+// parent of it. ok is false when no such rule exists.
+func EffectiveHidingDays(rules []LifecycleRule, prefix string) (int, bool) {
+	days, ok := 0, false
+	for _, r := range rules {
+		if r.DaysFromHidingToDeleting == nil || !strings.HasPrefix(prefix, r.FileNamePrefix) {
+			continue
+		}
+		if !ok || *r.DaysFromHidingToDeleting < days {
+			days, ok = *r.DaysFromHidingToDeleting, true
+		}
+	}
+	return days, ok
 }
 
 // HidingRules returns the rules that would hide live files under prefix after
@@ -184,17 +251,13 @@ func HidingRules(rules []LifecycleRule, prefix string) []string {
 	return out
 }
 
-// RemoveLifecycleRule returns rules without the rule for exactly prefix.
+// RemoveLifecycleRule returns rules without the rule for exactly prefix, if
+// that rule sets nothing but daysFromHidingToDeleting. A rule with any other
+// field is someone else's and is kept.
 func RemoveLifecycleRule(rules []LifecycleRule, prefix string) ([]LifecycleRule, bool) {
 	out := slices.DeleteFunc(slices.Clone(rules), func(r LifecycleRule) bool {
-		return r.FileNamePrefix == prefix
+		return r.FileNamePrefix == prefix && onlyHidingDays(r)
 	})
 	return out, len(out) != len(rules)
 }
 
-func sameDays(a, b *int) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
-}

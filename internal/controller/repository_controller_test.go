@@ -183,8 +183,8 @@ func TestBucketModeCreatesABucketAKeyAndTheSecret(t *testing.T) {
 		t.Errorf("bucket type = %q, want allPrivate", bucket.BucketType)
 	}
 	if len(bucket.LifecycleRules) != 1 || bucket.LifecycleRules[0].FileNamePrefix != "" ||
-		*bucket.LifecycleRules[0].DaysFromHidingToDeleting != 1 {
-		t.Errorf("lifecycle rules = %+v, want one bucket-wide rule deleting hidden files after a day",
+		*bucket.LifecycleRules[0].DaysFromHidingToDeleting != 30 {
+		t.Errorf("lifecycle rules = %+v, want one bucket-wide rule deleting hidden files after 30 days",
 			bucket.LifecycleRules)
 	}
 
@@ -545,7 +545,7 @@ func TestLifecycleRuleIsMergedWithTheBucketsOtherRules(t *testing.T) {
 	for _, rule := range rules {
 		byPrefix[rule.FileNamePrefix] = *rule.DaysFromHidingToDeleting
 	}
-	if byPrefix[mediaPrefix] != 7 || byPrefix["restic/other/"] != 30 || byPrefix["restic/myapp/"] != 1 {
+	if byPrefix[mediaPrefix] != 7 || byPrefix["restic/other/"] != 30 || byPrefix["restic/myapp/"] != 30 {
 		t.Errorf("rules = %v", byPrefix)
 	}
 	if cond := condition(t, c, b2backupv1.RepositoryConditionLifecycleRule); cond == nil ||
@@ -569,8 +569,10 @@ func TestLifecycleRuleOnAParentPrefixCoversTheRepository(t *testing.T) {
 	if f.CountCalls("b2_update_bucket") != 0 {
 		t.Error("a rule was added under a parent rule that already covers it")
 	}
-	if cond := condition(t, c, b2backupv1.RepositoryConditionLifecycleRule); cond.Reason != "Covered" {
-		t.Errorf("LifecycleRule reason = %q, want Covered", cond.Reason)
+	cond := condition(t, c, b2backupv1.RepositoryConditionLifecycleRule)
+	if cond.Reason != reasonCovered || !strings.Contains(cond.Message, `"restic/"`) ||
+		!strings.Contains(cond.Message, "after 1 day(s)") {
+		t.Errorf("LifecycleRule = %+v, want %s naming the rule and its days", cond, reasonCovered)
 	}
 }
 

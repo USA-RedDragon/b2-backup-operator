@@ -42,6 +42,10 @@ const (
 	RepositoryConditionLifecycleRule = "LifecycleRule"
 )
 
+// DefaultDaysFromHidingToDeleting is the window the operator gives a path that no
+// bucket rule covers.
+const DefaultDaysFromHidingToDeleting int32 = 30
+
 const (
 	// CredentialsKeyID is the Secret key holding a B2 application key ID.
 	CredentialsKeyID = "B2_APPLICATION_KEY_ID"
@@ -52,16 +56,26 @@ const (
 
 // LifecycleSpec is the bucket lifecycle rule the operator keeps for the repository.
 type LifecycleSpec struct {
-	// Manage adds or updates a lifecycle rule scoped to the repository's path, so
-	// that files restic deletes, which B2 only hides, are removed for good.
+	// Manage lets the operator add a lifecycle rule for the repository's path,
+	// so that files restic deletes, which B2 only hides, are removed for good.
 	// Rules for other prefixes are never changed. Set false to leave the
 	// bucket's rules alone. Defaults to true.
 	// +optional
 	Manage *bool `json:"manage,omitempty"`
 
-	// DaysFromHidingToDeleting is how long a hidden file version is kept before B2 deletes it.
+	// DaysFromHidingToDeleting is how long a hidden file version is kept before
+	// B2 deletes it.
+	//
+	// Unset, the operator adds no rule when a rule on the repository's path or
+	// any parent of it already sets daysFromHidingToDeleting, whatever its
+	// value; the LifecycleRule condition then reports CoveredByExistingRule.
+	// Only a path no rule covers gets a rule, of 30 days.
+	//
+	// Set, the operator keeps a rule for exactly the path with this value even
+	// under a parent rule. B2 applies the smallest value of every rule that
+	// matches a file, so a value shorter than a parent rule's shortens the
+	// window for this path and a longer one has no effect.
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default:=1
 	// +optional
 	DaysFromHidingToDeleting *int32 `json:"daysFromHidingToDeleting,omitempty"`
 }
@@ -233,12 +247,18 @@ func (r *Repository) ManagesLifecycle() bool {
 	return r.Spec.Lifecycle == nil || r.Spec.Lifecycle.Manage == nil || *r.Spec.Lifecycle.Manage
 }
 
-// DaysFromHidingToDeleting returns how long hidden versions are kept.
+// DaysFromHidingToDeleting returns how long hidden versions are kept by a rule the
+// operator adds.
 func (r *Repository) DaysFromHidingToDeleting() int32 {
-	if r.Spec.Lifecycle != nil && r.Spec.Lifecycle.DaysFromHidingToDeleting != nil {
+	if r.ExplicitDaysFromHidingToDeleting() {
 		return *r.Spec.Lifecycle.DaysFromHidingToDeleting
 	}
-	return 1
+	return DefaultDaysFromHidingToDeleting
+}
+
+// ExplicitDaysFromHidingToDeleting reports whether spec.lifecycle.daysFromHidingToDeleting is set.
+func (r *Repository) ExplicitDaysFromHidingToDeleting() bool {
+	return r.Spec.Lifecycle != nil && r.Spec.Lifecycle.DaysFromHidingToDeleting != nil
 }
 
 // RepositoryList is a list of Repository.
