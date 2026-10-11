@@ -230,8 +230,11 @@ file, since restic cannot use a file as the subfolder.
 to `restic restore` as excludes, rewritten relative to the restored path, so
 `--delete` never removes what the backup deliberately left out, such as a cache.
 An absolute exclude is matched against the restored path segment by segment, so
-`/*/cache` under a source of `/data` becomes `/cache`; one that cannot be
-carried over that way, such as `/**/cache`, refuses `--delete`. restic refuses
+`/*/cache` under a source of `/data` becomes `/cache`. A relative one such as
+`data/cache` matched the end of the backed-up path, so where its first segments
+match the end of the restored path, the rest is added anchored at the restore
+root: `/cache`. A re-include (`!pattern`) is carried over the same way. One
+that cannot be carried over, such as `/**/cache`, refuses `--delete`. restic refuses
 includes and excludes together, so with `--path` or `--include` the source's
 excludes are dropped, and `--delete` is then refused if the source excludes
 anything; `--exclude` together with `--path` or `--include` is refused for the
@@ -251,14 +254,17 @@ goes into the database the source dumped, named with `--database`; with no
 database on the source, into the one the credentials Secret names in `dbname`,
 or `spec.database.name` for mariadb. The confirmation names which. A Secret
 whose `dbname` is not a single database, such as a superuser Secret, needs
-`--database`. Dumps
+`--database`, and so does a dump a `spec.script` took, which does not record
+which database it holds. Dumps
 taken by `dumpdb cnpg` (stored as `<host>.dmp`) go through `pg_restore`; old
 ones taken by `backup-cnpg.sh` (plain SQL, stored as `<host>` with no
 extension) go through `psql`. Both run in a single transaction, so a failed
 restore leaves the database as it was. psql would commit whatever it had read if
 the download stopped partway, so `restoredb` holds back the end of a plain dump
-until it has seen pg_dump's `dump complete` trailer, and stops psql before it
-can commit a dump that ends without it.
+until it has seen pg_dump's `dump complete` trailer at the very end, and stops
+psql before it can commit a dump that ends without it. A mariadb restore runs
+statement by statement with no such guard, so a failed one can leave the
+database partly restored.
 
 | Flag | Targets | |
 | --- | --- | --- |
