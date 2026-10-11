@@ -532,6 +532,11 @@ Archive it as soon as the command returns:
 b2bk env repo/prod --show-password
 ```
 
+If writing the new password into the Secret fails after restic accepted the
+new key, the command says so and how to remove that key. When the write may
+have gone through, it keeps the temporary Secret holding the new password and
+names it, so the password is never lost.
+
 It refuses unless the Repository is initialized and `Ready`, and its
 `spec.secretName` is the Secret it recorded in status, so it never adds a key
 to, or rewrites the Secret of, another Repository's restic repository.
