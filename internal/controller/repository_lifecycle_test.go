@@ -76,3 +76,47 @@ func mapsEqual(a, b map[string]int) bool {
 	}
 	return true
 }
+
+func TestABucketWideRuleIsNeverAddedOverOtherFiles(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		others []string
+		hidden string
+		rule   bool
+	}{
+		{"only restic's layout", nil, "", true},
+		{"a file beside the repository", []string{notesFile}, "", false},
+		{"a hidden version beside the repository", nil, "photos/old.jpg", false},
+		{"a name sorting inside the layout", []string{"configs/app.yaml", "data0"}, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeB2(t)
+			bucket := f.AddBucket(ownBucket)
+			for _, name := range append([]string{configPath(""), "data/00/aa", "keys/k", "snapshots/s"}, tt.others...) {
+				f.PutFile(bucket.BucketID, name, 1)
+			}
+			if tt.hidden != "" {
+				f.PutFile(bucket.BucketID, tt.hidden, 1)
+				f.HideFile(bucket.BucketID, tt.hidden)
+			}
+			r, c := newHarness(t, f, bucketRepo(usePasswordSeed), seedSecretFixture())
+			reconcileN(t, r, 2)
+
+			rules := f.Bucket(ownBucket).LifecycleRules
+			if got := len(rules) == 1 && rules[0].FileNamePrefix == ""; got != tt.rule {
+				t.Errorf("bucket-wide rule = %t, want %t: %+v", got, tt.rule, rules)
+			}
+			cond := condition(t, c, b2backupv1.RepositoryConditionLifecycleRule)
+			want := reasonManaged
+			if !tt.rule {
+				want = reasonOtherFiles
+			}
+			if cond == nil || cond.Reason != want {
+				t.Errorf("LifecycleRule = %+v, want %s", cond, want)
+			}
+		})
+	}
+}

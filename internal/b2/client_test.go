@@ -24,6 +24,8 @@ const (
 	parentPrefix  = "restic/"
 	appPrefix     = "restic/app/"
 	siblingPrefix = "restic/app2/"
+
+	layoutPath = "repo"
 )
 
 func newTestClient(t *testing.T) (*b2.Client, *b2fake.Server, *[]time.Duration) {
@@ -700,5 +702,54 @@ func TestDeleteResticRepositoryCancelsUnfinishedFilesItLists(t *testing.T) {
 	}
 	if got := fake.FileNames(bucket.BucketID); len(got) != 0 {
 		t.Errorf("left %v", got)
+	}
+}
+
+func TestFirstOutsideLayoutSkipsOnlyResticsOwnNames(t *testing.T) {
+	t.Parallel()
+	layout := []string{"config", "data/00/aa", "index/i", "keys/k", "locks/l", "snapshots/s"}
+	tests := []struct {
+		name  string
+		path  string
+		other string
+		want  string
+	}{
+		{"nothing else at the root", "", "", ""},
+		{"a name extending config", "", "configs/app.yaml", "configs/app.yaml"},
+		{"a name sorting right after a directory", "", "data0", "data0"},
+		{"a file named like a directory", "", "keys", "keys"},
+		{"a file after the layout", "", "zz.txt", "zz.txt"},
+		{"a file before the layout", "", "a.txt", "a.txt"},
+		{"nothing else under a path", layoutPath, "", ""},
+		{"a sibling of the path", layoutPath, "repo2/config", ""},
+		{"a file under the path", layoutPath, "repo/notes.txt", "repo/notes.txt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c, fake, _ := newTestClient(t)
+			bucket := fake.AddBucket("layout-bucket")
+			base := ""
+			if tt.path != "" {
+				base = tt.path + "/"
+			}
+			for _, name := range layout {
+				fake.PutFile(bucket.BucketID, base+name, 1)
+			}
+			if tt.other != "" {
+				fake.PutFile(bucket.BucketID, tt.other, 1)
+				fake.HideFile(bucket.BucketID, tt.other)
+			}
+			got, err := b2.FirstOutsideLayout(context.Background(), c, bucket.BucketID, tt.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Errorf("FirstOutsideLayout = %q, want %q", got, tt.want)
+			}
+			if n := fake.CountCalls("b2_list_file_versions"); n > len(b2.ResticLayout)+1 {
+				t.Errorf("%d listings, want at most %d", n, len(b2.ResticLayout)+1)
+			}
+		})
 	}
 }

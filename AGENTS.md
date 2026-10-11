@@ -70,7 +70,11 @@ one of these:
   parent that sets `daysFromHidingToDeleting` covers the repository whatever its
   value (`CoveredByExistingRule`); only an explicit
   `spec.lifecycle.daysFromHidingToDeleting` adds a rule under one. B2 takes the
-  minimum of overlapping rules. `b2.LifecycleRule` keeps unknown fields in
+  minimum of overlapping rules. A Bucket mode rule for the whole bucket (empty
+  prefix) is added only while every version in the bucket is restic's layout
+  (`b2.FirstOutsideLayout`), since it would purge other files' hidden versions;
+  otherwise `OtherFilesInBucket`. Prefix mode keeps one rule per path: B2
+  allows 100 rules per bucket. `b2.LifecycleRule` keeps unknown fields in
   `Extra` and writes them back, so a read-modify-write never drops another
   tool's settings.
 - **`deletionPolicy` defaults to Retain**, and the credentials Secret only gets
