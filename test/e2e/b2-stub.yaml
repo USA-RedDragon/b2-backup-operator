@@ -33,7 +33,7 @@ spec:
             - name: BUCKETS
               value: e2e-shared
             - name: FILES
-              value: e2e-shared:restic/adopted/config e2e-shared:restic/orphaned/config
+              value: e2e-shared:restic/adopted/config e2e-shared:restic/orphaned/config e2e-shared:restic/foreign/notes.txt
           ports:
             - containerPort: 8080
               name: http

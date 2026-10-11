@@ -537,6 +537,57 @@ spec:
 			Expect(err).To(HaveOccurred(), "credentials were written with an invented password")
 		})
 
+		It("should touch nothing at a path holding files that are not a restic repository", func() {
+			const (
+				testNS = "b2backup-e2e-foreign"
+				name   = "restic"
+			)
+
+			By("creating a test namespace and a seed Secret")
+			cmd := exec.Command("kubectl", "create", "ns", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+			})
+			cmd = exec.Command("kubectl", "create", "secret", "generic", "restic-envs", "-n", testNS,
+				"--from-literal=RESTIC_PASSWORD=any-password")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			manifest := fmt.Sprintf(`apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: Prefix
+  bucket: e2e-shared
+  path: restic/foreign
+  passwordSecretRef:
+    name: restic-envs
+    key: RESTIC_PASSWORD
+`, name, testNS)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the Repository")
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")
+				reason, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reason).To(Equal("ForeignData"))
+			}, 2*time.Minute).Should(Succeed())
+
+			for _, kind := range []string{"secret/" + name + "-credentials", "job/" + name + "-init"} {
+				cmd = exec.Command("kubectl", "get", kind, "-n", testNS)
+				_, err = utils.Run(cmd)
+				Expect(err).To(HaveOccurred(), kind+" was created for a path holding someone else's files")
+			}
+		})
+
 		It("should never create the shared bucket in Prefix mode", func() {
 			const (
 				testNS = "b2backup-e2e-nobucket"
