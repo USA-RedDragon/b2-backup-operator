@@ -6,9 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,7 +28,9 @@ const curlImage = "curlimages/curl:8.22.0"
 
 const conflictMessage = "the object has been modified"
 
-const unrecognizedOperation = "unrecognized GraphQL operation"
+const unrecognizedOperation = "unrecognized B2 operation"
+
+const stubEndpoint = "https://s3.us-east-005.b2-stub.invalid"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -57,16 +57,16 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
-		By("deploying the BorgBase stub and its API token")
-		cmd = exec.Command("kubectl", "apply", "-f", "test/e2e/borgbase-stub.yaml")
+		By("deploying the B2 stub and the operator's credentials")
+		cmd = exec.Command("kubectl", "apply", "-f", "test/e2e/b2-stub.yaml")
 		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the BorgBase stub")
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the B2 stub")
 
 		By("pointing the operator at the stub")
 		cmd = exec.Command("kubectl", "patch", "deployment", "b2-backup-operator-controller-manager",
 			"-n", namespace, "--type=json", "-p",
 			`[{"op":"add","path":"/spec/template/spec/containers/0/args/-",`+
-				`"value":"--borgbase-endpoint=http://borgbase-stub.`+namespace+`.svc:8080/graphql"}]`)
+				`"value":"--b2-auth-url=http://b2-stub.`+namespace+`.svc:8080"}]`)
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to point the operator at the stub")
 
@@ -194,8 +194,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
 			By("getting the service account token")
-			token, err := serviceAccountToken()
-			Expect(err).NotTo(HaveOccurred())
+			token := serviceAccountToken()
 			Expect(token).NotTo(BeEmpty())
 
 			By("ensuring the controller pod is ready")
@@ -320,10 +319,11 @@ spec:
 			Expect(cronjobs).To(BeEmpty(), "a backup was scheduled against a missing repository")
 		})
 
-		It("should create a repository and write its credentials", func() {
+		It("should create a bucket, a scoped key and the credentials Secret", func() {
 			const (
 				testNS = "b2backup-e2e-repo"
 				name   = "restic"
+				bucket = "e2e-bucket-mode"
 			)
 
 			By("creating a test namespace")
@@ -334,70 +334,85 @@ spec:
 				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
 			})
 
-			By("applying a Repository")
+			By("applying a Bucket mode Repository")
 			manifest := fmt.Sprintf(`apiVersion: b2backup.mcswain.dev/v1
 kind: Repository
 metadata:
   name: %s
   namespace: %s
 spec:
-  region: us
-  quotaGiB: 100
-`, name, testNS)
+  mode: Bucket
+  bucket: %s
+`, name, testNS, bucket)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(manifest)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply the Repository")
 
-			By("waiting for the repository to be recorded in status")
-			var repositoryID string
-			verifyRecorded := func(g Gomega) {
+			By("waiting for the bucket and key to be recorded in status")
+			var keyID string
+			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS,
-					"-o", "jsonpath={.status.repositoryID}")
+					"-o", "jsonpath={.status.bucketName},{.status.bucketID},{.status.applicationKeyID}")
 				out, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(out).NotTo(BeEmpty(), "no repository ID was recorded")
-				repositoryID = strings.TrimSpace(out)
-			}
-			Eventually(verifyRecorded, 2*time.Minute).Should(Succeed())
+				parts := strings.Split(strings.TrimSpace(out), ",")
+				g.Expect(parts).To(HaveLen(3))
+				g.Expect(parts[0]).To(Equal(bucket))
+				g.Expect(parts[1]).NotTo(BeEmpty(), "no bucket ID was recorded")
+				g.Expect(parts[2]).NotTo(BeEmpty(), "no application key was recorded")
+				keyID = parts[2]
+			}, 2*time.Minute).Should(Succeed())
 
 			By("checking the credentials Secret")
-
-			cmd = exec.Command("kubectl", "get", "secret", name+"-b2", "-n", testNS,
-				"-o", "jsonpath={.data.RESTIC_PASSWORD}")
-			password, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "no credentials Secret was written")
-			Expect(password).NotTo(BeEmpty(), "the Secret holds no password")
-
-			cmd = exec.Command("kubectl", "get", "secret", name+"-b2", "-n", testNS,
-				"-o", "jsonpath={.data.RESTIC_REPOSITORY}")
-			encoded, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			url, err := base64.StdEncoding.DecodeString(encoded)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(string(url)).To(ContainSubstring(repositoryID + ".repo.borgbase.com"))
+			want := map[string]string{
+				"RESTIC_REPOSITORY":  "s3:" + stubEndpoint + "/" + bucket,
+				"AWS_ACCESS_KEY_ID":  keyID,
+				"AWS_DEFAULT_REGION": "us-east-005",
+			}
+			for key, value := range want {
+				cmd = exec.Command("kubectl", "get", "secret", name+"-credentials", "-n", testNS,
+					"-o", "jsonpath={.data."+key+"}")
+				encoded, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "no credentials Secret was written")
+				decoded, err := base64.StdEncoding.DecodeString(encoded)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(decoded)).To(Equal(value), key)
+			}
+			for _, key := range []string{"RESTIC_PASSWORD", "AWS_SECRET_ACCESS_KEY"} {
+				cmd = exec.Command("kubectl", "get", "secret", name+"-credentials", "-n", testNS,
+					"-o", "jsonpath={.data."+key+"}")
+				encoded, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(encoded).NotTo(BeEmpty(), "the Secret holds no "+key)
+			}
 
 			By("checking the Secret is not owned under the default Retain policy")
-			cmd = exec.Command("kubectl", "get", "secret", name+"-b2", "-n", testNS,
+			cmd = exec.Command("kubectl", "get", "secret", name+"-credentials", "-n", testNS,
 				"-o", "jsonpath={.metadata.ownerReferences}")
 			owners, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(owners).To(BeEmpty(),
 				"Retain must not own the Secret; it is the only copy of the encryption key")
 
-			By("waiting for the init Job to be created")
+			By("checking the lifecycle rule condition")
+			cmd = exec.Command("kubectl", "get", "repository", name, "-n", testNS,
+				"-o", "jsonpath={.status.conditions[?(@.type=='LifecycleRule')].reason}")
+			reason, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reason).To(Equal("Managed"))
 
-			verifyInitJob := func(g Gomega) {
+			By("waiting for the init Job to be created")
+			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "job", name+"-init", "-n", testNS,
 					"-o", "jsonpath={.metadata.name}")
 				out, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(out).To(Equal(name + "-init"))
-			}
-			Eventually(verifyInitJob, 2*time.Minute).Should(Succeed())
+			}, 2*time.Minute).Should(Succeed())
 
 			By("checking the Initialized condition agrees with the init Job")
-			verifyInitializing := func(g Gomega) {
+			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "job", name+"-init", "-n", testNS,
 					"-o", "jsonpath={.status.conditions[?(@.type=='Failed')].status}")
 				jobFailed, err := utils.Run(cmd)
@@ -415,13 +430,73 @@ spec:
 				}
 				g.Expect(reason).To(Equal("Initializing"),
 					"the init Job has not failed but the Repository is not initializing")
-			}
-			Eventually(verifyInitializing, 2*time.Minute).Should(Succeed())
+			}, 2*time.Minute).Should(Succeed())
 		})
 
-		It("should refuse to adopt a repository that does not exist", func() {
+		It("should adopt an existing repository in a shared bucket", func() {
 			const (
 				testNS = "b2backup-e2e-adopt"
+				name   = "restic"
+			)
+
+			By("creating a test namespace and the seed Secret")
+			cmd := exec.Command("kubectl", "create", "ns", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+			})
+			cmd = exec.Command("kubectl", "create", "secret", "generic", "restic-envs", "-n", testNS,
+				"--from-literal=RESTIC_PASSWORD=existing-password")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("applying a Prefix mode Repository at the existing path")
+			manifest := fmt.Sprintf(`apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: Prefix
+  bucket: e2e-shared
+  path: restic/adopted
+  passwordSecretRef:
+    name: restic-envs
+    key: RESTIC_PASSWORD
+`, name, testNS)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the Repository")
+
+			By("waiting for it to be reported as adopted")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS,
+					"-o", "jsonpath={.status.adopted},{.status.path}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(out)).To(Equal("true,restic/adopted"))
+			}, 2*time.Minute).Should(Succeed())
+
+			By("checking the password came from the seed and the URL from the path")
+			cmd = exec.Command("kubectl", "get", "secret", name+"-credentials", "-n", testNS,
+				"-o", "jsonpath={.data.RESTIC_PASSWORD},{.data.RESTIC_REPOSITORY}")
+			out, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			parts := strings.Split(strings.TrimSpace(out), ",")
+			Expect(parts).To(HaveLen(2))
+			password, err := base64.StdEncoding.DecodeString(parts[0])
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(password)).To(Equal("existing-password"))
+			url, err := base64.StdEncoding.DecodeString(parts[1])
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(url)).To(Equal("s3:" + stubEndpoint + "/e2e-shared/restic/adopted"))
+		})
+
+		It("should refuse to invent a password for an existing repository", func() {
+			const (
+				testNS = "b2backup-e2e-nopass"
 				name   = "restic"
 			)
 
@@ -433,43 +508,76 @@ spec:
 				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
 			})
 
-			By("adopting an ID the stub has never heard of")
+			By("pointing a Repository without passwordSecretRef at existing data")
 			manifest := fmt.Sprintf(`apiVersion: b2backup.mcswain.dev/v1
 kind: Repository
 metadata:
   name: %s
   namespace: %s
 spec:
-  existingRepositoryID: deadbeef
-  passwordSecretRef:
-    name: restic-envs
-    key: RESTIC_PASSWORD
+  mode: Prefix
+  bucket: e2e-shared
+  path: restic/orphaned
 `, name, testNS)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(manifest)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply the Repository")
 
-			By("waiting for it to report the failure")
-			verifyFailed := func(g Gomega) {
+			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS,
-					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
-				status, err := utils.Run(cmd)
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")
+				reason, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(status).To(Equal("False"))
-			}
-			Eventually(verifyFailed, 2*time.Minute).Should(Succeed())
+				g.Expect(reason).To(Equal("PasswordUnavailable"))
+			}, 2*time.Minute).Should(Succeed())
 
-			By("verifying no repository was created and no Secret written")
+			cmd = exec.Command("kubectl", "get", "secret", name+"-credentials", "-n", testNS)
+			_, err = utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "credentials were written with an invented password")
+		})
+
+		It("should never create the shared bucket in Prefix mode", func() {
+			const (
+				testNS = "b2backup-e2e-nobucket"
+				name   = "restic"
+			)
+
+			By("creating a test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+			})
+
+			manifest := fmt.Sprintf(`apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: Prefix
+  bucket: e2e-no-such-bucket
+`, name, testNS)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the Repository")
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")
+				reason, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reason).To(Equal("BucketNotFound"))
+			}, 2*time.Minute).Should(Succeed())
+
 			cmd = exec.Command("kubectl", "get", "repository", name, "-n", testNS,
-				"-o", "jsonpath={.status.repositoryID}")
+				"-o", "jsonpath={.status.bucketID}")
 			id, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(id).To(BeEmpty(), "a repository was provisioned for a bad adoption ID")
-
-			cmd = exec.Command("kubectl", "get", "secret", name+"-b2", "-n", testNS)
-			_, err = utils.Run(cmd)
-			Expect(err).To(HaveOccurred(), "credentials were written for a repository that does not exist")
+			Expect(id).To(BeEmpty(), "a bucket was recorded for a bucket that does not exist")
 		})
 
 		It("should persist status without conflicting on its own writes", func() {
@@ -563,23 +671,23 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  region: us
-  quotaGiB: 100
+  mode: Prefix
+  bucket: e2e-shared
 `, name, testNS)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(manifest)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply the Repository")
 
-			By("waiting for the repository to be recorded in status")
-			var repositoryID string
+			By("waiting for the key to be recorded in status")
+			var keyID string
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS,
-					"-o", "jsonpath={.status.repositoryID}")
+					"-o", "jsonpath={.status.applicationKeyID}")
 				out, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(out).NotTo(BeEmpty(), "no repository ID was recorded")
-				repositoryID = strings.TrimSpace(out)
+				g.Expect(out).NotTo(BeEmpty(), "no application key was recorded")
+				keyID = strings.TrimSpace(out)
 			}, 2*time.Minute).Should(Succeed())
 
 			By("listing repositories with b2bk")
@@ -588,19 +696,21 @@ spec:
 			out, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "b2bk get failed")
 			Expect(out).To(ContainSubstring(`"kind": "RepositoryList"`))
-			Expect(out).To(ContainSubstring(repositoryID),
+			Expect(out).To(ContainSubstring(keyID),
 				"b2bk did not report the repository the API server holds")
+			Expect(out).To(ContainSubstring(testNS+"/"+name),
+				"b2bk did not report the default Prefix mode path")
 		})
 
-		It("should not have sent the BorgBase stub an operation it did not recognize", func() {
-			By("reading the BorgBase stub logs")
+		It("should not have sent the B2 stub an operation it did not recognize", func() {
+			By("reading the B2 stub logs")
 			cmd := exec.Command("kubectl", "logs", "-n", namespace,
-				"-l", "app.kubernetes.io/name=borgbase-stub", "--tail=-1")
+				"-l", "app.kubernetes.io/name=b2-stub", "--tail=-1")
 			logs, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to read the BorgBase stub logs")
+			Expect(err).NotTo(HaveOccurred(), "Failed to read the B2 stub logs")
 			Expect(logs).NotTo(ContainSubstring(unrecognizedOperation),
-				"the stub did not recognize a query from internal/borgbase; "+
-					"teach test/e2e/stub/main.go about it rather than relaxing this")
+				"the stub did not recognize a call from internal/b2; "+
+					"teach internal/b2/b2fake about it rather than relaxing this")
 		})
 	})
 })
@@ -619,19 +729,11 @@ func controllerPodNames(g Gomega) []string {
 	return utils.GetNonEmptyLines(podOutput)
 }
 
-func serviceAccountToken() (string, error) {
+func serviceAccountToken() string {
 	const tokenRequestRawString = `{
 		"apiVersion": "authentication.k8s.io/v1",
 		"kind": "TokenRequest"
 	}`
-
-	By("creating temporary file to store the token request")
-	secretName := fmt.Sprintf("%s-token-request", serviceAccountName)
-	tokenRequestFile := filepath.Join("/tmp", secretName)
-	err := os.WriteFile(tokenRequestFile, []byte(tokenRequestRawString), os.FileMode(0o644))
-	if err != nil {
-		return "", err
-	}
 
 	var out string
 	verifyTokenCreation := func(g Gomega) {
@@ -640,7 +742,8 @@ func serviceAccountToken() (string, error) {
 			"/api/v1/namespaces/%s/serviceaccounts/%s/token",
 			namespace,
 			serviceAccountName,
-		), "-f", tokenRequestFile)
+		), "-f", "-")
+		cmd.Stdin = strings.NewReader(tokenRequestRawString)
 
 		output, err := cmd.CombinedOutput()
 		g.Expect(err).NotTo(HaveOccurred())
@@ -654,7 +757,7 @@ func serviceAccountToken() (string, error) {
 	}
 	Eventually(verifyTokenCreation).Should(Succeed())
 
-	return out, err
+	return out
 }
 
 func getMetricsOutput() (string, error) {

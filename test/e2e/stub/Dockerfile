@@ -3,6 +3,7 @@ ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /workspace
 COPY go.mod go.sum ./
+COPY internal/b2/ ./internal/b2/
 COPY test/e2e/stub/ ./test/e2e/stub/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o stub ./test/e2e/stub
 

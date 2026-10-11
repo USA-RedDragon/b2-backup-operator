@@ -17,7 +17,7 @@ import (
 var (
 	managerImage = "example.com/b2-backup-operator:v0.0.1"
 
-	stubImage = "example.com/borgbase-stub:v0.0.1"
+	stubImage = "example.com/b2-stub:v0.0.1"
 )
 
 func TestE2E(t *testing.T) {
@@ -36,12 +36,12 @@ var _ = BeforeSuite(func() {
 	err = utils.LoadImageToKindClusterWithName(managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
 
-	By("building the BorgBase stub image")
+	By("building the B2 stub image")
 	cmd = exec.Command("docker", "build", "-f", "test/e2e/stub/Dockerfile", "-t", stubImage, ".")
 	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the BorgBase stub image")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the B2 stub image")
 
-	By("loading the BorgBase stub image on Kind")
+	By("loading the B2 stub image on Kind")
 	err = utils.LoadImageToKindClusterWithName(stubImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the stub image into Kind")
 
