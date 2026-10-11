@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ const (
 	resticRestore   = "restic restore"
 	cronJobKind     = "CronJob"
 	otherBackup     = "other"
+	appDataPartial  = `["pvc/app-data:/"]`
 	batchAPIVersion = "batch/v1"
 )
 
@@ -365,7 +367,7 @@ func TestNothingStartsABackupWhileARestoreHoldsIt(t *testing.T) {
 	ctx := context.Background()
 	for _, annotation := range []string{b2backupv1.AnnotationRestoreLock, b2backupv1.AnnotationRestorePartial} {
 		sb := newBackup(testBackupName, testRepoName)
-		sb.Annotations = map[string]string{annotation: `["pvc/app-data:/"]`}
+		sb.Annotations = map[string]string{annotation: appDataPartial}
 		c := newClient(t, sb)
 		if err := triggerBackup(ctx, c, sb.DeepCopy(), time.Now()); !errors.Is(err, ErrRestoreRunning) {
 			t.Errorf("%s: trigger err = %v, want it refused", annotation, err)
@@ -384,7 +386,7 @@ func TestNothingStartsABackupWhileARestoreHoldsIt(t *testing.T) {
 func TestResumeLetsGoOfAPartialRestore(t *testing.T) {
 	t.Parallel()
 	sb := newBackup(testBackupName, testRepoName)
-	sb.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: `["pvc/app-data:/"]`}
+	sb.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: appDataPartial}
 	c := newClient(t, sb)
 	var out bytes.Buffer
 	if err := runSetSuspend(context.Background(), c, &out, testNS, subjectBackup, false, "resumed"); err != nil {
@@ -395,5 +397,115 @@ func TestResumeLetsGoOfAPartialRestore(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "pvc/app-data:/") {
 		t.Errorf("resume did not say what it let go of: %s", out.String())
+	}
+}
+
+func TestOnlyARestoreOfTheWholeSourceClearsAPartialOne(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fx := currentBackup(t, filesAtData)
+	c := newClient(t, fx.objects()...)
+	f, _ := hookedFactory(t, c, &failingPod{failOn: resticRestore}, true)
+	if err := restoreInPlace(ctx, f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true}); !errors.Is(err, errRestoreFailed) {
+		t.Fatalf("err = %v", err)
+	}
+	current := backupState(t, c)
+	pod := &fakePod{}
+	f, _ = hookedFactory(t, c, pod, true)
+	if err := restoreInPlace(ctx, f, c, &current, &restoreOptions{snapshot: snapSub, yes: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(pod.commands, "\n"), snapSub+":/data/app") {
+		t.Fatalf("the narrower snapshot was not restored: %v", pod.commands)
+	}
+	if _, partial := held(t, c, testBackupName); len(partial) != 1 {
+		t.Errorf("partial = %v; a snapshot of /data/app alone let go of a partial restore of /data", partial)
+	}
+}
+
+func TestARestoreHoldsAndMarksClaimsMountedUnderIt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	nested := func(sb *b2backupv1.ScheduledBackup) {
+		filesAtData(sb)
+		sb.Spec.Volumes = append(sb.Spec.Volumes, b2backupv1.VolumeSpec{ExistingClaim: "media", MountPath: "/data/media"})
+	}
+	fx := currentBackup(t, nested)
+	if got := claimTargets(fx.sb, []string{dataDir}); !slices.Contains(got, "pvc/media:/") {
+		t.Errorf("targets = %v, want the claim mounted under /data", got)
+	}
+	other := newBackup(otherBackup, testRepoName)
+	other.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "media", MountPath: "/media"}}
+	other.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles, Tag: otherBackup}}
+	c := newClient(t, fx.objects(other)...)
+	f, _ := hookedFactory(t, c, &failingPod{failOn: resticRestore}, true)
+	if err := restoreInPlace(ctx, f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true}); !errors.Is(err, errRestoreFailed) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, partial := held(t, c, otherBackup); !slices.Contains(partial, "pvc/media:/") {
+		t.Errorf("partial = %v; the backup of the nested claim would save a partial restore", partial)
+	}
+}
+
+func TestARestoreStopsWhenAnotherBackupComesToShareItsTarget(t *testing.T) {
+	t.Parallel()
+	fx := currentBackup(t, filesAtData)
+	c := newClient(t, fx.objects()...)
+	pod := &fakePod{}
+	f := factoryWithClient(t, c)
+	f.attachHook = func(ctx context.Context, _ *b2backupv1.ScheduledBackup, _ runner.Options,
+		fn func(restorePod, string) error) error {
+		late := newBackup(otherBackup, testRepoName)
+		late.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: testClaimName, MountPath: "/mnt"}}
+		if err := c.Create(ctx, late); err != nil {
+			t.Fatal(err)
+		}
+		operatorSuspends(t, c)
+		return fn(pod, ownRestoreJob)
+	}
+	err := restoreInPlace(context.Background(), f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true})
+	if !errors.Is(err, ErrNotCurrent) || !strings.Contains(err.Error(), otherBackup) {
+		t.Fatalf("err = %v, want the restore stopped for the new backup of the claim", err)
+	}
+	if strings.Contains(strings.Join(pod.commands, "\n"), resticRestore) {
+		t.Errorf("restored beside a backup that is not held: %v", pod.commands)
+	}
+}
+
+func TestDatabasesOnOtherHostsAreOtherTargets(t *testing.T) {
+	t.Parallel()
+	mariadbOn := func(name, host string) *b2backupv1.ScheduledBackup {
+		sb := newBackup(name, testRepoName)
+		sb.Spec.Database = &b2backupv1.DatabaseSpec{
+			Engine: b2backupv1.DatabaseEngineMariaDB, Host: host, Name: appDir, User: appDir,
+		}
+		return sb
+	}
+	a, b := mariadbOn(testBackupName, "db-a"), mariadbOn(otherBackup, "db-b")
+	if databaseKey(a, "") == databaseKey(b, "") {
+		t.Errorf("one key %q for the same database name on two hosts", databaseKey(a, ""))
+	}
+	got, err := sharingBackups(context.Background(), newClient(t, a, b), a, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("held %d backups; a database on another host is not this one", len(got))
+	}
+}
+
+func TestResumeLetsGoOfThePartialRestoreEverywhere(t *testing.T) {
+	t.Parallel()
+	entry := appDataPartial
+	sb := newBackup(testBackupName, testRepoName)
+	sb.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: entry}
+	other := newBackup(otherBackup, testRepoName)
+	other.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: entry}
+	c := newClient(t, sb, other)
+	if err := runSetSuspend(context.Background(), c, io.Discard, testNS, subjectBackup, false, "resumed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, partial := held(t, c, otherBackup); len(partial) > 0 {
+		t.Errorf("partial = %v; the other backup of the claim stayed held after the data was checked", partial)
 	}
 }

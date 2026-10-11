@@ -405,16 +405,8 @@ func restoreInPlace(
 	}
 	var hold *restoreHold
 	if !o.dryRun {
-		var claimNames []string
-		for _, claim := range claims {
-			claimNames = append(claimNames, strings.TrimPrefix(claim, "pvc/"))
-		}
-		sharing, err := sharingBackups(ctx, c, sb, claimNames, false)
+		hold, err = holdForRestore(ctx, c, sb, restoredClaims(sb, src.paths), false, claimTargets(sb, src.paths))
 		if err != nil {
-			return err
-		}
-		full := o.path == "" && len(o.include) == 0 && len(o.exclude) == 0
-		if hold, err = holdForRestore(ctx, c, sb, sharing, claimTargets(sb, src.paths), full); err != nil {
 			return err
 		}
 	}
@@ -427,6 +419,8 @@ func restoreInPlace(
 			return err
 		}
 		if hold != nil {
+			hold.full = o.path == "" && len(o.include) == 0 && len(o.exclude) == 0 &&
+				slices.Equal(slices.Sorted(slices.Values(plan.snap.Paths)), src.paths)
 			if err := hold.readyToWrite(ctx, job); err != nil {
 				return err
 			}
@@ -471,13 +465,10 @@ func restoreToDatabase(
 	target := databaseTarget(sb, src.database)
 	var hold *restoreHold
 	if !o.dryRun {
-		sharing, err := sharingBackups(ctx, c, sb, nil, true)
-		if err != nil {
+		if hold, err = holdForRestore(ctx, c, sb, nil, true, []string{databaseKey(sb, src.database)}); err != nil {
 			return err
 		}
-		if hold, err = holdForRestore(ctx, c, sb, sharing, []string{databaseKey(sb, src.database)}, true); err != nil {
-			return err
-		}
+		hold.full = true
 	}
 
 	wrote := false
