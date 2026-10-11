@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"path"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -39,6 +41,8 @@ const (
 	annotationSpecHash = "b2backup.mcswain.dev/spec-hash"
 
 	backupRequeueInterval = 5 * time.Minute
+
+	reasonTagConflict = "TagConflict"
 )
 
 // ScheduledBackupReconciler reconciles ScheduledBackup objects.
@@ -128,9 +132,10 @@ func (r *ScheduledBackupReconciler) reconcile(
 		r.setCondition(sb, metav1.Condition{
 			Type:   b2backupv1.ScheduledBackupConditionReady,
 			Status: metav1.ConditionFalse,
-			Reason: "TagConflict",
-			Message: fmt.Sprintf("ScheduledBackup %s also backs up into Repository %s under tag %q; the image groups "+
-				"forget by tags, so each would expire the other's snapshots. Give this one tags of its own",
+			Reason: reasonTagConflict,
+			Message: fmt.Sprintf("ScheduledBackup %s also backs up into Repository %s on this host, under %s; "+
+				"the image groups forget by tags, so one would expire the other's snapshots. Give each tags "+
+				"of its own, and scope a script's forget with --tag",
 				other, repo.Name, tag),
 		})
 		return ctrl.Result{RequeueAfter: backupRequeueInterval}, r.suspendOwnCronJob(ctx, sb)
@@ -229,12 +234,15 @@ func (r *ScheduledBackupReconciler) reconcile(
 }
 
 // tagConflict finds an older ScheduledBackup writing into the same Repository
-// under one of this one's source tags.
+// under the same host whose forget would reach this one's snapshots, or the
+// other way round: one with a tag in common, from its sources or from the
+// restic commands of its script, or a script that forgets without --tag, which
+// reaches every tag on the host.
 func (r *ScheduledBackupReconciler) tagConflict(
 	ctx context.Context, sb *b2backupv1.ScheduledBackup,
 ) (string, string, error) {
-	tags := backup.SourceTags(sb.Spec.Sources)
-	if len(tags) == 0 {
+	tags, unscoped := backupTags(sb)
+	if len(tags) == 0 && !unscoped {
 		return "", "", nil
 	}
 	var list b2backupv1.ScheduledBackupList
@@ -244,16 +252,162 @@ func (r *ScheduledBackupReconciler) tagConflict(
 	for i := range list.Items {
 		other := &list.Items[i]
 		if other.Name == sb.Name || other.Spec.RepositoryRef.Name != sb.Spec.RepositoryRef.Name ||
+			other.EffectiveResticHost() != sb.EffectiveResticHost() ||
 			!other.DeletionTimestamp.IsZero() || !olderBackup(other, sb) {
 			continue
 		}
-		for _, tag := range backup.SourceTags(other.Spec.Sources) {
+		otherTags, otherUnscoped := backupTags(other)
+		switch {
+		case unscoped && (len(otherTags) > 0 || otherUnscoped):
+			return other.Name, "every tag, which this script's forget without --tag reaches", nil
+		case otherUnscoped:
+			return other.Name, "every tag, which its script's forget without --tag reaches", nil
+		}
+		for _, tag := range otherTags {
 			if slices.Contains(tags, tag) {
-				return other.Name, tag, nil
+				return other.Name, fmt.Sprintf("%q", tag), nil
 			}
 		}
 	}
 	return "", "", nil
+}
+
+// backupTags returns the tags a ScheduledBackup writes or forgets under: its
+// sources', or every --tag its script passes restic. unscoped says the script
+// may run restic forget without a tag it can be compared by: with no --tag, or
+// with one the shell computes. It errs towards unscoped, since a missed forget
+// expires another backup's snapshots and a spurious one only asks for tags.
+func backupTags(sb *b2backupv1.ScheduledBackup) ([]string, bool) {
+	tags := backup.SourceTags(sb.Spec.Sources)
+	unscoped := false
+	scopedForgets := 0
+	for _, cmd := range resticCommands(sb.Spec.Script) {
+		var cmdTags []string
+		computed := false
+		for i, w := range cmd {
+			value, ok := strings.CutPrefix(w, "--tag=")
+			if !ok && w == "--tag" && i+1 < len(cmd) {
+				value, ok = cmd[i+1], true
+			}
+			if !ok {
+				continue
+			}
+			value = unquote(value)
+			if strings.ContainsAny(value, "$`\\") {
+				computed = true
+				continue
+			}
+			cmdTags = append(cmdTags, strings.Split(value, ",")...)
+		}
+		if slices.Contains(cmd, "forget") {
+			if len(cmdTags) == 0 || computed {
+				unscoped = true
+			} else {
+				scopedForgets++
+			}
+		}
+		for _, tag := range cmdTags {
+			if tag != "" && !slices.Contains(tags, tag) {
+				tags = append(tags, tag)
+			}
+		}
+	}
+	if forgetWords(sb.Spec.Script) > scopedForgets {
+		unscoped = true
+	}
+	return tags, unscoped
+}
+
+// forgetWords counts the words "forget" in a script outside comments, quoted or
+// not. One that is not part of a restic command read as scoped may still run
+// restic forget, through eval, sh -c, a variable or a function.
+func forgetWords(script string) int {
+	n := 0
+	for w := range strings.FieldsFuncSeq(stripComments(script), func(r rune) bool {
+		return r != '-' && r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9')
+	}) {
+		if w == "forget" {
+			n++
+		}
+	}
+	return n
+}
+
+var shellSeparators = strings.NewReplacer("&&", "\n", "||", "\n", ";", "\n", "|", "\n", "(", "\n", ")", "\n",
+	"{", "\n", "}", "\n", "`", "\n", "$(", "\n")
+
+// resticCommands returns the words after each restic invocation in a script,
+// however it is written: after other commands on a line, behind exec, env or a
+// full path, with global flags before the subcommand. Comments are dropped.
+func resticCommands(script string) [][]string {
+	var out [][]string
+	joined := strings.ReplaceAll(stripComments(script), "\\\n", " ")
+	for line := range strings.SplitSeq(joined, "\n") {
+		for part := range strings.SplitSeq(shellSeparators.Replace(line), "\n") {
+			words := strings.Fields(part)
+			for i := range words {
+				words[i] = unquote(words[i])
+			}
+			for i, w := range words {
+				if path.Base(w) == "restic" {
+					out = append(out, words[i+1:])
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// unquote removes one layer of matching shell quotes around a word.
+func unquote(w string) string {
+	if len(w) >= 2 && (w[0] == '"' || w[0] == '\'') && w[len(w)-1] == w[0] {
+		return w[1 : len(w)-1]
+	}
+	return w
+}
+
+// stripComments cuts shell comments out of a script: from a # that starts a word
+// outside quotes to the end of its line. Quotes may span lines, and a backslash
+// escapes the next character.
+func stripComments(script string) string {
+	var b strings.Builder
+	var quote byte
+	wordStart := true
+	for i := 0; i < len(script); i++ {
+		c := script[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' && i+1 < len(script) {
+				b.WriteByte(c)
+				i++
+				c = script[i]
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '\\' && i+1 < len(script):
+			b.WriteByte(c)
+			i++
+			c = script[i]
+			b.WriteByte(c)
+			wordStart = false
+			continue
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '#' && wordStart:
+			for i < len(script) && script[i] != '\n' {
+				i++
+			}
+			if i < len(script) {
+				b.WriteByte('\n')
+			}
+			wordStart = true
+			continue
+		}
+		b.WriteByte(c)
+		wordStart = quote == 0 && (c == ' ' || c == '\t' || c == '\n' || c == ';' || c == '&' || c == '|')
+	}
+	return b.String()
 }
 
 func olderBackup(a, b *b2backupv1.ScheduledBackup) bool {
