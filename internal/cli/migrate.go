@@ -257,10 +257,7 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]s
 		sb.Spec.ConcurrencyPolicy = batchv1.ConcurrencyPolicy(p)
 	}
 	if sb.Spec.TimeZone == "" {
-		sb.Spec.TimeZone = controllerManagerZone
-		m.notes = append(m.notes, fmt.Sprintf("timeZone: the CronJob sets none, so it ran in the kube-controller-manager's\n"+
-			"zone, taken as %s, and keeps it. The operator's default would be %s.\n"+
-			"The operator sets TZ from timeZone, so a TZ in env is replaced.", controllerManagerZone, defaultTimeZone))
+		sb.Spec.TimeZone = unsetTimeZone(container, sb.Spec.Schedule != controller.CronJob.Schedule, m)
 	}
 	if err := migratePod(hr, controller, container, m); err != nil {
 		return nil, err
@@ -681,6 +678,29 @@ func migrateContainerEnv(container hrContainer, m *migration) error {
 			"the image's %s, where the operator mounts its cache claim.", dir, operatorCacheDir))
 	}
 	return nil
+}
+
+// unsetTimeZone picks the timeZone for a CronJob that sets none. Its schedule
+// ran in the kube-controller-manager's zone, but the operator sets the
+// container's TZ from timeZone, so a TZ the container set becomes the zone
+// rather than being replaced by the controller manager's.
+func unsetTimeZone(container hrContainer, jittered bool, m *migration) string {
+	tz := container.env("TZ")
+	if tz == "" {
+		m.notes = append(m.notes, fmt.Sprintf("timeZone: the CronJob sets none, so it ran in the kube-controller-manager's\n"+
+			"zone, taken as %s, and keeps it. The operator's default would be %s.", controllerManagerZone, defaultTimeZone))
+		return controllerManagerZone
+	}
+	moved := "The schedule is kept as it was, so it now fires at that clock time in " + tz + "\n" +
+		"instead of " + controllerManagerZone + "; parity reports this as TIMEZONE DIFFERS."
+	if jittered {
+		moved = "The operator jitters the schedule, so the run time moves either way."
+	}
+	m.notes = append(m.notes, fmt.Sprintf("timeZone: the CronJob sets none, so its schedule ran in the\n"+
+		"kube-controller-manager's zone, taken as %s, while the container ran with TZ=%s.\n"+
+		"The operator sets TZ from timeZone, so timeZone is %s to keep the container's TZ.\n%s",
+		controllerManagerZone, tz, tz, moved))
+	return tz
 }
 
 func migrateEnv(container hrContainer, sb *b2backupv1.ScheduledBackup) error {
