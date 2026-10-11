@@ -957,7 +957,7 @@ func TestShellOptionsAddedOnlyCountWhatTheScriptUses(t *testing.T) {
 	tests := []struct{ original, want string }{
 		{"set -eu\nrestic backup /a\nrestic forget --keep-daily=1\n", ""},
 		{"restic backup /a\n", ""},
-		{"restic backup /a\nrestic forget --keep-daily=1\n", "errexit"},
+		{"restic backup /a\nrestic forget --keep-daily=1\n", optErrexit},
 		{"set -e\nrestic backup \"$X\"\nrestic forget --keep-daily=1\n", "nounset"},
 		{"set -eu\npg_dump | restic backup --stdin\nrestic forget --keep-daily=1\n", "pipefail"},
 		{"set -euo pipefail\nset +e\nrestic backup /a\nrestic forget --keep-daily=1\n", ""},
@@ -992,5 +992,24 @@ func TestParityCatchesAGeneratedScriptThatDoesNotParse(t *testing.T) {
 	err := runParity(&out, gen, hr, migrateOptions{})
 	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "SCRIPT DOES NOT PARSE") {
 		t.Errorf("parity = %v; a stray } ends the operator's group early:\n%s", err, out.String())
+	}
+}
+
+func TestShellOptionsAddedSeeEachCommand(t *testing.T) {
+	t.Parallel()
+	const operator = "set -o pipefail\n{\nset -euo pipefail\nBODY\nrestic cache --cleanup\n} 2>&1 | ts '%H:%M:%S'\n"
+	tests := []struct{ original, want string }{
+		{"restic backup /a; restic forget --keep-daily=1\n", optErrexit},
+		{"restic backup /a && restic forget --keep-daily=1\n", ""},
+		{"restic backup /a && restic check\nrestic forget --keep-daily=1\n", optErrexit},
+		{"restic backup /a\nset -eu\nrestic forget --keep-daily=1\n", optErrexit},
+		{"echo \"$X\"\nset -eu\nrestic backup /a\n", "errexit, nounset"},
+		{"set -eu\nrestic backup /a\nset +e\nrestic check\nrestic forget --keep-daily=1\n", ""},
+	}
+	for _, tt := range tests {
+		generated := strings.Replace(operator, "BODY\n", scriptBody(tt.original), 1)
+		if got := strings.Join(shellOptionsAdded(tt.original, generated), ", "); got != tt.want {
+			t.Errorf("shellOptionsAdded(%q) = %q, want %q", tt.original, got, tt.want)
+		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -267,52 +268,106 @@ const (
 	optPipefail = "pipefail"
 )
 
-// shellOptions returns which of errexit, nounset and pipefail the script's set
-// commands leave on, read in order.
-func shellOptions(script string) map[string]bool {
-	letters := map[rune]string{'e': optErrexit, 'u': optNounset}
+// shellCommand is one command a script runs, with the shell options on when
+// it runs.
+type shellCommand struct {
+	text string
+	on   map[string]bool
+}
+
+// shellCommands reads a script's commands in order, one per line or per ;,
+// tracking what its set commands turn on and off, and leaving out the
+// preamble and postamble around a backup script.
+func shellCommands(script string) []shellCommand {
 	on := map[string]bool{}
+	var out []shellCommand
 	for _, line := range joinContinuations(script) {
-		words := strings.Fields(line)
-		if len(words) == 0 || words[0] != "set" {
-			continue
-		}
-		for i := 1; i < len(words); i++ {
-			w := words[i]
-			if len(w) < 2 || (w[0] != '-' && w[0] != '+') {
-				continue
-			}
-			enable := w[0] == '-'
-			for _, r := range w[1:] {
-				switch {
-				case r == 'o' && i+1 < len(words):
-					i++
-					on[words[i]] = enable
-				case letters[r] != "":
-					on[letters[r]] = enable
-				}
+		for _, cmd := range splitCommands(line) {
+			words := strings.Fields(cmd)
+			switch {
+			case len(words) == 0:
+			case words[0] == "set":
+				applySet(on, words[1:])
+			case cmd == "{" || cmd == "restic cache --cleanup" || groupClosing.MatchString(cmd) ||
+				slices.Contains(preambleLines, cmd):
+			default:
+				out = append(out, shellCommand{text: cmd, on: maps.Clone(on)})
 			}
 		}
 	}
-	return on
+	return out
+}
+
+func applySet(on map[string]bool, words []string) {
+	letters := map[rune]string{'e': optErrexit, 'u': optNounset}
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+		if len(w) < 2 || (w[0] != '-' && w[0] != '+') {
+			continue
+		}
+		enable := w[0] == '-'
+		for _, r := range w[1:] {
+			switch {
+			case r == 'o' && i+1 < len(words):
+				i++
+				on[words[i]] = enable
+			case letters[r] != "":
+				on[letters[r]] = enable
+			}
+		}
+	}
+}
+
+// splitCommands splits a line at each ; outside quotes.
+func splitCommands(line string) []string {
+	var out []string
+	var quote rune
+	start := 0
+	for i, r := range line {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == ';' && !strings.HasPrefix(line[i:], ";;"):
+			out = append(out, strings.TrimSpace(line[start:i]))
+			start = i + 1
+		}
+	}
+	return append(out, strings.TrimSpace(line[start:]))
 }
 
 var pipeline = regexp.MustCompile(`(^|[^|])\|([^|]|$)`)
 
 // shellOptionsAdded lists the shell options the generated script runs under
-// that the original did not, where the original's body could notice: errexit
-// with more than one command, nounset with a variable, pipefail with a pipe.
+// that fewer of the original's commands did, counting only commands an option
+// could change: errexit for one followed by another (in a && or || list only
+// the last command counts, as bash ignores errexit for the others), nounset
+// for one naming a variable, pipefail for one with a pipe.
 func shellOptionsAdded(original, generated string) []string {
-	body := scriptBody(original)
-	matters := map[string]bool{
-		optErrexit:  len(joinContinuations(body)) > 1,
-		optNounset:  strings.Contains(body, "$"),
-		optPipefail: pipeline.MatchString(body),
+	off := func(script string) map[string]int {
+		cmds := shellCommands(script)
+		counts := map[string]int{}
+		for i, c := range cmds {
+			matters := map[string]bool{
+				optErrexit:  i < len(cmds)-1,
+				optNounset:  strings.Contains(c.text, "$"),
+				optPipefail: pipeline.MatchString(c.text),
+			}
+			for name, m := range matters {
+				if m && !c.on[name] {
+					counts[name]++
+				}
+			}
+		}
+		return counts
 	}
-	was, now := shellOptions(original), shellOptions(generated)
+	was, now := off(original), off(generated)
 	var out []string
 	for _, name := range []string{optErrexit, optNounset, optPipefail} {
-		if now[name] && !was[name] && matters[name] {
+		if now[name] < was[name] {
 			out = append(out, name)
 		}
 	}
