@@ -940,7 +940,11 @@ func (r *RepositoryReconciler) deleteStaleKeys(
 		if wait := staleKeyGrace - r.now().Sub(rotated.Time); wait > 0 {
 			return wait, nil
 		}
-		holders, err := r.jobsStartedBefore(ctx, repo, rotated.Time)
+		staleIDs := make([]string, 0, len(stale))
+		for _, k := range stale {
+			staleIDs = append(staleIDs, k.ApplicationKeyID)
+		}
+		holders, err := r.jobsStartedBefore(ctx, repo, rotated.Time, staleIDs)
 		if err != nil {
 			return 0, err
 		}
@@ -991,18 +995,19 @@ func (r *RepositoryReconciler) liveKeyIDs(ctx context.Context, repo *b2backupv1.
 }
 
 // jobsStartedBefore returns the unfinished Jobs in the Repository's namespace that
-// read its credentials Secret and started before t: scheduled and triggered
-// backups, the init Job, b2bk's one-off Jobs and any other Job alike. It lists
-// past the informer cache, which holds only the Jobs the operator labels as
-// its own.
+// started before t and read its credentials Secret, or any other Secret holding
+// one of staleIDs, as a Secret under a name the Repository used before does:
+// scheduled and triggered backups, the init Job, b2bk's one-off Jobs and any
+// other Job alike. It lists past the informer cache, which holds only the Jobs
+// the operator labels as its own.
 func (r *RepositoryReconciler) jobsStartedBefore(
-	ctx context.Context, repo *b2backupv1.Repository, t time.Time,
+	ctx context.Context, repo *b2backupv1.Repository, t time.Time, staleIDs []string,
 ) ([]string, error) {
 	var jobs batchv1.JobList
 	if err := r.uncached().List(ctx, &jobs, client.InNamespace(repo.Namespace)); err != nil {
 		return nil, fmt.Errorf("listing jobs: %w", err)
 	}
-	secret := repo.SecretName()
+	holdsStale := map[string]bool{repo.SecretName(): true}
 	var out []string
 	for i := range jobs.Items {
 		job := &jobs.Items[i]
@@ -1010,10 +1015,25 @@ func (r *RepositoryReconciler) jobsStartedBefore(
 		if job.Status.StartTime != nil {
 			started = job.Status.StartTime.Time
 		}
-		if !started.Before(t) || jobFinished(job) || !readsSecret(&job.Spec.Template.Spec, secret) {
+		if !started.Before(t) || jobFinished(job) {
 			continue
 		}
-		out = append(out, job.Name)
+		for _, name := range secretsRead(&job.Spec.Template.Spec) {
+			held, seen := holdsStale[name]
+			if !seen {
+				var secret corev1.Secret
+				err := r.uncached().Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: name}, &secret)
+				if err != nil && !apierrors.IsNotFound(err) {
+					return nil, err
+				}
+				held = slices.Contains(staleIDs, string(secret.Data[KeyAccessKeyID]))
+				holdsStale[name] = held
+			}
+			if held {
+				out = append(out, job.Name)
+				break
+			}
+		}
 	}
 	return out, nil
 }
@@ -1031,34 +1051,44 @@ func jobFinished(job *batchv1.Job) bool {
 }
 
 func readsSecret(pod *corev1.PodSpec, name string) bool {
+	return slices.Contains(secretsRead(pod), name)
+}
+
+func secretsRead(pod *corev1.PodSpec) []string {
+	var names []string
+	add := func(name string) {
+		if name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
 	for _, v := range pod.Volumes {
-		if v.Secret != nil && v.Secret.SecretName == name {
-			return true
+		if v.Secret != nil {
+			add(v.Secret.SecretName)
 		}
 		if v.Projected == nil {
 			continue
 		}
 		for _, src := range v.Projected.Sources {
-			if src.Secret != nil && src.Secret.Name == name {
-				return true
+			if src.Secret != nil {
+				add(src.Secret.Name)
 			}
 		}
 	}
 	for _, list := range [][]corev1.Container{pod.InitContainers, pod.Containers} {
 		for _, c := range list {
 			for _, from := range c.EnvFrom {
-				if from.SecretRef != nil && from.SecretRef.Name == name {
-					return true
+				if from.SecretRef != nil {
+					add(from.SecretRef.Name)
 				}
 			}
 			for _, e := range c.Env {
-				if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.SecretKeyRef.Name == name {
-					return true
+				if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+					add(e.ValueFrom.SecretKeyRef.Name)
 				}
 			}
 		}
 	}
-	return false
+	return names
 }
 
 func keyMatches(k b2.Key, bucketID, path string) bool {
