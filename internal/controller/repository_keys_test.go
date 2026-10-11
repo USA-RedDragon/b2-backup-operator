@@ -15,9 +15,10 @@ import (
 	"github.com/USA-RedDragon/b2-backup-operator/internal/b2"
 )
 
-func runningJob(name string, created time.Time, secret string) *batchv1.Job {
+func runningJob(name, managedBy string, created time.Time, secret string) *batchv1.Job {
 	return &batchv1.Job{
 		Name: name, Namespace: testNS, CreationTimestamp: metav1.NewTime(created),
+		Labels: map[string]string{labelManagedBy: managedBy},
 		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{
 				Name: resticName, EnvFrom: []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{Name: secret}}},
@@ -26,6 +27,8 @@ func runningJob(name string, created time.Time, secret string) *batchv1.Job {
 		Status: batchv1.JobStatus{Active: 1, StartTime: ptr.To(metav1.NewTime(created))},
 	}
 }
+
+const b2bkManagedBy = "b2bk"
 
 func TestSupersededKeysWaitForJobsThatMayHoldThem(t *testing.T) {
 	t.Parallel()
@@ -37,19 +40,22 @@ func TestSupersededKeysWaitForJobsThatMayHoldThem(t *testing.T) {
 		deadline bool
 	}{
 		{"a backup started before the rotation holds it", func(rot time.Time) []client.Object {
-			return []client.Object{runningJob("web-backup-1", rot.Add(-time.Minute), credsSecretName)}
+			return []client.Object{runningJob("web-backup-1", managedByValue, rot.Add(-time.Minute), credsSecretName)}
 		}, time.Hour, true, false},
 		{"a b2bk Job started before the rotation holds it", func(rot time.Time) []client.Object {
-			return []client.Object{runningJob("web-b2bk-restore-abcde", rot.Add(-time.Minute), credsSecretName)}
+			return []client.Object{runningJob("web-b2bk-restore-abcde", b2bkManagedBy, rot.Add(-time.Minute), credsSecretName)}
+		}, time.Hour, true, false},
+		{"a Job of no one's started before the rotation holds it", func(rot time.Time) []client.Object {
+			return []client.Object{runningJob("hand-made", "", rot.Add(-time.Minute), credsSecretName)}
 		}, time.Hour, true, false},
 		{"a Job started after the rotation does not", func(rot time.Time) []client.Object {
-			return []client.Object{runningJob("web-backup-2", rot.Add(time.Minute), credsSecretName)}
+			return []client.Object{runningJob("web-backup-2", managedByValue, rot.Add(time.Minute), credsSecretName)}
 		}, time.Hour, false, false},
 		{"a Job reading another Secret does not", func(rot time.Time) []client.Object {
-			return []client.Object{runningJob("other-backup", rot.Add(-time.Minute), "other-credentials")}
+			return []client.Object{runningJob("other-backup", managedByValue, rot.Add(-time.Minute), "other-credentials")}
 		}, time.Hour, false, false},
 		{"the 24 hour cap deletes it anyway", func(rot time.Time) []client.Object {
-			return []client.Object{runningJob("web-backup-1", rot.Add(-time.Minute), credsSecretName)}
+			return []client.Object{runningJob("web-backup-1", managedByValue, rot.Add(-time.Minute), credsSecretName)}
 		}, 25 * time.Hour, false, true},
 	}
 	for _, tt := range tests {

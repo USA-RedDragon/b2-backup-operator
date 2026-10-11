@@ -791,10 +791,7 @@ func (r *RepositoryReconciler) deleteStaleKeys(
 // the one its credentials Secret holds. A pass working from a cache that has not
 // caught up with a rotation must not take the new key for a stale one.
 func (r *RepositoryReconciler) liveKeyIDs(ctx context.Context, repo *b2backupv1.Repository) ([]string, error) {
-	reader := r.APIReader
-	if reader == nil {
-		reader = r.Client
-	}
+	reader := r.uncached()
 	var ids []string
 	var live b2backupv1.Repository
 	switch err := reader.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name}, &live); {
@@ -814,13 +811,15 @@ func (r *RepositoryReconciler) liveKeyIDs(ctx context.Context, repo *b2backupv1.
 }
 
 // jobsStartedBefore returns the unfinished Jobs in the Repository's namespace that
-// read its credentials Secret and started before t. That covers scheduled and
-// triggered backups, b2bk's one-off Jobs and the init Job alike.
+// read its credentials Secret and started before t: scheduled and triggered
+// backups, the init Job, b2bk's one-off Jobs and any other Job alike. It lists
+// past the informer cache, which holds only the Jobs the operator labels as
+// its own.
 func (r *RepositoryReconciler) jobsStartedBefore(
 	ctx context.Context, repo *b2backupv1.Repository, t time.Time,
 ) ([]string, error) {
 	var jobs batchv1.JobList
-	if err := r.List(ctx, &jobs, client.InNamespace(repo.Namespace)); err != nil {
+	if err := r.uncached().List(ctx, &jobs, client.InNamespace(repo.Namespace)); err != nil {
 		return nil, fmt.Errorf("listing jobs: %w", err)
 	}
 	secret := repo.SecretName()
@@ -925,6 +924,13 @@ func (r *RepositoryReconciler) reconcileUsage(ctx context.Context, repo *b2backu
 		return
 	}
 	repo.Status.CurrentUsage = formatBytes(total)
+}
+
+func (r *RepositoryReconciler) uncached() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 func (r *RepositoryReconciler) now() time.Time {
@@ -1207,13 +1213,9 @@ func (r *RepositoryReconciler) deleteJob(ctx context.Context, job *batchv1.Job) 
 func (r *RepositoryReconciler) initializationRecorded(
 	ctx context.Context, repo *b2backupv1.Repository,
 ) (bool, error) {
-	reader := r.APIReader
-	if reader == nil {
-		reader = r.Client
-	}
 	var live b2backupv1.Repository
 	key := types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name}
-	if err := reader.Get(ctx, key, &live); err != nil {
+	if err := r.uncached().Get(ctx, key, &live); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
 	return live.Status.Initialized, nil

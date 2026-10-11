@@ -3,15 +3,23 @@ package controller
 import (
 	"context"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -86,17 +94,18 @@ func newHarnessWithInterceptor(
 		},
 	}}, objs...)
 
-	c := fake.NewClientBuilder().
+	raw := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(all...).
-		WithStatusSubresource(&b2backupv1.Repository{}).
-		WithInterceptorFuncs(funcs).
+		WithStatusSubresource(&b2backupv1.Repository{}, &batchv1.Job{}).
 		Build()
+	c := interceptor.NewClient(managerCacheView(t, raw, scheme), funcs)
 
 	return &RepositoryReconciler{
-		Client:   c,
-		Scheme:   scheme,
-		Recorder: events.NewFakeRecorder(100),
+		Client:    c,
+		APIReader: raw,
+		Scheme:    scheme,
+		Recorder:  events.NewFakeRecorder(100),
 		NewAPI: func(keyID, key string) b2.API {
 			cl := b2.NewClient(keyID, key)
 			cl.AuthURL = srv.URL
@@ -106,4 +115,58 @@ func newHarnessWithInterceptor(
 		DefaultCredentialsSecret: types.NamespacedName{Namespace: credsNS, Name: credsName},
 		BackupImage:              "ghcr.io/usa-reddragon/b2-backup-operator-restic:test",
 	}, c
+}
+
+// managerCacheView makes a client read Jobs and CronJobs the way the manager's
+// cached client does with CacheOptions: an object the cache's label selector
+// leaves out is not found and not listed.
+func managerCacheView(t *testing.T, c client.WithWatch, scheme *runtime.Scheme) client.WithWatch {
+	t.Helper()
+	selectors := map[schema.GroupVersionKind]labels.Selector{}
+	for obj, by := range CacheOptions().ByObject {
+		gvk, err := apiutil.GVKForObject(obj, scheme)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selectors[gvk] = by.Label
+	}
+	selectorFor := func(obj runtime.Object) labels.Selector {
+		gvk, err := apiutil.GVKForObject(obj, scheme)
+		if err != nil {
+			return nil
+		}
+		gvk.Kind = strings.TrimSuffix(gvk.Kind, "List")
+		return selectors[gvk]
+	}
+	return interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if sel := selectorFor(obj); sel != nil && !sel.Matches(labels.Set(obj.GetLabels())) {
+				gvk, _ := apiutil.GVKForObject(obj, scheme)
+				return apierrors.NewNotFound(schema.GroupResource{Group: gvk.Group, Resource: gvk.Kind}, key.Name)
+			}
+			return nil
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			sel := selectorFor(list)
+			if sel == nil {
+				return nil
+			}
+			items, err := apimeta.ExtractList(list)
+			if err != nil {
+				return err
+			}
+			items = slices.DeleteFunc(items, func(o runtime.Object) bool {
+				accessor, err := apimeta.Accessor(o)
+				return err != nil || !sel.Matches(labels.Set(accessor.GetLabels()))
+			})
+			return apimeta.SetList(list, items)
+		},
+	})
 }
