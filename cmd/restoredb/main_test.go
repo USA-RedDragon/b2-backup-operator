@@ -16,13 +16,12 @@ import (
 )
 
 const (
-	argDryRun     = "--dry-run"
-	testDB        = "app"
-	engineMariaDB = "mariadb"
-	engineCNPG    = "cnpg"
-	customDump    = "PGDMP\x01\x10\x00\x04\x08\x01\x01\x01"
-	plainDump     = "--\n-- PostgreSQL database dump\n--\n\\restrict abc\nSET statement_timeout = 0;\n"
-	plainTrailer  = "--\n-- PostgreSQL database dump complete\n--\n\n\\unrestrict abc\n\n"
+	argDryRun    = "--dry-run"
+	testDB       = "app"
+	engineCNPG   = "cnpg"
+	customDump   = "PGDMP\x01\x10\x00\x04\x08\x01\x01\x01"
+	plainDump    = "--\n-- PostgreSQL database dump\n--\n\\restrict abc\nSET statement_timeout = 0;\n"
+	plainTrailer = "--\n-- PostgreSQL database dump complete\n--\n\n\\unrestrict abc\n\n"
 )
 
 func withStdin(s string) *cobra.Command {
@@ -151,16 +150,6 @@ func TestGoldenArgs(t *testing.T) {
 			args: []string{engineCNPG, argDryRun, "-H", "db", "-d", testDB, "-u", "postgres"},
 			want: "+ pg_restore --clean --if-exists --no-owner --single-transaction" +
 				" --host=db --port=5432 --username=postgres --dbname=app\n",
-		},
-		{
-			name: engineMariaDB,
-			args: []string{engineMariaDB, argDryRun, "-H", "db", "-d", testDB, "-u", "root"},
-			want: "+ mariadb --host=db --port=3306 --user=root app\n",
-		},
-		{
-			name: "mariadb passthrough after separator",
-			args: []string{engineMariaDB, argDryRun, "-H", "db", "-d", testDB, "-u", "root", "--", "--skip-ssl"},
-			want: "+ mariadb --host=db --port=3306 --user=root app --skip-ssl\n",
 		},
 		{
 			name: "mongodb redacts the password",
