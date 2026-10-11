@@ -42,6 +42,13 @@ func (m *sqlModes) set(toks []token, stmt string) error {
 			lhs = lhs[:n-1]
 		}
 		switch {
+		case isSystemVar(lhs, engineVars...):
+			if !safeEngine(rhs) {
+				return fmt.Errorf("%w: a default engine the restore cannot check, so a CREATE TABLE without an "+
+					"ENGINE of its own could reach tables outside the staging database: %.200s",
+					ErrUnsupportedStatement, stmt)
+			}
+			continue
 		case isSQLMode(lhs):
 			if !m.knownMode(rhs) {
 				return fmt.Errorf("%w: an sql_mode set to something other than a literal the restore can read "+
@@ -102,9 +109,31 @@ func userVar(toks []token) string {
 	return strings.ToLower(toks[1].text)
 }
 
+// engineVars are the variables that decide the engine of a table created
+// without an ENGINE of its own.
+var engineVars = []string{"DEFAULT_STORAGE_ENGINE", "DEFAULT_TMP_STORAGE_ENGINE", "STORAGE_ENGINE",
+	"ENFORCE_STORAGE_ENGINE"}
+
+// safeEngines are the engines a dump of tables needs. The others are refused
+// as a default, since reachingEngines reads and writes other tables and an
+// engine the restore does not know could too.
+var safeEngines = []string{"INNODB", "ARIA", "MYISAM", "MEMORY", "HEAP", "CSV", "ARCHIVE", "SEQUENCE", "BLACKHOLE"}
+
+// safeEngine reports whether rhs is one plain name of a safe engine.
+func safeEngine(rhs []token) bool {
+	return len(rhs) == 1 && (rhs[0].kind == tokString || rhs[0].kind == tokWord || rhs[0].kind == tokIdent) &&
+		slices.Contains(safeEngines, strings.ToUpper(rhs[0].text))
+}
+
 // isSQLMode reports whether toks name the session's sql_mode, as sql_mode,
 // @@sql_mode or @@SESSION.sql_mode.
 func isSQLMode(toks []token) bool {
+	return isSystemVar(toks, "SQL_MODE")
+}
+
+// isSystemVar reports whether toks name one of the given system variables, in
+// any of the forms x, @@x and @@SESSION.x.
+func isSystemVar(toks []token, names ...string) bool {
 	var words []string
 	for _, t := range toks {
 		switch {
@@ -114,7 +143,7 @@ func isSQLMode(toks []token) bool {
 			words = append(words, strings.ToUpper(t.text))
 		}
 	}
-	return len(words) == 1 && words[0] == "SQL_MODE"
+	return len(words) == 1 && slices.Contains(names, words[0])
 }
 
 // splitTopLevel splits toks at the commas outside parentheses.
