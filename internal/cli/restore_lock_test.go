@@ -679,3 +679,23 @@ func TestResumeLeavesARunningRestoresEntriesAlone(t *testing.T) {
 		t.Error("b2bk resume removed what a running restore recorded before writing")
 	}
 }
+
+func TestAnotherBackupsRestoreHoldShowsAndStopsATrigger(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	sb := newBackup(testBackupName, testRepoName)
+	sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: testClaimName, MountPath: dataDir}}
+	other := newBackup(otherBackup, testRepoName)
+	other.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: appDataPartial}
+	c := newClient(t, sb, other)
+	if err := triggerBackup(ctx, c, sb.DeepCopy(), time.Now()); !errors.Is(err, ErrRestoreRunning) {
+		t.Errorf("trigger err = %v, want it refused while another backup's restore left the claim partial", err)
+	}
+	var out bytes.Buffer
+	if err := runStatus(ctx, c, &out, testNS, subjectBackup, 1); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "scheduledbackup/"+otherBackup) {
+		t.Errorf("status does not show the hold another backup's restore put on it:\n%s", out.String())
+	}
+}

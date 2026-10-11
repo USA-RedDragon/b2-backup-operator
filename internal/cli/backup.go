@@ -137,7 +137,11 @@ func runBackupNow(
 }
 
 func triggerBackup(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, at time.Time) error {
-	if hold := backup.RestoreHold(sb); hold != "" {
+	hold, err := currentRestoreHold(ctx, c, sb)
+	if err != nil {
+		return err
+	}
+	if hold != "" {
 		return fmt.Errorf("%w: scheduledbackup/%s is held: %s", ErrRestoreRunning, sb.Name, hold)
 	}
 	patch := client.MergeFrom(sb.DeepCopy())

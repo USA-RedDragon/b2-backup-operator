@@ -13,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
-	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 )
 
 const defaultRunLimit = 10
@@ -63,7 +62,11 @@ func runStatus(ctx context.Context, c client.Client, out io.Writer, namespace, a
 
 	sb := target.ScheduledBackup
 	repo, repoErr := RepositoryFor(ctx, c, sb)
-	writeBackupStatus(p, sb, repo, repoErr)
+	hold, err := currentRestoreHold(ctx, c, sb)
+	if err != nil {
+		hold = fmt.Sprintf("unknown: %v", err)
+	}
+	writeBackupStatus(p, sb, repo, repoErr, hold)
 
 	jobs, err := BackupJobs(ctx, c, sb)
 	if err != nil {
@@ -94,7 +97,9 @@ func writeRepositoryStatus(p *printer, repo *b2backupv1.Repository) {
 	writeConditions(p, repo.Status.Conditions)
 }
 
-func writeBackupStatus(p *printer, sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository, repoErr error) {
+func writeBackupStatus(
+	p *printer, sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository, repoErr error, hold string,
+) {
 	p.printf("scheduledbackup/%s\n\n", sb.Name)
 
 	tw := NewTabWriter(p)
@@ -107,7 +112,7 @@ func writeBackupStatus(p *printer, sb *b2backupv1.ScheduledBackup, repo *b2backu
 	field(w, "Schedule", fmt.Sprintf("%s   %s",
 		orNone(sb.Status.EffectiveSchedule), orNone(sb.Spec.TimeZone)))
 	field(w, "Suspended", yesNo(sb.Spec.Suspend))
-	if hold := backup.RestoreHold(sb); hold != "" {
+	if hold != "" {
 		field(w, "Held", hold)
 	}
 	field(w, "Active", fmt.Sprintf("%d", sb.Status.Active))
