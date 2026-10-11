@@ -34,7 +34,7 @@ region, are not secret and are printed as they are.
 With --show-password the output is suitable for:
 
     eval "$(b2bk env repo/store --show-password)"`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

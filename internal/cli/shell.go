@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -36,7 +35,7 @@ The pod is deleted when the shell exits. Nothing from the app is mounted unless
 --mount-data is passed, and the shared restic cache is replaced with scratch
 space unless --mount-cache is passed, so this cannot interfere with a running
 backup.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -144,11 +143,8 @@ CLI does not wrap:
 
     b2bk exec web-files -- restic find --tag=files 'config.php'
     b2bk exec web-files -- restic cat config`,
-		Args: cobra.MinimumNArgs(2),
+		Args: execArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if cmd.ArgsLenAtDash() != 1 {
-				return fmt.Errorf("separate the command with --, e.g. b2bk exec %s -- restic snapshots", args[0])
-			}
 			command := args[1:]
 
 			return runRestic(cmd.Context(), f, args[0], "exec",

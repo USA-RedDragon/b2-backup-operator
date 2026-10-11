@@ -59,7 +59,7 @@ thing can be done with kubectl:
 A suspended ScheduledBackup still runs: suspending the schedule and then
 backing up by hand is the main reason to suspend one. A run is refused only
 when one is already in flight and concurrencyPolicy is Forbid.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

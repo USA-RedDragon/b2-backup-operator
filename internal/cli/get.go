@@ -27,7 +27,7 @@ func newGetCommand(f *Factory) *cobra.Command {
 
 With no argument both kinds are listed. Pass "repositories" or "backups" to
 narrow it.`,
-		Args:      cobra.MaximumNArgs(1),
+		Args:      argCount(0, 1, "argument"),
 		ValidArgs: knownPrefixes(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := ValidateOutput(output); err != nil {

@@ -39,7 +39,7 @@ waiting for it. This is the usual fix.
 Only locks restic considers stale are removed. Use --remove-all to remove them
 all, which is safe only when nothing is running: it is refused while any Job of
 a ScheduledBackup on the repository, or of the Repository itself, is running.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if removeAll {
 				if err := confirm(f, yes, "every lock on the repository, including live ones", args[0]); err != nil {
@@ -89,7 +89,7 @@ func newCheckCommand(f *Factory) *cobra.Command {
 By default only metadata is verified, which is fast. --read-data-subset also
 re-reads a share of the actual data, which is the only way to detect bit rot
 but costs a full download of that share.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRestic(cmd.Context(), f, args[0], "check",
 				func(*b2backupv1.ScheduledBackup, *b2backupv1.Repository) ([]string, error) {
@@ -129,7 +129,7 @@ It runs only once the operator has rendered the backup's CronJob from the
 ScheduledBackup and Repository as they are now and reports it Ready, and only
 while nothing else in the namespace forgets under its tags: a ScheduledBackup,
 a CronJob left without one, or a backup Job still running an older spec.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !dryRun {
 				if err := confirm(f, yes, "snapshots outside the retention policy, permanently", args[0]); err != nil {
@@ -212,7 +212,7 @@ func newStatsCommand(f *Factory) *cobra.Command {
 		Use:     "stats <name>",
 		Short:   "Show repository size",
 		GroupID: GroupMaintenance,
-		Args:    cobra.ExactArgs(1),
+		Args:    argCount(1, 1, "name"),
 		Long: `Show restic's own view of the repository size.
 
 The operator's measurement in ` + "`b2bk status`" + ` is the size of the files

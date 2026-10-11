@@ -137,7 +137,7 @@ as extra shell commands, several tags on one backup or a custom
 Once the operator reports the Repository ready, restic-envs only needs
 RESTIC_PASSWORD; it is the only off-cluster copy of the key that decrypts
 these backups, so keep it.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "argument"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := resolveBackupImage(cmd, f, &opts); err != nil {
 				return err

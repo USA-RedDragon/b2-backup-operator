@@ -29,7 +29,7 @@ func newStatusCommand(f *Factory) *cobra.Command {
 Runs are read from the Jobs still present in the cluster. Jobs are removed an
 hour after they finish and pruned by the CronJob history limits, so this shows
 recent history rather than a complete record.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

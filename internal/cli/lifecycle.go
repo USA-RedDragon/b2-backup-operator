@@ -40,7 +40,7 @@ Repository stops the operator reconciling it at all.`
 		Short:   capitalize(verb) + " a repository or scheduled backup",
 		Long:    long,
 		GroupID: GroupLifecycle,
-		Args:    cobra.ExactArgs(1),
+		Args:    argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

@@ -123,7 +123,7 @@ With no target and a terminal, b2bk asks. Without a terminal it lists the
 targets and exits, so a script never restores somewhere it did not name.
 
 --in-place and --to-database overwrite live data and ask for confirmation.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

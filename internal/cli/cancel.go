@@ -24,7 +24,7 @@ func newCancelCommand(f *Factory) *cobra.Command {
 
 restic leaves a lock behind when it is killed mid-run. If the next backup then
 reports a stale lock, clear it with: b2bk unlock REPOSITORY`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -91,7 +91,7 @@ func newWaitCommand(f *Factory) *cobra.Command {
 		Long: `Wait for the backup currently in flight to finish.
 
 Exits non-zero if it fails, so it can gate a deploy or a migration.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

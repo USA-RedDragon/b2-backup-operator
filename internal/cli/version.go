@@ -24,7 +24,7 @@ func newVersionCommand(f *Factory) *cobra.Command {
 	return &cobra.Command{
 		Use:               "version",
 		Short:             "Print the b2bk version",
-		Args:              cobra.NoArgs,
+		Args:              argCount(0, 0, "argument"),
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := fmt.Fprintln(f.Streams.Out, Version())

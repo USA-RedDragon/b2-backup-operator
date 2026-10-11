@@ -39,7 +39,7 @@ func newLogsCommand(f *Factory) *cobra.Command {
 		Long: `Stream the logs of the most recent backup Job.
 
 Jobs are removed an hour after they finish, so this reaches only recent runs.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

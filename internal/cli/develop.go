@@ -40,7 +40,7 @@ func newRenderCommand(f *Factory) *cobra.Command {
 
 Takes either a local manifest or the name of one in the cluster, so it answers
 both "what would this change do" and "what is this actually running".`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "argument"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sb, err := loadScheduledBackup(cmd.Context(), f, args[0])
 			if err != nil {
@@ -145,7 +145,7 @@ This catches what the operator would reject at reconcile time -- an
 unresolvable schedule, a source it cannot render, a missing database field --
 without needing a cluster. It does not run the CRD's CEL rules, which the API
 server owns.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "argument"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sb, err := readScheduledBackup(args[0])
 			if err != nil {
@@ -204,7 +204,7 @@ A database dump that moves from backup-cnpg.sh to dumpdb cnpg is reported as a
 difference of its own, since the dump's format and file name change with it.
 
 Only --from-secret runs anything, sops.`,
-		Args: cobra.ExactArgs(2),
+		Args: argCount(2, 2, "argument"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := resolveBackupImage(cmd, f, &opts); err != nil {
 				return err

@@ -42,7 +42,7 @@ by --host when given.
 
 --json prints restic's JSON and nothing else on stdout: a plain list of
 snapshots, since it passes --group-by= over the image's RESTIC_GROUP_BY.`,
-		Args: cobra.ExactArgs(1),
+		Args: argCount(1, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.hostSet = cmd.Flags().Changed("host")
 
