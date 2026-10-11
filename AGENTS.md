@@ -100,9 +100,21 @@ one of these:
   `cd /data; restic backup .` stores the contents at the root. `b2bk restore`
   restores `<snapshot>:<path>` for each recorded path, which only works for the
   absolute form, so never render a relative path.
-- **`forget` is scoped by tag and host.** The image groups by tags, and restic
-  ORs repeated `--tag` flags, so a ScheduledBackup's retention only reaches its
-  own snapshots. `b2bk prune` builds the same flags in `pruneArgs`.
+- **`forget` is scoped by tag and host, and tags are unique.** The image groups
+  by tags, and restic ORs repeated `--tag` flags, so a ScheduledBackup's
+  retention only reaches its own snapshots. `b2bk prune` builds the same flags
+  in `pruneArgs`. Two sources, or two ScheduledBackups on one Repository, under
+  one tag would share a forget group and expire each other's snapshots, so
+  `backup.Validate` and the `TagConflict` condition refuse them.
+- **Backups read as root with `DAC_OVERRIDE`.** The image runs as root; with
+  every capability dropped, root cannot read another user's `0700` directory
+  and restic saves an incomplete snapshot. Restore Jobs add `CHOWN`,
+  `DAC_OVERRIDE`, `FOWNER` and `FSETID` (`runner.RestoreCapabilities`).
+- **Restores never pick the wrong snapshot or delete what was never saved.**
+  `restoreOptions.chooseSnapshot` matches tag, host and exact paths; dumps must
+  be one file and one series. Restores pass the source's excludes, so
+  `--delete` leaves them; restic refuses includes and excludes together, which
+  `restoreArgs` handles. Verify any change against restic 0.19.1 in the image.
 - **The backup image's `restic` is a wrapper** ahead of the real binary on PATH.
   It supplies `--group-by` from `RESTIC_GROUP_BY` and the `--stdin-filename` a
   database dump lands under from `RESTIC_HOST`, neither of which is in the
