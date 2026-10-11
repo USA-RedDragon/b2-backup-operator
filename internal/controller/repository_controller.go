@@ -175,7 +175,7 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			Reason: reasonConflict,
 			Message: fmt.Sprintf(
 				"bucket %s path %s overlaps Repository %s, which claimed it first; "+
-					"point one of them elsewhere, or delete this one",
+					"point one of them elsewhere, give each its own spec.secretName, or delete this one",
 				repo.Spec.Bucket, displayPath(repo.EffectivePath()), other),
 		})
 		return ctrl.Result{RequeueAfter: r.interval(&repo)}, r.patchStatus(ctx, &repo, statusBase)
@@ -914,12 +914,19 @@ func (r *RepositoryReconciler) repositoryConflict(
 			continue
 		}
 		otherBucket, otherPath := managedLocation(other)
-		if otherBucket != bucket || !pathsOverlap(path, otherPath) {
+		sameSecret := other.Namespace == repo.Namespace && other.SecretName() == repo.SecretName()
+		if !sameSecret && (otherBucket != bucket || !pathsOverlap(path, otherPath)) {
 			continue
 		}
 		if !other.DeletionTimestamp.IsZero() {
-			if other.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && other.Status.BucketID != "" {
+			if sameSecret || (other.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && other.Status.BucketID != "") {
 				return other.Namespace + "/" + other.Name + ", which is deleting it", nil
+			}
+			continue
+		}
+		if sameSecret {
+			if claimedFirst(other, repo) {
+				return other.Namespace + "/" + other.Name + " through credentials Secret " + repo.SecretName(), nil
 			}
 			continue
 		}

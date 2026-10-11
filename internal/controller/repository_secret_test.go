@@ -3,10 +3,15 @@ package controller
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -105,4 +110,48 @@ func TestSecretFinalizerProtectsAnUnseededPassword(t *testing.T) {
 			t.Error("a seed holding another password was taken as a copy of this one")
 		}
 	})
+}
+
+func TestTwoRepositoriesNeverShareACredentialsSecret(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	older := prefixRepo(func(r *b2backupv1.Repository) {
+		r.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	})
+	newer := prefixRepo(func(r *b2backupv1.Repository) {
+		r.Name, r.UID = "scratch", "0b1c2d3e-0000-4000-8000-0000000000bb"
+		r.CreationTimestamp = metav1.NewTime(time.Now())
+		r.Spec.Path = "restic/scratch"
+		r.Spec.SecretName = credsSecretName
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+	})
+	r, c := newHarness(t, f, older, newer)
+	reconcileN(t, r, 2)
+	before := getSecret(t, c, credsSecretName)
+	keys := len(ownKeys(f))
+
+	scratch := ctrl.Request{Namespace: testNS, Name: "scratch"}
+	for range 3 {
+		if _, err := r.Reconcile(context.Background(), scratch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got b2backupv1.Repository
+	if err := c.Get(context.Background(), scratch.NamespacedName, &got); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, b2backupv1.RepositoryConditionReady); cond == nil ||
+		cond.Reason != reasonConflict || !strings.Contains(cond.Message, credsSecretName) {
+		t.Errorf("Ready = %+v, want a conflict naming the shared Secret", cond)
+	}
+	after := getSecret(t, c, credsSecretName)
+	if string(after.Data[KeyResticRepository]) != string(before.Data[KeyResticRepository]) ||
+		metav1.GetControllerOf(after) != nil || !slices.Contains(after.Finalizers, SecretFinalizer) {
+		t.Errorf("the loser rewrote the winner's Secret: %s owner %v finalizers %v",
+			after.Data[KeyResticRepository], metav1.GetControllerOf(after), after.Finalizers)
+	}
+	if n := len(ownKeys(f)); n != keys {
+		t.Errorf("the loser created keys: %d, want %d", n, keys)
+	}
 }
