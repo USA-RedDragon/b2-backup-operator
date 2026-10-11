@@ -422,7 +422,9 @@ from another tool, such as a MySQL 8 dump whose executable comments hold
 queries of their own, is refused rather than guessed at. An executable comment whose version is
 above the oldest server `restoredb` supports may be skipped by the server
 while `restoredb` reads what is inside it, so a quote or a semicolon there is
-refused: the two would not agree on where the statement ends.
+refused: the two would not agree on where the statement ends. So is a `--`
+comment followed by a control byte, which the server takes as a comment and the
+client does not.
 `USE`, `CREATE DATABASE` and `DROP DATABASE` statements, which a dump taken with
 `--databases` or `--add-drop-database` has, are left out, so the dump always
 lands in the staging database and never in the database it names. A dump of
