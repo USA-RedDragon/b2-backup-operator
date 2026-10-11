@@ -273,3 +273,29 @@ func TestReinitNeedsARepository(t *testing.T) {
 		t.Error("reinit on a Repository did not ask the operator")
 	}
 }
+
+func TestRotatePasswordSaysTheSeedIsNowStale(t *testing.T) {
+	t.Parallel()
+	seeded := initializedRepo()
+	seeded.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: "restic-envs", Key: "RESTIC_PASSWORD"}
+	tests := []struct {
+		name string
+		repo *b2backupv1.Repository
+		want []string
+	}{
+		{"seeded", seeded, []string{"secret/restic-envs", "RESTIC_PASSWORD it holds is now the old password",
+			"Git or SOPS", controller.SecretFinalizer}},
+		{"generated", initializedRepo(), []string{"Git or SOPS is now stale"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := strings.Join(staleSeedNotice(tt.repo, "store-credentials"), " ")
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("notice %q does not mention %q", got, want)
+				}
+			}
+		})
+	}
+}
