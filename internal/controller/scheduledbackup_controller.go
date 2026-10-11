@@ -131,6 +131,17 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, r.suspendOwnCronJob(ctx, sb)
 	}
 
+	if why := RepositoryNotOwn(&repo); why != "" {
+		r.setCondition(sb, metav1.Condition{
+			Type:   b2backupv1.ScheduledBackupConditionReady,
+			Status: metav1.ConditionFalse,
+			Reason: reasonRepositoryNotOwn,
+			Message: fmt.Sprintf("Repository %q %s, so backing up or forgetting through it could reach "+
+				"another repository; the CronJob is suspended until that is resolved", repo.Name, why),
+		})
+		return ctrl.Result{}, r.suspendOwnCronJob(ctx, sb)
+	}
+
 	if conflict, err := r.tagConflict(ctx, sb); err != nil {
 		return ctrl.Result{}, err
 	} else if conflict != nil {

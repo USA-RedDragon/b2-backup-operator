@@ -824,3 +824,65 @@ func TestTheCronJobRecordsTheGenerationsItWasRenderedFrom(t *testing.T) {
 		t.Errorf("rendered-from = %q after a Repository change that renders the same CronJob", got)
 	}
 }
+
+func TestABackupStopsWhileItsRepositoryIsNotItsOwn(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		edit    func(*b2backupv1.Repository)
+		suspend bool
+	}{
+		{"a Repository in conflict", repoReadyFalse(reasonConflict), true},
+		{"a Secret holding a retained password", repoReadyFalse(reasonRetainedPassword), true},
+		{"credentials for another account", repoReadyFalse(reasonAccountMismatch), true},
+		{"a Secret the operator does not manage", repoReadyFalse(reasonSecretNotManaged), true},
+		{"a secretName unlike the Secret status records", func(r *b2backupv1.Repository) {
+			r.Spec.SecretName = "other-credentials"
+		}, true},
+		{"a transient B2 failure", repoReadyFalse("ReconcileFailed"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			repo := initializedRepo()
+			repo.Status.SecretName = credsSecretName
+			r, c := backupHarness(t, repo, scheduledBackup())
+			reconcileBackup(t, r)
+
+			var live b2backupv1.Repository
+			if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: resticName}, &live); err != nil {
+				t.Fatal(err)
+			}
+			tt.edit(&live)
+			if err := c.Status().Update(ctx, &live); err != nil {
+				t.Fatal(err)
+			}
+			tt.edit(&live)
+			if err := c.Update(ctx, &live); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = r.Reconcile(ctx, ctrl.Request{Namespace: testNS, Name: resticName})
+
+			var cj batchv1.CronJob
+			if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+				t.Fatal(err)
+			}
+			suspended := cj.Spec.Suspend != nil && *cj.Spec.Suspend
+			if suspended != tt.suspend {
+				t.Errorf("suspended = %t, want %t", suspended, tt.suspend)
+			}
+			if cond := readyCondition(t, c); tt.suspend && (cond == nil || cond.Reason != reasonRepositoryNotOwn) {
+				t.Errorf("Ready = %+v, want %s", cond, reasonRepositoryNotOwn)
+			}
+		})
+	}
+}
+
+func repoReadyFalse(reason string) func(*b2backupv1.Repository) {
+	return func(r *b2backupv1.Repository) {
+		apimeta.SetStatusCondition(&r.Status.Conditions, metav1.Condition{
+			Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse, Reason: reason, Message: reason,
+		})
+	}
+}

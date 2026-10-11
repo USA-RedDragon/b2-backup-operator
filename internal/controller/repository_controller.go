@@ -78,6 +78,8 @@ const (
 
 	reasonRetainedPassword = "SecretHoldsRetainedPassword"
 	reasonAccountMismatch  = "AccountMismatch"
+	reasonSecretNotManaged = "SecretNotManaged"
+	reasonRepositoryNotOwn = "RepositoryNotItsOwn"
 	reasonOtherFiles       = "OtherFilesInBucket"
 
 	// SecretFinalizer keeps a credentials Secret holding the only copy of a
@@ -224,6 +226,28 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	return result, nil
+}
+
+// notOwnReasons are the Ready reasons under which a Repository's credentials
+// Secret, or the location it names, may not be the Repository's own.
+var notOwnReasons = []string{
+	reasonConflict, reasonRetainedPassword, reasonAccountMismatch, reasonSecretNotManaged, "BucketReplaced",
+}
+
+// RepositoryNotOwn says why nothing may run against the repository the
+// Repository's credentials Secret names, or returns "" when it may. That is
+// so while the Repository is Ready=False for a reason under which the Secret or
+// its location may belong to something else, and while spec.secretName is not
+// the Secret status records.
+func RepositoryNotOwn(repo *b2backupv1.Repository) string {
+	if recorded := repo.Status.SecretName; recorded != "" && recorded != repo.SecretName() {
+		return fmt.Sprintf("names Secret %s in spec.secretName but recorded %s in status", repo.SecretName(), recorded)
+	}
+	ready := apimeta.FindStatusCondition(repo.Status.Conditions, b2backupv1.RepositoryConditionReady)
+	if ready != nil && ready.Status == metav1.ConditionFalse && slices.Contains(notOwnReasons, ready.Reason) {
+		return fmt.Sprintf("is not Ready (%s: %s)", ready.Reason, ready.Message)
+	}
+	return ""
 }
 
 type reasonError struct {
@@ -658,7 +682,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 	switch {
 	case err == nil:
 		if existing.Labels[labelManagedBy] != managedByValue {
-			return 0, withReason("SecretNotManaged", fmt.Errorf(
+			return 0, withReason(reasonSecretNotManaged, fmt.Errorf(
 				"secret %s/%s already exists and is not managed by this operator; "+
 					"set spec.secretName to a name the operator owns",
 				existing.Namespace, existing.Name))
