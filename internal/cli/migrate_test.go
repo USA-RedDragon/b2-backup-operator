@@ -415,6 +415,19 @@ func TestMigrateAdoptsTheExistingRepositoryInPrefixMode(t *testing.T) {
 	}
 }
 
+func TestMigrateLeavesLifecycleAndDeletionPolicyAlone(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, writeHomeClusterRelease(t, homeClusterRelease), migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v\n%s", err, buf.String())
+	}
+	repo, _ := migrated(t, buf.String())
+	if repo.Spec.Lifecycle != nil || repo.Spec.DeletionPolicy != "" {
+		t.Errorf("lifecycle %+v, deletionPolicy %q: migrate must leave the bucket's own rules in charge "+
+			"and the default Retain", repo.Spec.Lifecycle, repo.Spec.DeletionPolicy)
+	}
+}
+
 func TestMigrateMountPathMatchesAppTemplate(t *testing.T) {
 	var buf bytes.Buffer
 	dir := writeHomeClusterRelease(t, strings.Replace(homeClusterRelease,
