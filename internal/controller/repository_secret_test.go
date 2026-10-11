@@ -29,7 +29,8 @@ func TestSecretFinalizerProtectsAnUnseededPassword(t *testing.T) {
 	}{
 		{"a generated password under Retain", b2backupv1.DeletionPolicyRetain, nil, false, true},
 		{"a seeded password under Retain", b2backupv1.DeletionPolicyRetain, seedSecretFixture(), true, false},
-		{"a generated password under Delete", b2backupv1.DeletionPolicyDelete, nil, false, false},
+		{"a generated password under Delete", b2backupv1.DeletionPolicyDelete, nil, false, true},
+		{"a seeded password under Delete", b2backupv1.DeletionPolicyDelete, seedSecretFixture(), true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

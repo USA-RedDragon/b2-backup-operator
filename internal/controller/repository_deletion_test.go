@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -179,5 +180,42 @@ func TestReinitAnnotationRestartsInitialization(t *testing.T) {
 	reconcileN(t, r, 1)
 	if !getRepo(t, c).Status.Initialized {
 		t.Error("an annotation already acted on reset status.initialized again")
+	}
+}
+
+func TestDeletePolicyKeepsThePasswordUntilTheDataIsGone(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	r, c := newHarness(t, f, bucketRepo(func(r *b2backupv1.Repository) {
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+	}))
+	provisionForDeletion(t, r, c)
+	bucket := f.Bucket(ownBucket)
+	f.PutFile(bucket.BucketID, "config", 1)
+	password := string(getSecret(t, c, credsSecretName).Data[KeyResticPassword])
+
+	if err := c.Delete(context.Background(), getSecret(t, c, credsSecretName)); err != nil {
+		t.Fatal(err)
+	}
+	r.DefaultCredentialsSecret.Name = missingSecret
+	for range 3 {
+		if err := reconcileErr(r); err == nil {
+			t.Fatal("finalize succeeded without credentials")
+		}
+	}
+	if err := getSecretErr(c); err != nil {
+		t.Fatalf("the password went while the data it encrypts is still in B2: %v", err)
+	}
+	if got := string(getSecret(t, c, credsSecretName).Data[KeyResticPassword]); got != password {
+		t.Fatalf("password = %q, want %q", got, password)
+	}
+
+	r.DefaultCredentialsSecret.Name = credsName
+	reconcileUntilGone(t, r, c)
+	if f.Bucket(ownBucket) != nil {
+		t.Error("the bucket survived")
+	}
+	if err := getSecretErr(c); !apierrors.IsNotFound(err) {
+		t.Errorf("the Secret outlived the data it protected: %v", err)
 	}
 }

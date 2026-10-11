@@ -75,7 +75,8 @@ one of these:
   an ownerReference under `Delete`. Every finalize path that leaves data behind
   takes the ownerReference off first. Under Retain, a Secret holding the only
   copy of the password (generated, or a seed that no longer matches) carries the
-  `protect-password` finalizer, so a namespace deletion cannot take it.
+  `protect-password` finalizer, so a namespace deletion cannot take it. Under
+  `Delete` it carries the finalizer until the remote deletion has succeeded.
   A Repository never removes that finalizer when another Repository set it
   (`protected-by`, `released-by` annotations), and never takes over a Secret
   carrying it for another Repository or another `RESTIC_REPOSITORY`: it stops
