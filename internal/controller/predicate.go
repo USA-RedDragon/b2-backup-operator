@@ -39,3 +39,20 @@ func ignoreOwnStatusWrites(watchAnnotations ...string) predicate.Predicate {
 		},
 	}
 }
+
+// annotationChanged passes an update that changed one of these annotations.
+func annotationChanged(keys ...string) predicate.Funcs {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if e.ObjectOld == nil || e.ObjectNew == nil {
+				return true
+			}
+			for _, key := range keys {
+				if e.ObjectOld.GetAnnotations()[key] != e.ObjectNew.GetAnnotations()[key] {
+					return true
+				}
+			}
+			return false
+		},
+	}
+}

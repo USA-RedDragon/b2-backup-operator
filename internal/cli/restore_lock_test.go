@@ -657,3 +657,25 @@ func TestRestoresFromARepositoryThatIsNotItsOwnAreRefused(t *testing.T) {
 		t.Errorf("--to-new-pvc: err = %v", err)
 	}
 }
+
+func TestResumeLeavesARunningRestoresEntriesAlone(t *testing.T) {
+	t.Parallel()
+	sb := newBackup(testBackupName, testRepoName)
+	sb.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: appDataPartial}
+	other := newBackup(otherBackup, testRepoName)
+	other.Annotations = map[string]string{
+		b2backupv1.AnnotationRestorePartial: appDataPartial,
+		b2backupv1.AnnotationRestoreLock:    "b2bk pid 1",
+	}
+	c := newClient(t, sb, other)
+	if err := runSetSuspend(context.Background(), c, io.Discard, testNS, subjectBackup, false, "resumed"); err != nil {
+		t.Fatal(err)
+	}
+	var got b2backupv1.ScheduledBackup
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: otherBackup}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(partialTargets(&got)) != 1 {
+		t.Error("b2bk resume removed what a running restore recorded before writing")
+	}
+}

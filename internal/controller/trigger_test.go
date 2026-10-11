@@ -239,3 +239,48 @@ func TestARestoreHoldsTheScheduleAndTriggers(t *testing.T) {
 		})
 	}
 }
+
+func TestARestoreThroughAnotherBackupHoldsEveryBackupOfItsTarget(t *testing.T) {
+	t.Parallel()
+	withClaim := func(sb *b2backupv1.ScheduledBackup) {
+		sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "app-data", MountPath: "/data"}}
+		sb.Spec.Sources = append(sb.Spec.Sources, b2backupv1.BackupSource{Type: b2backupv1.SourceTypeFiles, Tag: "files"})
+	}
+	tests := []struct {
+		name  string
+		other func(*b2backupv1.ScheduledBackup)
+		held  bool
+	}{
+		{"a restore of the claim running through it", func(o *b2backupv1.ScheduledBackup) {
+			withClaim(o)
+			o.Annotations = map[string]string{b2backupv1.AnnotationRestoreLock: "b2bk pid 1"}
+		}, true},
+		{"a partial restore of the claim recorded only on it", func(o *b2backupv1.ScheduledBackup) {
+			o.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: `["pvc/app-data:/"]`}
+		}, true},
+		{"a partial restore of another claim", func(o *b2backupv1.ScheduledBackup) {
+			o.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: `["pvc/elsewhere:/"]`}
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			other := scheduledBackup()
+			other.Name = moreBackupName
+			other.Spec.RepositoryRef.Name = "another"
+			tt.other(other)
+			r, c := backupHarness(t, initializedRepo(), triggeredBackup(triggerAt, withClaim), other)
+			reconcileBackup(t, r)
+			var cj batchv1.CronJob
+			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+				t.Fatal(err)
+			}
+			if got := cj.Spec.Suspend != nil && *cj.Spec.Suspend; got != tt.held {
+				t.Errorf("CronJob suspended = %t, want %t", got, tt.held)
+			}
+			if got := len(manualJobs(t, c)) == 0; got != tt.held {
+				t.Errorf("trigger skipped = %t, want %t", got, tt.held)
+			}
+		})
+	}
+}

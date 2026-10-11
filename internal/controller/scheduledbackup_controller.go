@@ -174,22 +174,11 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
-	desired, err := backup.BuildCronJob(sb, &repo, r.Config)
+	desired, hold, err := r.renderCronJob(ctx, sb, &repo)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := controllerutil.SetControllerReference(sb, desired, r.Scheme); err != nil {
-		return ctrl.Result{}, err
-	}
-	hash, err := cronJobHash(desired)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if desired.Annotations == nil {
-		desired.Annotations = map[string]string{}
-	}
-	desired.Annotations[backup.AnnotationSpecHash] = hash
-	desired.Annotations[backup.AnnotationRenderedFrom] = backup.RenderedFrom(sb, &repo)
+	hash := desired.Annotations[backup.AnnotationSpecHash]
 
 	var cronJobUID types.UID
 
@@ -258,7 +247,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 	}
 	sb.Status.History = mergeHistory(sb.Status.History, runs)
 
-	if err := r.reconcileTrigger(ctx, sb, &repo, runs); err != nil {
+	if err := r.reconcileTrigger(ctx, sb, &repo, runs, hold); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -288,6 +277,50 @@ func (r *ScheduledBackupReconciler) tagConflict(
 		return nil, err
 	}
 	return backup.FindConflict(sb, backups.Items, cronJobs.Items, jobs.Items), nil
+}
+
+// renderCronJob builds the CronJob the spec asks for, suspended while a restore
+// holds the backup, and says what holds it.
+func (r *ScheduledBackupReconciler) renderCronJob(
+	ctx context.Context, sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository,
+) (*batchv1.CronJob, string, error) {
+	desired, err := backup.BuildCronJob(sb, repo, r.Config)
+	if err != nil {
+		return nil, "", err
+	}
+	hold, err := r.restoreHold(ctx, sb)
+	if err != nil {
+		return nil, "", err
+	}
+	if hold != "" {
+		desired.Spec.Suspend = ptr.To(true)
+	}
+	if err := controllerutil.SetControllerReference(sb, desired, r.Scheme); err != nil {
+		return nil, "", err
+	}
+	hash, err := cronJobHash(desired)
+	if err != nil {
+		return nil, "", err
+	}
+	if desired.Annotations == nil {
+		desired.Annotations = map[string]string{}
+	}
+	desired.Annotations[backup.AnnotationSpecHash] = hash
+	desired.Annotations[backup.AnnotationRenderedFrom] = backup.RenderedFrom(sb, repo)
+	return desired, hold, nil
+}
+
+// restoreHold says why a restore holds this backup, through its own
+// annotations or another ScheduledBackup's that shares its claims or database.
+func (r *ScheduledBackupReconciler) restoreHold(ctx context.Context, sb *b2backupv1.ScheduledBackup) (string, error) {
+	if hold := backup.RestoreHold(sb); hold != "" {
+		return hold, nil
+	}
+	var backups b2backupv1.ScheduledBackupList
+	if err := r.List(ctx, &backups, client.InNamespace(sb.Namespace)); err != nil {
+		return "", err
+	}
+	return backup.SharedRestoreHold(sb, backups.Items), nil
 }
 
 // suspendStrays suspends every CronJob the operator rendered in the namespace
@@ -487,7 +520,10 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&b2backupv1.ScheduledBackup{},
 			handler.EnqueueRequestsFromMapFunc(r.siblingBackups),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(predicate.Or[client.Object](
+				predicate.GenerationChangedPredicate{},
+				annotationChanged(b2backupv1.AnnotationRestoreLock, b2backupv1.AnnotationRestorePartial),
+			)),
 		).
 		Watches(
 			&batchv1.CronJob{},

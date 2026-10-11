@@ -121,7 +121,8 @@ func runSetSuspend(
 
 // releasePartial removes entries from AnnotationRestorePartial on every other
 // ScheduledBackup in sb's namespace, where the restore that wrote them recorded
-// them too.
+// them too, except one a running restore holds: that restore may be writing
+// them again.
 func releasePartial(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, entries []string) ([]string, error) {
 	var list b2backupv1.ScheduledBackupList
 	if err := c.List(ctx, &list, client.InNamespace(sb.Namespace)); err != nil {
@@ -130,9 +131,8 @@ func releasePartial(ctx context.Context, c client.Client, sb *b2backupv1.Schedul
 	var released []string
 	for i := range list.Items {
 		other := &list.Items[i]
-		if other.Name == sb.Name || !slices.ContainsFunc(partialTargets(other), func(e string) bool {
-			return slices.Contains(entries, e)
-		}) {
+		if other.Name == sb.Name || other.Annotations[b2backupv1.AnnotationRestoreLock] != "" ||
+			!slices.ContainsFunc(partialTargets(other), func(e string) bool { return slices.Contains(entries, e) }) {
 			continue
 		}
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
