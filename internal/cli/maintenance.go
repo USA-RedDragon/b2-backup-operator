@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -256,12 +257,14 @@ func refuseRepositoryInUse(
 	if err := c.List(ctx, &cronJobs, client.InNamespace(repo.Namespace)); err != nil {
 		return err
 	}
+	names := map[string]bool{}
 	for i := range backups.Items {
 		sb := &backups.Items[i]
 		if sb.Spec.RepositoryRef.Name != repo.Name {
 			continue
 		}
 		owners[sb.UID] = true
+		names[sb.Name] = true
 		for j := range cronJobs.Items {
 			if cronJobs.Items[j].Name == backup.CronJobName(sb) {
 				owners[cronJobs.Items[j].UID] = true
@@ -285,6 +288,22 @@ func refuseRepositoryInUse(
 		if inUse {
 			return fmt.Errorf("%w: job/%s is running and may hold a live lock on repository/%s; wait for it, "+
 				"or unlock without --remove-all", ErrBackupRunning, job.Name, repo.Name)
+		}
+	}
+	var pods corev1.PodList
+	if err := c.List(ctx, &pods, client.InNamespace(repo.Namespace)); err != nil {
+		return err
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		inUse := pod.Labels[labelManagedBy] == operatorManagedBy && names[pod.Labels["app.kubernetes.io/name"]]
+		inUse = inUse || (pod.Labels[labelManagedBy] == runner.ManagedByValue && names[pod.Labels[runner.LabelScheduledBackup]])
+		if inUse {
+			return fmt.Errorf("%w: pod/%s is still running restic and may hold a live lock on repository/%s; wait "+
+				"for it, or unlock without --remove-all", ErrBackupRunning, pod.Name, repo.Name)
 		}
 	}
 	return nil

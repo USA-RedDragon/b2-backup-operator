@@ -12,6 +12,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -493,7 +494,46 @@ func activeBackup(ctx context.Context, c client.Client, sb *b2backupv1.Scheduled
 			return job.Name, nil
 		}
 	}
+	return activePod(ctx, c, sb, ownJob)
+}
+
+// activePod returns a pod of a backup or b2bk restore of this ScheduledBackup
+// that is still running, other than ownJob's: deleting a Job, as b2bk cancel
+// and a finished restore do, removes it at once while its pod's restic runs on
+// through the pod's grace period.
+func activePod(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, ownJob string) (string, error) {
+	var pods corev1.PodList
+	if err := c.List(ctx, &pods, client.InNamespace(sb.Namespace)); err != nil {
+		return "", err
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed ||
+			podJob(pod) == ownJob {
+			continue
+		}
+		switch pod.Labels[labelManagedBy] {
+		case operatorManagedBy:
+			if pod.Labels["app.kubernetes.io/name"] == sb.Name {
+				return "pod/" + pod.Name, nil
+			}
+		case runner.ManagedByValue:
+			mine := pod.Labels[runner.LabelScheduledBackup] == sb.Name ||
+				(pod.Labels[runner.LabelScheduledBackup] == "" && strings.HasPrefix(podJob(pod), sb.Name+"-b2bk-"))
+			purpose, labelled := pod.Labels[runner.LabelPurpose]
+			if mine && (!labelled || slices.Contains(writingPurposes, purpose)) {
+				return "pod/" + pod.Name, nil
+			}
+		}
+	}
 	return "", nil
+}
+
+func podJob(pod *corev1.Pod) string {
+	if name := pod.Labels[batchv1.JobNameLabel]; name != "" {
+		return name
+	}
+	return pod.Labels["job-name"]
 }
 
 func ownedBy(obj metav1.Object, uid types.UID) bool {

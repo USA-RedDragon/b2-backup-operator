@@ -12,6 +12,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -31,6 +32,7 @@ const (
 	mediaMount      = "/data/media"
 	mediaClaim      = "media"
 	staleLockHolder = "b2bk pid 1"
+	firstBackupJob  = "web-files-backup-1"
 	batchAPIVersion = "batch/v1"
 )
 
@@ -69,7 +71,7 @@ type restoreTarget struct {
 func overwritingTargets() []restoreTarget {
 	return []restoreTarget{
 		{targetInPlace, filesAtData, resticRestore, func(ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup) error {
-			return restoreInPlace(ctx, f, c, sb, &restoreOptions{snapshot: latest, yes: true})
+			return restoreInPlace(ctx, f, c, sb, &restoreOptions{snapshot: latest, yes: true, delete: true})
 		}},
 		{"to the database", cnpgOnly, "restoredb", func(ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup) error {
 			return restoreToDatabase(ctx, f, c, sb, &restoreOptions{snapshot: latest, yes: true, toDatabase: true})
@@ -144,7 +146,7 @@ func TestOverwritingRestoresRefuseWhileABackupOrRestoreRuns(t *testing.T) {
 		wantErr error
 	}{
 		{"a scheduled backup", func(fx *currentFixture) client.Object {
-			return &batchv1.Job{Namespace: testNS, Name: "web-files-backup-1", OwnerReferences: []metav1.OwnerReference{{
+			return &batchv1.Job{Namespace: testNS, Name: firstBackupJob, OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: batchAPIVersion, Kind: cronJobKind, Name: fx.cj.Name, UID: fx.cj.UID, Controller: ptr.To(true),
 			}}}
 		}, ErrBackupRunning},
@@ -718,5 +720,55 @@ func TestResumeSaysWhenAnotherBackupStillHoldsIt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "still held") || !strings.Contains(out.String(), otherBackup) {
 		t.Errorf("resume did not say the backup is still held through %s:\n%s", otherBackup, out.String())
+	}
+}
+
+func TestOnlyARestoreWithDeleteClearsAPartialOne(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, del := range []bool{false, true} {
+		fx := currentBackup(t, filesAtData)
+		fx.sb.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: appDataPartial}
+		c := newClient(t, fx.objects()...)
+		f, _ := hookedFactory(t, c, &fakePod{}, true)
+		if err := restoreInPlace(ctx, f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true, delete: del}); err != nil {
+			t.Fatal(err)
+		}
+		if _, partial := held(t, c, testBackupName); (len(partial) == 0) != del {
+			t.Errorf("--delete %t: partial = %v; only a restore that also removes what the snapshot lacks "+
+				"makes the claim whole", del, partial)
+		}
+	}
+}
+
+func TestAPodThatOutlivesItsJobStillCountsAsRunning(t *testing.T) {
+	t.Parallel()
+	fx := currentBackup(t, filesAtData)
+	terminating := &corev1.Pod{
+		Namespace: testNS, Name: firstBackupJob + "-abcde",
+		Labels: map[string]string{labelManagedBy: operatorManagedBy, "app.kubernetes.io/name": testBackupName,
+			batchv1.JobNameLabel: firstBackupJob},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	c := newClient(t, fx.objects(terminating)...)
+	f, _ := hookedFactory(t, c, &fakePod{}, true)
+	if err := restoreInPlace(context.Background(), f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true}); !errors.Is(err, ErrBackupRunning) {
+		t.Errorf("err = %v, want the restore refused while a cancelled backup's pod still runs restic", err)
+	}
+}
+
+func TestResumeOfAnAlreadyRunningBackupSaysWhatHoldsIt(t *testing.T) {
+	t.Parallel()
+	sb := newBackup(testBackupName, testRepoName)
+	sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: testClaimName, MountPath: dataDir}}
+	other := newBackup(otherBackup, testRepoName)
+	other.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: appDataPartial}
+	c := newClient(t, sb, other)
+	var out bytes.Buffer
+	if err := runSetSuspend(context.Background(), c, &out, testNS, subjectBackup, false, "resumed"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "still held") {
+		t.Errorf("resume hid the hold another backup's restore puts on it:\n%s", out.String())
 	}
 }

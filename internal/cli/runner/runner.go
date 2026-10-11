@@ -36,6 +36,11 @@ const (
 	// LabelPurpose records on a Job what it was started for, such as restore.
 	LabelPurpose = "b2backup.mcswain.dev/b2bk-purpose"
 
+	// LabelScheduledBackup records on a Job and its pod the ScheduledBackup it
+	// was built from, so a pod that outlives its deleted Job can still be told
+	// apart.
+	LabelScheduledBackup = "b2backup.mcswain.dev/scheduledbackup"
+
 	labelManagedBy = "app.kubernetes.io/managed-by"
 	containerName  = "restic"
 	cacheVolume    = "cache"
@@ -172,7 +177,7 @@ func (r *Runner) Build(
 	spec.Template.Spec.Volumes = append(spec.Template.Spec.Volumes, opts.ExtraVolumes...)
 	container.VolumeMounts = append(container.VolumeMounts, opts.ExtraMounts...)
 
-	labels := map[string]string{labelManagedBy: ManagedByValue}
+	labels := map[string]string{labelManagedBy: ManagedByValue, LabelScheduledBackup: sb.Name}
 	if opts.Purpose != "" {
 		labels[LabelPurpose] = opts.Purpose
 	}

@@ -33,7 +33,7 @@ func TestStatusBackup(t *testing.T) {
 	good.Status.CompletionTime = &done
 	good.Status.Succeeded = 1
 
-	bad := jobOwnedBy("web-files-backup-1", cj.UID, "CronJob", 26*time.Hour)
+	bad := jobOwnedBy(firstBackupJob, cj.UID, "CronJob", 26*time.Hour)
 	badDone := metav1.NewTime(bad.Status.StartTime.Add(18 * time.Second))
 	bad.Status.CompletionTime = &badDone
 	bad.Status.Failed = 1
@@ -47,14 +47,14 @@ func TestStatusBackup(t *testing.T) {
 		"CONDITION", "Ready", statusTrue,
 		"RESULT", "STARTED", "DURATION", "JOB",
 		"succeeded", "4m12s", "web-files-backup-2",
-		"failed", "18s", "web-files-backup-1",
+		"failed", "18s", firstBackupJob,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in output:\n%s", want, out)
 		}
 	}
 
-	if strings.Index(out, "web-files-backup-2") > strings.Index(out, "web-files-backup-1") {
+	if strings.Index(out, "web-files-backup-2") > strings.Index(out, firstBackupJob) {
 		t.Errorf("runs are not newest-first:\n%s", out)
 	}
 }
@@ -138,7 +138,7 @@ func TestStatusDurationUsesTheTrueFailureCondition(t *testing.T) {
 	cj := ownedCronJob(sb)
 	cj.UID = testCronJobUID
 
-	job := jobOwnedBy("web-files-backup-1", cj.UID, "CronJob", time.Hour)
+	job := jobOwnedBy(firstBackupJob, cj.UID, "CronJob", time.Hour)
 	job.Status.Failed = 1
 	failedAt := metav1.NewTime(job.Status.StartTime.Add(30 * time.Second))
 	stale := metav1.NewTime(job.Status.StartTime.Add(9 * time.Minute))

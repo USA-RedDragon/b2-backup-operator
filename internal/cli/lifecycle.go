@@ -84,13 +84,15 @@ func runSetSuspend(
 	var partial []string
 	if sb := target.ScheduledBackup; target.Kind == TargetScheduledBackup && !suspend {
 		if holder := sb.Annotations[b2backupv1.AnnotationRestoreLock]; holder != "" {
-			return fmt.Errorf("%w: %s is held by %s; it resumes when that restore ends", ErrRestoreRunning, label, holder)
+			return fmt.Errorf("%w: %s is held by %s; it resumes when that restore ends; if that restore and its "+
+				"Job are gone, release it with kubectl annotate -n %s scheduledbackup/%s %s-", ErrRestoreRunning,
+				label, holder, sb.Namespace, sb.Name, b2backupv1.AnnotationRestoreLock)
 		}
 		partial = partialTargets(sb)
 	}
 	if *current == suspend && len(partial) == 0 {
 		p.printf("%s is already %s\n", label, past)
-		return p.Err()
+		return errors.Join(p.Err(), reportStillHeld(ctx, c, p, target, label, suspend))
 	}
 
 	patch := client.MergeFromWithOptions(obj.DeepCopyObject().(client.Object), client.MergeFromWithOptimisticLock{})
@@ -116,18 +118,25 @@ func runSetSuspend(
 		}
 	}
 	p.printf("%s %s\n", label, past)
-	if sb := target.ScheduledBackup; target.Kind == TargetScheduledBackup && !suspend {
-		var latest b2backupv1.ScheduledBackup
-		if err := c.Get(ctx, client.ObjectKeyFromObject(sb), &latest); err != nil {
-			return errors.Join(err, p.Err())
-		}
-		hold, err := currentRestoreHold(ctx, c, &latest)
-		if err != nil {
-			return errors.Join(err, p.Err())
-		}
-		if hold != "" {
-			p.printf("! %s is still held: %s\n", label, hold)
-		}
+	return errors.Join(p.Err(), reportStillHeld(ctx, c, p, target, label, suspend))
+}
+
+// reportStillHeld says, after a resume, what restore still holds the backup.
+func reportStillHeld(ctx context.Context, c client.Client, p *printer, target *Target, label string, suspend bool) error {
+	sb := target.ScheduledBackup
+	if target.Kind != TargetScheduledBackup || suspend {
+		return nil
+	}
+	var latest b2backupv1.ScheduledBackup
+	if err := c.Get(ctx, client.ObjectKeyFromObject(sb), &latest); err != nil {
+		return err
+	}
+	hold, err := currentRestoreHold(ctx, c, &latest)
+	if err != nil {
+		return err
+	}
+	if hold != "" {
+		p.printf("! %s is still held: %s\n", label, hold)
 	}
 	return p.Err()
 }
