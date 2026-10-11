@@ -168,15 +168,15 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
-KUSTOMIZE_VERSION ?= v5.8.1
+KUSTOMIZE_VERSION ?= v5.8.3
 KIND_VERSION ?= v0.33.0
-CONTROLLER_TOOLS_VERSION ?= v0.21.0
+CONTROLLER_TOOLS_VERSION ?= v0.22.0
 
 ENVTEST_VERSION ?= $(call required,$(call gomodver,sigs.k8s.io/controller-runtime),Set ENVTEST_VERSION manually (controller-runtime replace has no tag))
 
 ENVTEST_K8S_VERSION ?= $(shell printf '%s' '$(call required,$(call gomodver,k8s.io/api),Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag))' | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
-GOLANGCI_LINT_VERSION ?= v2.13.2
+GOLANGCI_LINT_VERSION ?= v2.14.0
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)

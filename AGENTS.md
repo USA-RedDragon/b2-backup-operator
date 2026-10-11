@@ -188,9 +188,6 @@ make test-e2e    # full deploy against a throwaway Kind cluster
 make lint        # golangci-lint with the logcheck plugin
 ```
 
-golangci-lint v2.13.2 cannot read the export data of Go 1.27.2. Run
-`GOTOOLCHAIN=go1.27.1 make lint` when the local Go is newer than go.mod.
-
 Controller tests run the real `internal/b2` client against `b2fake` over
 httptest, so they exercise the HTTP layer too. A B2 call the operator starts
 making needs a handler in `b2fake`; the e2e suite fails on any call the stub
