@@ -6,10 +6,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -195,61 +195,34 @@ func TestDeleteTempKeySecretToleratesAnAlreadyDeletedSecret(t *testing.T) {
 	}
 }
 
-func TestReinitDeletesOnlyTheJobsThisRepositoryOwns(t *testing.T) {
+func TestReinitAsksTheOperatorThroughTheSpec(t *testing.T) {
+	t.Parallel()
 	repo := initializedRepo()
 	mine := initJobFor(repo)
-	other := newRepo(testNS)
-	other.Name, other.UID = "otherrepo", types.UID("uid-repo-otherrepo")
-	theirs := initJobFor(other)
-	unowned := &batchv1.Job{Namespace: testNS, Name: "nightly-cleanup"}
-
-	c := newClient(t, repo, mine, theirs, unowned)
+	c := newClient(t, repo, mine)
+	at := time.Date(2026, 10, 11, 7, 0, 0, 0, time.UTC)
 
 	var out bytes.Buffer
-	if err := runReinit(context.Background(), c, &out, repo); err != nil {
+	if err := runReinit(context.Background(), c, &out, repo, at); err != nil {
 		t.Fatalf("runReinit: %v", err)
 	}
 
 	ctx := context.Background()
-	if err := c.Get(ctx, client.ObjectKeyFromObject(mine), &batchv1.Job{}); !apierrors.IsNotFound(err) {
-		t.Errorf("the repository's own init Job survived reinit: %v", err)
-	}
-	for _, keep := range []*batchv1.Job{theirs, unowned} {
-		if err := c.Get(ctx, client.ObjectKeyFromObject(keep), &batchv1.Job{}); err != nil {
-			t.Errorf("reinit deleted job/%s, which it does not own: %v", keep.Name, err)
-		}
-	}
-
 	var after b2backupv1.Repository
 	if err := c.Get(ctx, client.ObjectKeyFromObject(repo), &after); err != nil {
 		t.Fatal(err)
 	}
-	if after.Status.Initialized {
-		t.Error("status.initialized was left set, so the operator will not run restic init again")
+	if got := after.Annotations[b2backupv1.AnnotationReinitAt]; got != "2026-10-11T07:00:00Z" {
+		t.Errorf("%s = %q", b2backupv1.AnnotationReinitAt, got)
 	}
-
-	for _, want := range []string{"deleted job/" + mine.Name, "b2bk doctor"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("output = %q, want it to mention %q", out.String(), want)
-		}
+	if !after.Status.Initialized {
+		t.Error("b2bk wrote status; only the operator may")
 	}
-}
-
-func TestReinitWorksWhenThereIsNoJobLeft(t *testing.T) {
-	repo := initializedRepo()
-	c := newClient(t, repo)
-
-	var out bytes.Buffer
-	if err := runReinit(context.Background(), c, &out, repo); err != nil {
-		t.Fatalf("runReinit: %v", err)
+	if err := c.Get(ctx, client.ObjectKeyFromObject(mine), &batchv1.Job{}); err != nil {
+		t.Errorf("b2bk deleted the init Job itself instead of leaving it to the operator: %v", err)
 	}
-
-	var after b2backupv1.Repository
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(repo), &after); err != nil {
-		t.Fatal(err)
-	}
-	if after.Status.Initialized {
-		t.Error("status.initialized was left set with no Job to delete")
+	if !strings.Contains(out.String(), "b2bk doctor") {
+		t.Errorf("output = %q, want it to say how to watch", out.String())
 	}
 }
 
@@ -283,8 +256,8 @@ func TestReinitNeedsARepository(t *testing.T) {
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(repo), &after); err != nil {
 		t.Fatal(err)
 	}
-	if !after.Status.Initialized {
-		t.Error("the wrong kind of argument still cleared status.initialized")
+	if _, ok := after.Annotations[b2backupv1.AnnotationReinitAt]; ok {
+		t.Error("the wrong kind of argument still asked for a reinit")
 	}
 
 	cmd = newReinitCommand(f)
@@ -296,7 +269,7 @@ func TestReinitNeedsARepository(t *testing.T) {
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(repo), &after); err != nil {
 		t.Fatal(err)
 	}
-	if after.Status.Initialized {
-		t.Error("reinit left status.initialized set")
+	if _, ok := after.Annotations[b2backupv1.AnnotationReinitAt]; !ok {
+		t.Error("reinit on a Repository did not ask the operator")
 	}
 }
