@@ -893,3 +893,29 @@ func TestFilterRefusesDatabaseStatementsWhateverTheirSpacing(t *testing.T) {
 // reads what is inside without minding quotes, so the restore refuses a quote
 
 // The server takes -- followed by a control byte as a comment where the client
+
+// or a semicolon there: it could not tell where such a statement ends.
+func TestFilterRefusesQuotesInASkippableComment(t *testing.T) {
+	t.Parallel()
+	for _, dump := range []string{
+		"/*!999999 SELECT '*/ SELECT 1; -- ' */;\n",
+		"/*M!999999 x `y` */;\n",
+		"/*!100600 SET @a='x' */;\n",
+		"/*!999999 ; */;\n",
+	} {
+		if _, _, err := filterString(t, createTable+dump); !errors.Is(err, ErrUnsupportedStatement) {
+			t.Errorf("%q: err = %v", dump, err)
+		}
+	}
+	// A comment every supported server runs is read as the statement it holds.
+	for _, dump := range []string{
+		"/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n",
+		"/*!40103 SET TIME_ZONE='+00:00' */;\n",
+		"/*M!100616 SET @OLD_NOTE_VERBOSITY=@@NOTE_VERBOSITY, NOTE_VERBOSITY=0 */;\n",
+		"/*M!999999\\- enable the sandbox mode */ \n/*!40101 SET NAMES utf8mb4 */;\n",
+	} {
+		if _, _, err := filterString(t, dump); err != nil {
+			t.Errorf("%q: err = %v", dump, err)
+		}
+	}
+}

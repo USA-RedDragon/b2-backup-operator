@@ -39,7 +39,26 @@ type clientLexer struct {
 	ssComment   bool
 	lineComment bool
 	inStatement bool
+	// ssState follows the version of an executable comment, to tell one the
+	// server runs from one it may skip.
+	ssState     int
+	ssVersion   int
+	ssSkippable bool
 }
+
+const (
+	ssIdle = iota
+	ssOpen
+	ssBody
+)
+
+// maxCheckedVersion is the highest version an executable comment may name and
+// still be one every server restoredb supports runs: 10.5 is the oldest, since
+// the staging databases carry a comment. A comment above it may be skipped by
+// the server while the restore's lexer reads its content as code, so its
+// content may not hold a quote or a semicolon, which could move where the
+// server thinks the statement ends.
+const maxCheckedVersion = 100500
 
 // idle reports whether the lexer is between statements, outside any string or
 // comment.
@@ -90,6 +109,9 @@ func (l *clientLexer) step(buf []byte, i int, at func(int) (byte, bool),
 			kind = byteSkip
 		}
 		return n, emit(buf[i:i+n], kind)
+	}
+	if err := l.skippable(c); err != nil {
+		return 0, err
 	}
 	switch {
 	case l.lineComment && c == '\n':
@@ -182,6 +204,9 @@ func (l *clientLexer) run(buf []byte) int {
 	switch {
 	case l.escaped:
 		return 0
+	case l.ssState == ssOpen:
+		// The version of an executable comment is read a byte at a time.
+		return 0
 	case l.lineComment:
 		stops = "\n"
 	case l.mlComment && !l.ssComment:
@@ -201,6 +226,36 @@ func (l *clientLexer) run(buf []byte) int {
 		return n
 	}
 	return len(buf)
+}
+
+// version follows the digits of an executable comment's version and refuses a
+// quote or a semicolon inside one the server may skip.
+func (l *clientLexer) version(c byte) error {
+	switch {
+	case l.ssState == ssOpen && isDigit(c):
+		l.ssVersion = l.ssVersion*10 + int(c-'0')
+	case l.ssState == ssOpen && (c == '*' || c == '!' || c == 'M' || c == '/'):
+	case l.ssState == ssOpen:
+		l.ssState = ssBody
+		l.ssSkippable = l.ssVersion > maxCheckedVersion
+		fallthrough
+	case l.ssState == ssBody:
+		return l.skippable(c)
+	}
+	return nil
+}
+
+// skippable refuses a quote or a semicolon inside an executable comment the
+// server may skip: the restore could not tell where such a statement ends.
+func (l *clientLexer) skippable(c byte) error {
+	if l.ssState != ssBody || !l.ssSkippable {
+		return nil
+	}
+	if c == '\'' || c == '"' || c == '`' || c == ';' {
+		return fmt.Errorf("%w: a quote or a semicolon inside an executable comment the server may skip, "+
+			"so restoredb cannot tell where the statement ends", ErrUnsupportedStatement)
+	}
+	return nil
 }
 
 // lineCommentAt reports whether the # or - at i starts a comment to the end of
@@ -230,21 +285,26 @@ func (l *clientLexer) lineCommentAt(c byte, i int, at func(int) (byte, bool)) (c
 func (l *clientLexer) plain(buf []byte, i int, at func(int) (byte, bool),
 	emit func([]byte, byteKind) error) (int, error) {
 	c := buf[i]
-	if l.inString == 0 && (c == '/' || l.ssComment && c == '*') {
+	if l.inString == 0 && (c == '/' || c == '*') {
 		next, ok := at(i + 1)
 		if !ok {
 			return 0, nil
 		}
-		next2, ok := at(i + 2)
-		if !ok && c == '/' && next == '*' {
-			return 0, nil
-		}
+		next2, ok2 := at(i + 2)
+		next3, ok3 := at(i + 3)
 		switch {
-		case c == '/' && next == '*' && next2 == '!':
+		case c == '/' && next == '*' && !ok2, c == '/' && next == '*' && next2 == 'M' && !ok3:
+			return 0, nil
+		case c == '/' && next == '*' && (next2 == '!' || next2 == 'M' && next3 == '!'):
 			l.ssComment = true
-		case c == '*' && next == '/':
+			l.ssState, l.ssVersion = ssOpen, 0
+		case c == '*' && next == '/' && l.ssComment:
 			l.ssComment = false
+			l.ssState, l.ssSkippable = ssIdle, false
 		}
+	}
+	if err := l.version(c); err != nil {
+		return 0, err
 	}
 	switch {
 	case c == l.inString:
