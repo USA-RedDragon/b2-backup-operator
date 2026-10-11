@@ -16,6 +16,7 @@ const (
 	serverTag      = "server"
 	filebrowserTag = "filebrowser"
 	appDir         = "app"
+	appMount       = "/app"
 	backupData     = "restic backup /data"
 	cacheDir       = "cache"
 	appDB          = "/data/app.db"
