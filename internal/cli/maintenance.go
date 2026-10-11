@@ -1,13 +1,17 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
+	batchv1 "k8s.io/api/batch/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
@@ -31,7 +35,8 @@ A backup killed mid-run leaves a lock behind, and every later run then fails
 waiting for it. This is the usual fix.
 
 Only locks restic considers stale are removed. Use --remove-all to remove them
-all, which is safe only when nothing is running.`,
+all, which is safe only when nothing is running: it is refused while any Job of
+a ScheduledBackup on the repository, or of the Repository itself, is running.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if removeAll {
@@ -39,7 +44,11 @@ all, which is safe only when nothing is running.`,
 					return err
 				}
 			}
-			return runRestic(cmd.Context(), f, args[0], "unlock",
+			var guard func(context.Context, client.Client, *b2backupv1.ScheduledBackup, *b2backupv1.Repository) error
+			if removeAll {
+				guard = refuseRepositoryInUse
+			}
+			return runResticGuarded(cmd.Context(), f, args[0], "unlock", guard,
 				func(*b2backupv1.ScheduledBackup, *b2backupv1.Repository) ([]string, error) {
 					argv := []string{"unlock"}
 					if removeAll {
@@ -220,4 +229,54 @@ compression, and files restic has deleted that B2 has only hidden so far.`,
 		})
 	f.AddPodStartTimeoutFlag(cmd)
 	return cmd
+}
+
+// refuseRepositoryInUse refuses while any Job may hold a live lock on the
+// repository: one of a ScheduledBackup that writes into it, its CronJob's, a
+// b2bk Job of either, the Repository's own, or an operator Job whose recorded
+// forget scope names it.
+func refuseRepositoryInUse(
+	ctx context.Context, c client.Client, _ *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository,
+) error {
+	owners := map[types.UID]bool{repo.UID: true}
+	var backups b2backupv1.ScheduledBackupList
+	if err := c.List(ctx, &backups, client.InNamespace(repo.Namespace)); err != nil {
+		return err
+	}
+	var cronJobs batchv1.CronJobList
+	if err := c.List(ctx, &cronJobs, client.InNamespace(repo.Namespace)); err != nil {
+		return err
+	}
+	for i := range backups.Items {
+		sb := &backups.Items[i]
+		if sb.Spec.RepositoryRef.Name != repo.Name {
+			continue
+		}
+		owners[sb.UID] = true
+		for j := range cronJobs.Items {
+			if cronJobs.Items[j].Name == backup.CronJobName(sb) {
+				owners[cronJobs.Items[j].UID] = true
+			}
+		}
+	}
+	var jobs batchv1.JobList
+	if err := c.List(ctx, &jobs, client.InNamespace(repo.Namespace)); err != nil {
+		return err
+	}
+	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		if backup.JobFinished(job) {
+			continue
+		}
+		scope, ok := backup.ScopeFrom(job.Annotations)
+		inUse := ok && scope.Repository == repo.Name
+		for _, ref := range job.OwnerReferences {
+			inUse = inUse || owners[ref.UID]
+		}
+		if inUse {
+			return fmt.Errorf("%w: job/%s is running and may hold a live lock on repository/%s; wait for it, "+
+				"or unlock without --remove-all", ErrBackupRunning, job.Name, repo.Name)
+		}
+	}
+	return nil
 }

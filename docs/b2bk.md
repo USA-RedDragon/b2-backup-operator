@@ -343,7 +343,7 @@ fails waiting on it. Removes only what restic considers stale.
 
 | Flag | |
 | --- | --- |
-| `--remove-all` | **`DESTROYS`** Every lock, stale or not. Only safe when nothing is running. Confirms first |
+| `--remove-all` | **`DESTROYS`** Every lock, stale or not. Only safe when nothing is running, so it is refused while any Job of a ScheduledBackup on the repository, its b2bk Jobs or the Repository's own is running. Confirms first |
 | `--yes` | Skip the confirmation |
 
 ### `check <name>` — `reads`
