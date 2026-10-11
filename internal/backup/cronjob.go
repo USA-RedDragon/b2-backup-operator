@@ -472,10 +472,7 @@ func buildAffinity(sb *b2backupv1.ScheduledBackup) *corev1.Affinity {
 	}
 
 	if sb.Spec.Volume != nil {
-		return podAffinity(true, map[string]string{
-			labelName:       sb.Namespace,
-			labelController: "app",
-		})
+		return appAffinity(sb.Namespace)
 	}
 
 	db := sb.Spec.Database
@@ -496,6 +493,24 @@ func buildAffinity(sb *b2backupv1.ScheduledBackup) *corev1.Affinity {
 		})
 	}
 	return nil
+}
+
+func appAffinity(name string) *corev1.Affinity {
+	return &corev1.Affinity{
+		PodAffinity: &corev1.PodAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+				TopologyKey: hostnameTopologyKey,
+				LabelSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{labelName: name},
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key:      labelManagedBy,
+						Operator: metav1.LabelSelectorOpNotIn,
+						Values:   []string{managedByValue},
+					}},
+				},
+			}},
+		},
+	}
 }
 
 func podAffinity(required bool, labels map[string]string) *corev1.Affinity {

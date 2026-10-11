@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -8,6 +9,8 @@ import (
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	klabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 )
 
@@ -306,18 +309,30 @@ func TestVolumeAffinityWinsOverDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCronJob() error = %v", err)
 	}
-	spec := cj.Spec.JobTemplate.Spec.Template.Spec
-	aff := spec.Affinity
+	spec := cj.Spec.JobTemplate.Spec
+	aff := spec.Template.Spec.Affinity
 	if aff == nil || aff.PodAffinity == nil ||
 		len(aff.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution) != 1 {
 		t.Fatal("expected hard pod affinity to the app when a claim is attached")
 	}
 	sel := aff.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector
-	if sel.MatchLabels[labelName] != testNS {
-		t.Errorf("affinity selector = %v", sel.MatchLabels)
+	if len(sel.MatchLabels) != 1 || sel.MatchLabels[labelName] != testNS {
+		t.Errorf("affinity selector = %v, want only %s=%s", sel.MatchLabels, labelName, testNS)
+	}
+	selector, err := metav1.LabelSelectorAsSelector(sel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selector.Matches(klabels.Set{labelName: testNS, labelController: testNS}) {
+		t.Error("the selector must match the app's pods whatever their controller is named")
+	}
+	backupPod := maps.Clone(spec.Template.Labels)
+	backupPod[labelName] = testNS
+	if selector.Matches(klabels.Set(backupPod)) {
+		t.Error("the selector must not match a backup pod, even one named after the namespace")
 	}
 
-	c := spec.Containers[0]
+	c := spec.Template.Spec.Containers[0]
 	if c.WorkingDir != "/myapp-prod-storage" {
 		t.Errorf("workingDir = %q, want the claim mount path", c.WorkingDir)
 	}

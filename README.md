@@ -208,7 +208,7 @@ order:
 | Spec | Affinity |
 | --- | --- |
 | `spec.affinity` set | Used verbatim. `{}` is a valid value and means "no affinity at all" |
-| `spec.volume` | **Required**: same node as pods labelled `app.kubernetes.io/name: <namespace>`, `app.kubernetes.io/controller: app` |
+| `spec.volume` | **Required**: same node as pods labelled `app.kubernetes.io/name: <namespace>`, other than the operator's own backup pods |
 | `spec.database`, no volume | **Preferred** (weight 100): same node as the database pod |
 | Neither | None |
 
@@ -216,9 +216,11 @@ The **volume** case stays a hard requirement on purpose. An RWO claim can only
 be mounted on the node already holding it, so a preference there would let the
 backup pod be scheduled somewhere the claim cannot follow, and it would sit
 Pending. The selector is the sharp edge: it matches on the *namespace* as the
-app name, which is the convention these deployments follow, but in a namespace
-running more than one app it can pin the backup beside the wrong one. Set
-`spec.affinity` explicitly there.
+app name, which is what bjw-s app-template sets when the HelmRelease is named
+after its namespace. It does not look at `app.kubernetes.io/controller`, so it
+matches every controller in that release, and in a namespace running more than
+one app it can pin the backup beside the wrong one. Set `spec.affinity`
+explicitly there.
 
 The **database** case is a preference. Co-location makes a dump faster, but it
 is not required for correctness, and as a hard rule it left backups Pending
