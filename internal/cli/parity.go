@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -826,16 +827,24 @@ func compareSchedules(r *parityReport, o, g parityView) error {
 	if err != nil {
 		return fmt.Errorf("reading the original schedule: %w", err)
 	}
+	rescheduled := generatedCadence.equal(originalCadence) && g.schedule != o.schedule
 	switch {
 	case !generatedCadence.equal(originalCadence):
 		r.differ("CADENCE DIFFERS: original %q runs %s, generated %q runs %s",
 			o.schedule, originalCadence, g.schedule, generatedCadence)
-	case g.schedule != o.schedule:
+	case rescheduled && o.timeZone != g.timeZone:
+		r.note("RESCHEDULED: %s -> %s (%s either way; the operator jittered it, and it now runs in %s instead of %s)",
+			describeSchedule(o.schedule, o.timeZone), describeSchedule(g.schedule, g.timeZone), generatedCadence,
+			g.timeZone, o.timeZone)
+	case rescheduled:
 		r.note("RESCHEDULED: %s -> %s (%s either way; the operator jittered it)",
 			describeSchedule(o.schedule, o.timeZone), describeSchedule(g.schedule, g.timeZone), generatedCadence)
 	}
-	if o.timeZone != g.timeZone {
+	if o.timeZone != g.timeZone && !rescheduled {
 		r.differ("TIMEZONE DIFFERS: original %s, generated %s", o.timeZone, g.timeZone)
+	}
+	if original, generated := daylightSaving(o.schedule, o.timeZone), daylightSaving(g.schedule, g.timeZone); original != generated {
+		r.note("DAYLIGHT SAVING: original %s, generated %s", cmpOr(original, "fires every day"), cmpOr(generated, "fires every day"))
 	}
 	if o.suspend != g.suspend {
 		r.differ("SUSPEND DIFFERS: original suspend %t, generated %t", o.suspend, g.suspend)
@@ -1116,6 +1125,56 @@ func describeSchedule(expr, tz string) string {
 		return fmt.Sprintf("%q (hourly at :%02d)", expr, minute)
 	}
 	return fmt.Sprintf("%q", expr)
+}
+
+// daylightSaving says on how many days in cadenceWindowDays from the start of
+// this year a daily schedule fires other than once in its zone, as the
+// CronJob controller's cron library reads it: a clock time the zone skips
+// does not fire that day, and one it repeats fires twice. It is empty for any
+// other shape, a zone that does not load, or a schedule unaffected.
+func daylightSaving(expr, tz string) string {
+	fields := strings.Fields(expr)
+	if len(fields) != 5 || fields[2] != "*" || fields[3] != "*" || fields[4] != "*" ||
+		!isNumeric(fields[0]) || !isNumeric(fields[1]) {
+		return ""
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return ""
+	}
+	minute, _ := strconv.Atoi(fields[0])
+	hour, _ := strconv.Atoi(fields[1])
+	year := time.Now().In(loc).Year()
+	skipped, doubled := 0, 0
+	for day := range cadenceWindowDays {
+		start := time.Date(year, time.January, 1+day, 0, 0, 0, 0, loc)
+		end := time.Date(year, time.January, 2+day, 0, 0, 0, 0, loc)
+		if end.Sub(start) == 24*time.Hour {
+			continue
+		}
+		fires := 0
+		for t := start; t.Before(end); t = t.Add(time.Minute) {
+			if t.Hour() == hour && t.Minute() == minute {
+				fires++
+			}
+		}
+		switch {
+		case fires == 0:
+			skipped++
+		case fires > 1:
+			doubled++
+		}
+	}
+	var parts []string
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("skips %02d:%02d %s on %d day(s) a year, when the clocks go forward",
+			hour, minute, tz, skipped))
+	}
+	if doubled > 0 {
+		parts = append(parts, fmt.Sprintf("fires twice at %02d:%02d %s on %d day(s) a year, when the clocks go back",
+			hour, minute, tz, doubled))
+	}
+	return strings.Join(parts, " and ")
 }
 
 // normalizeCNPGSecretPath leaves CNPG_SECRET_PATH in env only when the script

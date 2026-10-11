@@ -767,8 +767,10 @@ func TestParityReadsAMissingTimeZoneAsUTC(t *testing.T) {
 	}
 	var out bytes.Buffer
 	err := runParity(&out, gen, hr, migrateOptions{})
-	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "TIMEZONE DIFFERS: original UTC") {
-		t.Errorf("parity = %v; a CronJob with no timeZone runs in the controller manager's zone, UTC:\n%s", err, out.String())
+	if err != nil || !strings.Contains(out.String(), "(daily at 00:44 UTC) -> ") ||
+		!strings.Contains(out.String(), "now runs in America/Chicago instead of UTC") {
+		t.Errorf("parity = %v; a CronJob with no timeZone runs in the controller manager's zone, UTC, "+
+			"and the jittered schedule moves either way:\n%s", err, out.String())
 	}
 }
 

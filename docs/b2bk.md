@@ -782,7 +782,8 @@ printed with the time of day in the schedule's time zone, such as
 | --- | --- | --- |
 | `IDENTICAL` | 0 | Nothing moved |
 | notes + `EQUIVALENT` | 0 | Only the notes below apply |
-| `RESCHEDULED` | note | The time moved; the cadence did not |
+| `RESCHEDULED` | note | The time moved; the cadence did not. When the time zone changed too, such as from the kube-controller-manager's UTC to the container's `TZ`, the note names both zones and `TIMEZONE DIFFERS` is not reported, since the jitter moves the time either way |
+| `DAYLIGHT SAVING` | note | A daily schedule fires other than once a day in its zone: a time the clocks skip does not fire that day, and a time they repeat fires twice, as the CronJob controller's cron library reads it |
 | `FORGET SCOPED` | note | forget now expires only the backup's own tags |
 | `JOB SETTINGS CHANGE` | note | `backoffLimit`, `startingDeadlineSeconds`, the Job history limits or `ttlSecondsAfterFinished` changed. app-template retries a failed run 6 times and skips a run 30 seconds late; the operator does neither |
 | `IMAGE CHANGES` | note | `ghcr.io/gabe565/restic`, directly or through a mirror, becomes the operator's image, which is built on it |
@@ -800,7 +801,7 @@ printed with the time of day in the schedule's time zone, such as
 | `SHELL OPTIONS ADDED` | 1 | The operator runs every script under `set -euo pipefail`, and fewer of the original's commands ran under `errexit` (a command followed by another, on a later line or after `;`), `nounset` (a command naming a variable) or `pipefail` (a command with a pipe). The options are read at each command, so a `set -eu` after the first command still counts, and one set inside a `{ ... }` group piped elsewhere, or a `( ... )` subshell, ends with it. A failure now stops what the original ran on after it, such as the dump or the forget. `migrate` notes the same |
 | `DUMP FORMAT CHANGES` | 1 | A cnpg dump moves from `backup-cnpg.sh` to `dumpdb cnpg` |
 | `CADENCE DIFFERS` | 1 | It no longer runs as often |
-| `TIMEZONE DIFFERS` | 1 | |
+| `TIMEZONE DIFFERS` | 1 | The zone changed and the schedule did not, so the backup runs at another time |
 | `VOLUME DIFFERS` | 1 | Another claim, path, read-only flag or scratch space |
 | `READ ACCESS DIFFERS` | 1 | The original could read every file on its claims, as root with `DAC_OVERRIDE`, and the generated backup cannot |
 | `WORKING DIR DIFFERS` | 1 | |
@@ -885,7 +886,7 @@ What maps across:
 | The container's `workingDir` | `spec.workingDir`, when it is not the default the operator would use |
 | The one Secret mounted | `spec.database.secretName`; a `<cluster>-app` or `<cluster>-superuser` name also sets `cnpgCluster` |
 | `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` and `labels`, from the controller's `pod` or else `defaultPodOptions` | `spec.affinity`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` and `spec.podLabels`, verbatim |
-| Container `resources`, CronJob `timeZone`, `concurrencyPolicy` and `suspend` | The same fields. No `resources` becomes `resources: {}`, so the operator's default limits do not apply. No `timeZone` becomes `UTC`: app-template then sets none, and the CronJob runs in the kube-controller-manager's zone, which is UTC unless its container sets `TZ`. The operator sets the container's `TZ` from `timeZone`, so `parity` reports a `TZ` that differed from it |
+| Container `resources`, CronJob `timeZone`, `concurrencyPolicy` and `suspend` | The same fields. No `resources` becomes `resources: {}`, so the operator's default limits do not apply. No `timeZone` becomes the restic container's `TZ`, or `UTC` without one. app-template then sets none, and the schedule runs in the kube-controller-manager's zone, which is UTC unless its container sets `TZ`. The operator sets the container's `TZ` from `timeZone`, so taking the container's `TZ` keeps the zone the container ran in, and a jittered schedule moves its time anyway; `parity` reports the move as `RESCHEDULED`, or a schedule kept as it was as `TIMEZONE DIFFERS`. A `timeZone` the CronJob does set is kept, and `parity` reports a `TZ` that differed from it |
 | CronJob `successfulJobsHistory` and `failedJobsHistory` | `spec.successfulJobsHistoryLimit` and `spec.failedJobsHistoryLimit` |
 | An image from `ghcr.io/gabe565/restic`, directly or through a mirror | Nothing: the operator's image is built on it. Any other image becomes `spec.image`, and must meet the image contract in the README |
 | `envFrom` of `restic-envs` and `restic-b2` | The Repository's Secret, with `restic-envs` as the password's source. Given `--from-secret`, every other `RESTIC_*` key in `restic-envs` goes into `spec.env`; without it, the output warns that those keys went unchecked |
