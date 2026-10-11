@@ -219,9 +219,27 @@ func runRotatePassword(
 	done := newPrinter(f.Streams.Out)
 	done.printf("rotated the encryption key for repository/%s\n", repo.Name)
 	done.printf("  archive it now:   b2bk env repo/%s --show-password\n", repo.Name)
+	for _, line := range staleSeedNotice(repo, current.Name) {
+		done.printf("! %s\n", line)
+	}
 	done.printf("  the old key still works; remove it with:\n")
 	done.printf("    b2bk exec %s -- restic key list\n", sb.Name)
 	return done.Err()
+}
+
+// staleSeedNotice says where the old password still lives after a rotation.
+func staleSeedNotice(repo *b2backupv1.Repository, secret string) []string {
+	ref := repo.Spec.PasswordSecretRef
+	if ref == nil {
+		return []string{"any copy of the old password kept in Git or SOPS is now stale; replace it with the new one"}
+	}
+	return []string{
+		fmt.Sprintf("spec.passwordSecretRef names secret/%s, and the %s it holds is now the old password.",
+			ref.Name, ref.Key),
+		"Update it, and its copy in Git or SOPS, with the new one. Until then the operator keeps",
+		fmt.Sprintf("finalizer %s on secret/%s, since that is the only copy of the new password.",
+			controller.SecretFinalizer, secret),
+	}
 }
 
 func deleteTempKeySecret(c client.Client, temp *corev1.Secret) error {
