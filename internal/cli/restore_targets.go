@@ -472,7 +472,7 @@ func restoreToDatabase(
 	if err := requireCurrentBackup(ctx, c, sb); err != nil {
 		return err
 	}
-	target := databaseTarget(db, src.database)
+	target := databaseTarget(sb, src.database)
 	lock, err := lockForRestore(ctx, c, sb, o.dryRun)
 	if err != nil {
 		return err
@@ -530,18 +530,27 @@ func (o *restoreOptions) restoreDatabase(
 }
 
 // databaseTarget names the database a restore overwrites, as restoredb will
-// resolve it: the database given, or for mariadb the spec's, or the one the
-// credentials Secret names.
-func databaseTarget(db *b2backupv1.DatabaseSpec, database string) string {
-	where := ""
-	if db.Host != "" {
-		where = " on " + db.Host
+// resolve it: the database given, else DB_DATABASE from the environment, which
+// for mariadb the operator sets from the spec and for cnpg spec.env may set,
+// else the one the credentials Secret names; and the host the same way.
+func databaseTarget(sb *b2backupv1.ScheduledBackup, database string) string {
+	db := sb.Spec.Database
+	host := db.Host
+	if db.Engine != b2backupv1.DatabaseEngineMariaDB {
+		host = sb.Spec.Env["DB_HOST"]
+	}
+	where := " on " + host
+	if host == "" {
+		where = fmt.Sprintf(" on the host secret/%s names", db.EffectiveSecretName())
 	}
 	switch {
 	case database != "":
-		return fmt.Sprintf("the %s database %q%s", db.Engine, database, where)
 	case db.Engine == b2backupv1.DatabaseEngineMariaDB && db.Name != "":
-		return fmt.Sprintf("the %s database %q%s", db.Engine, db.Name, where)
+		database = db.Name
+	case sb.Spec.Env["DB_DATABASE"] != "":
+		database = sb.Spec.Env["DB_DATABASE"]
+	default:
+		return fmt.Sprintf("the %s database that secret/%s names in dbname%s", db.Engine, db.EffectiveSecretName(), where)
 	}
-	return fmt.Sprintf("the %s database that secret/%s names in dbname%s", db.Engine, db.EffectiveSecretName(), where)
+	return fmt.Sprintf("the %s database %q%s", db.Engine, database, where)
 }

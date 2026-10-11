@@ -488,6 +488,8 @@ func TestDatabaseRestoreGoesIntoTheSourcesDatabase(t *testing.T) {
 		{"the source's database", "reporting", "", "--database='reporting'", `"reporting"`},
 		{"the flag wins", "reporting", "scratch", "--database='scratch'", `"scratch"`},
 		{"the Secret's dbname", "", "", "", "secret/postgresql-app names in dbname"},
+		{"DB_DATABASE in spec.env", "", "", "", `"from-env" on the host secret/postgresql-app names`},
+		{"DB_HOST in spec.env", "", "", "", "on other-rw"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -495,12 +497,18 @@ func TestDatabaseRestoreGoesIntoTheSourcesDatabase(t *testing.T) {
 			sb := newBackup(testBackupName, testRepoName)
 			sb.Spec.Database = &b2backupv1.DatabaseSpec{Engine: b2backupv1.DatabaseEngineCNPG}
 			sb.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Database: tt.database}}
+			switch tt.name {
+			case "DB_DATABASE in spec.env":
+				sb.Spec.Env = map[string]string{"DB_DATABASE": "from-env"}
+			case "DB_HOST in spec.env":
+				sb.Spec.Env = map[string]string{"DB_HOST": "other-rw"}
+			}
 			o := &restoreOptions{snapshot: latest, database: tt.flag}
 			src, err := o.databaseSource(sb)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := databaseTarget(sb.Spec.Database, src.database); !strings.Contains(got, tt.target) {
+			if got := databaseTarget(sb, src.database); !strings.Contains(got, tt.target) {
 				t.Errorf("confirmation names %q, want %q in it", got, tt.target)
 			}
 			pod := &fakePod{}
