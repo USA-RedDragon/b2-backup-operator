@@ -44,6 +44,10 @@ const (
 	unsetSetting           = "unset"
 )
 
+// controllerManagerZone is the zone a CronJob without timeZone runs in: the
+// kube-controller-manager's, which is UTC unless its container sets TZ.
+const controllerManagerZone = "UTC"
+
 // upstreamImage is the image hand-written backups ran, pulled directly or
 // through a mirror. The operator's own image is built on it.
 const upstreamImage = "ghcr.io/gabe565/restic"
@@ -533,7 +537,7 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 		return err
 	}
 
-	o, err := viewOf(original.cronJob, original.namespace, repo.SecretName(), defaultTimeZone)
+	o, err := viewOf(original.cronJob, original.namespace, repo.SecretName(), controllerManagerZone)
 	if err != nil {
 		return fmt.Errorf("reading the original backup: %w", err)
 	}
@@ -543,6 +547,10 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 	}
 
 	var r parityReport
+	if original.cronJob.Spec.TimeZone == nil {
+		r.note("TIMEZONE UNSET: the original CronJob sets no timeZone, so it ran in the kube-controller-manager's "+
+			"zone, taken as %s", controllerManagerZone)
+	}
 	if readsSecret(original.cronJob, passwordSecretName) {
 		addResticEnvs(&r, o.env, resticEnvs)
 	}

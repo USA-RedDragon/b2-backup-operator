@@ -654,6 +654,7 @@ printed with the time of day in the schedule's time zone, such as
 | `IMAGE CHANGES` | note | `ghcr.io/gabe565/restic`, directly or through a mirror, becomes the operator's image, which is built on it |
 | `AFFINITY ADDED` | note | The original sets none and the operator adds only a preference |
 | `POD LABELS CHANGE` | note | app-template's own `app.kubernetes.io/controller`, `name` or `instance` label is gone |
+| `TIMEZONE UNSET` | note | The original CronJob sets no `timeZone`; it is compared as UTC, the kube-controller-manager's zone |
 | `RESTIC-ENVS UNCHECKED` | note | Without `--from-secret`, keys in `restic-envs` besides `RESTIC_REPOSITORY` and `RESTIC_PASSWORD` cannot be compared |
 | `INIT JOB REPLACED` | note | The release's `restic init` Job; the Repository initializes or adopts the repository itself |
 | `SCRIPT DIFFERS` | 1 | Followed by both scripts |
@@ -732,7 +733,7 @@ What maps across:
 | The container's `workingDir` | `spec.workingDir`, when it is not the default the operator would use |
 | The one Secret mounted | `spec.database.secretName`; a `<cluster>-app` or `<cluster>-superuser` name also sets `cnpgCluster` |
 | `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` and `labels`, from the controller's `pod` or else `defaultPodOptions` | `spec.affinity`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` and `spec.podLabels`, verbatim |
-| Container `resources`, CronJob `timeZone`, `concurrencyPolicy` and `suspend` | The same fields. No `resources` becomes `resources: {}`, so the operator's default limits do not apply |
+| Container `resources`, CronJob `timeZone`, `concurrencyPolicy` and `suspend` | The same fields. No `resources` becomes `resources: {}`, so the operator's default limits do not apply. No `timeZone` becomes `UTC`: app-template then sets none, and the CronJob runs in the kube-controller-manager's zone, which is UTC unless its container sets `TZ`. The operator sets the container's `TZ` from `timeZone`, so `parity` reports a `TZ` that differed from it |
 | CronJob `successfulJobsHistory` and `failedJobsHistory` | `spec.successfulJobsHistoryLimit` and `spec.failedJobsHistoryLimit` |
 | An image from `ghcr.io/gabe565/restic`, directly or through a mirror | Nothing: the operator's image is built on it. Any other image becomes `spec.image`, and must meet the image contract in the README |
 | `envFrom` of `restic-envs` and `restic-b2` | The Repository's Secret, with `restic-envs` as the password's source. Given `--from-secret`, every other `RESTIC_*` key in `restic-envs` goes into `spec.env`; without it, the output warns that those keys went unchecked |

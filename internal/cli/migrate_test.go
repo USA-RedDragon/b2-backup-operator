@@ -1172,3 +1172,17 @@ func TestMigrateCarriesResticEnvsKeysFromTheSecret(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrateKeepsACronJobWithoutATimeZoneOnUTC(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "          timeZone: America/Chicago\n", "", 1)
+	body = strings.Replace(body, "              TZ: America/Chicago\n", "              TZ: UTC\n", 1)
+	sb, migrateOut, parityOut, err := migrateAndParity(t, body, migrateOptions{repository: sopsRepoURL})
+	if sb.Spec.TimeZone != "UTC" || !strings.Contains(migrateOut, "# timeZone: ") {
+		t.Errorf("timeZone = %q, want UTC, the zone the original ran in, and the choice noted:\n%s",
+			sb.Spec.TimeZone, migrateOut)
+	}
+	if strings.Contains(parityOut, "TIMEZONE DIFFERS") || !strings.Contains(parityOut, "daily at 00:32 UTC") {
+		t.Errorf("parity = %v, want the original read as running in UTC:\n%s", err, parityOut)
+	}
+}

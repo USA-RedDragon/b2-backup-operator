@@ -733,3 +733,21 @@ func TestParityComparesResticEnvsGivenTheSecret(t *testing.T) {
 			err, out.String())
 	}
 }
+
+func TestParityReadsAMissingTimeZoneAsUTC(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	hr := filepath.Join(dir, "helmrelease.yaml")
+	gen := filepath.Join(dir, "generated.yaml")
+	if err := os.WriteFile(hr, []byte(strings.Replace(parityRelease, "          timeZone: America/Chicago\n", "", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gen, []byte(parityGenerated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runParity(&out, gen, hr, migrateOptions{})
+	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "TIMEZONE DIFFERS: original UTC") {
+		t.Errorf("parity = %v; a CronJob with no timeZone runs in the controller manager's zone, UTC:\n%s", err, out.String())
+	}
+}
