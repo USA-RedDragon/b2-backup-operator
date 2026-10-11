@@ -690,10 +690,12 @@ what the original's wrapper would have added: `RESTIC_GROUP_BY` from the
 container's `env`, from `restic-envs` given `--from-secret`, or else the image's
 own `tags`.
 
-The script comparison ignores the quoting around `--exclude` patterns, unless a
-pattern holds `$`, a backquote or a backslash, which double quotes expand, and the
+The script comparison reads the quoting around `--exclude` patterns as the
+shell does: a pattern that is one bare word compares without its quotes, one
+with nothing a double quote expands compares single-quoted, and any other keeps
+its quotes, so a quoted space never matches an unquoted one. It also ignores the
 `--retry-lock` and `--secret-mount` flags, which the operator renders and the
-hand-written script does not. It also takes out of `restic forget` the
+hand-written script does not, and takes out of `restic forget` the
 `--host="$RESTIC_HOST"`, `--group-by=tags` and `--tag` flags the operator adds, when the tags are
 exactly the backup's own, and notes the change as `FORGET SCOPED`: restic
 already defaults `--host` to `$RESTIC_HOST`, so only the tags change what forget

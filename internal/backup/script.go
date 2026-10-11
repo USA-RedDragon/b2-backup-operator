@@ -159,6 +159,10 @@ func shellQuote(s string) string {
 
 var safeBare = regexp.MustCompile(`^[A-Za-z0-9_.:@%+,/=-]+$`)
 
+// IsBareWord reports whether s needs no quoting in a shell: the shell reads it
+// as the one word it is, unchanged.
+func IsBareWord(s string) bool { return s != "" && safeBare.MatchString(s) }
+
 func shellQuoteIfNeeded(s string) string {
 	if s != "" && safeBare.MatchString(s) {
 		return s
