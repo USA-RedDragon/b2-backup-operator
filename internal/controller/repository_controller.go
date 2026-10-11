@@ -1213,6 +1213,12 @@ func (r *RepositoryReconciler) reconcileInitJob(
 	err := r.Get(ctx, key, &job)
 	switch {
 	case err == nil:
+		if !metav1.IsControlledBy(&job, repo) {
+			r.setInitializing(repo, "Initializing", fmt.Sprintf(
+				"waiting for init Job %s, which this Repository does not own, to be deleted; it may be left "+
+					"by an earlier Repository of the same name", name))
+			return 15 * time.Second, nil
+		}
 		if !job.DeletionTimestamp.IsZero() {
 			r.setInitializing(repo, "Initializing", fmt.Sprintf("waiting for the old init Job %s to be deleted", name))
 			return 5 * time.Second, nil
@@ -1352,6 +1358,9 @@ func (r *RepositoryReconciler) cleanupInitJob(
 	key := types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name + initJobSuffix}
 	if err := r.Get(ctx, key, &job); err != nil {
 		return client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(&job, repo) {
+		return nil
 	}
 	return r.deleteJob(ctx, &job)
 }

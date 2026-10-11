@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -386,5 +388,32 @@ func TestDataLeftForAnotherRepositoryKeepsItsPassword(t *testing.T) {
 	}
 	if !slices.Contains(secret.Finalizers, SecretFinalizer) {
 		t.Error("the only copy of the password for retained data lost its finalizer")
+	}
+}
+
+func TestAnInitJobOfAnotherRepositoryIsNeverTakenForThisOne(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	foreign := &batchv1.Job{
+		Name: resticName + initJobSuffix, Namespace: testNS,
+		Labels: map[string]string{labelManagedBy: managedByValue},
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: b2backupv1.GroupVersion.String(), Kind: "Repository", Name: resticName,
+			UID: "uid-deleted-predecessor", Controller: ptr.To(true),
+		}},
+		Status: batchv1.JobStatus{Succeeded: 1},
+	}
+	r, c := newHarness(t, f, prefixRepo(nil), foreign)
+	reconcileN(t, r, 3)
+	if getRepo(t, c).Status.Initialized {
+		t.Fatal("a path never initialized was recorded as initialized from another Repository's init Job")
+	}
+	if cond := condition(t, c, b2backupv1.RepositoryConditionInitialized); cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Errorf("Initialized = %+v, want False while waiting", cond)
+	}
+	var job batchv1.Job
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(foreign), &job); err != nil {
+		t.Errorf("the other Repository's init Job was touched: %v", err)
 	}
 }
