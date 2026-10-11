@@ -350,7 +350,12 @@ pod, but the database server holds two copies of the data until
 `<db>__b2bk_old` is dropped.
 A dump taken with `--skip-comments` or `--compact` has no trailer and is always
 refused. The swap waits at most 60 seconds (`lock_wait_timeout`) for
-transactions that hold a live table, then fails as a whole.
+transactions that hold a live table, then fails as a whole. When the client
+reports an error for the swap, `restoredb` lists the tables again before it says
+what happened, since a connection lost after the server ran the `RENAME TABLE`
+reports an error for a swap that went through: a swap that happened is reported
+as done, one that did not is cleaned up as any other failure, and when it cannot
+tell, it says so and drops nothing.
 
 `<db>__b2bk_old` keeps the replaced tables for a rollback. `restoredb` prints
 the `DROP DATABASE` that removes it and the statements that swap it back.

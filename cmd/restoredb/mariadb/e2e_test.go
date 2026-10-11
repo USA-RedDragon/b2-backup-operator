@@ -32,6 +32,10 @@ const (
 
 var server string
 
+// failAfter names the variable that makes the mariadb shim report a lost
+// connection after it has run SQL that holds the variable's value.
+const failAfter = "B2BK_TEST_FAIL_AFTER"
+
 // TestMain starts one MariaDB server in Docker for the whole suite and puts a
 // mariadb shim on PATH that runs the client inside it, so the suite needs
 // nothing but Docker. MARIADB_IMAGE overrides the image.
@@ -74,7 +78,18 @@ func run(m *testing.M) int {
 		return 1
 	}
 	defer func() { _ = os.RemoveAll(bin) }()
-	shim := "#!/bin/sh\nexec docker exec -i -e MYSQL_PWD " + server + " mariadb \"$@\"\n"
+	run := "docker exec -i -e MYSQL_PWD " + server + " mariadb \"$@\""
+	shim := "#!/bin/sh\n" +
+		"if [ -n \"$" + failAfter + "\" ]; then\n" +
+		"  sql=$(cat)\n" +
+		"  printf '%s\\n' \"$sql\" | " + run + "\n" +
+		"  status=$?\n" +
+		"  case \"$sql\" in *\"$" + failAfter + "\"*)\n" +
+		"    echo 'ERROR 2013 (HY000): Lost connection to server during query' >&2; exit 1;;\n" +
+		"  esac\n" +
+		"  exit $status\n" +
+		"fi\n" +
+		"exec " + run + "\n"
 	if err := os.WriteFile(filepath.Join(bin, "mariadb"), []byte(shim), 0o700); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -557,4 +572,25 @@ func TestMariaDBKeepsAStagingNameItDidNotCreate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A connection lost after the server ran the swap reports an error for a swap
+// that happened. restoredb looks at the tables again and reports it as done.
+func TestMariaDBSwapAppliedDespiteAnError(t *testing.T) {
+	backup, want := seed(t)
+	t.Setenv(failAfter, "RENAME TABLE `app`.")
+	out, err := restore(t, backup)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !strings.Contains(out, "the swap was applied") {
+		t.Errorf("the output does not say the swap went through:\n%s", out)
+	}
+	if got := fingerprint(t, appDB); got != want {
+		t.Error("app does not match the backup")
+	}
+	if got := sql(t, "SELECT v FROM app__b2bk_old.keep WHERE id = 1"); got != "changed\n" {
+		t.Errorf("the replaced rows were not kept: %q", got)
+	}
+	sql(t, "DROP DATABASE app__b2bk_old")
 }

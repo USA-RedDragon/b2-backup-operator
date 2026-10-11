@@ -25,7 +25,8 @@ MariaDB 10.5 or later. Only when the whole dump has gone in cleanly and ends wit
 tool's "-- Dump completed" trailer does one RENAME TABLE statement, which
 MariaDB applies atomically, move every live table into <database>` + OldSuffix + `
 and every staged table into the live database. Any failure before that drops
-the staging database and leaves the live database as it was.
+the staging database and leaves the live database as it was. If the swap itself
+reports an error, the tables are listed again to tell whether it went through.
 
 The replaced tables stay in <database>` + OldSuffix + ` for a rollback until it is
 dropped, by hand or with --drop-old. A restore refuses to start while that
