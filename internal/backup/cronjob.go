@@ -246,10 +246,11 @@ func BuildManualJob(
 	labels[LabelTrigger] = TriggerManual
 
 	return &batchv1.Job{
-		Name:      ManualJobName(sb, at),
-		Namespace: sb.Namespace,
-		Labels:    labels,
-		Spec:      tmpl.Spec,
+		Name:        ManualJobName(sb, at),
+		Namespace:   sb.Namespace,
+		Labels:      labels,
+		Annotations: maps.Clone(tmpl.Annotations),
+		Spec:        tmpl.Spec,
 	}, nil
 }
 

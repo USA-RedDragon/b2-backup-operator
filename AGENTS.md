@@ -108,6 +108,9 @@ one of these:
   `backup.Validate` and the `TagConflict` condition refuse them. A script backup
   must be alone on its Repository: no parser can tell what a shell script will
   forget, under which tag or host, so `tagConflict` does not try.
+  `backup.FindConflict` also reads the `forget-scope` annotation of running
+  Jobs and of CronJobs no live ScheduledBackup owns, since a Job keeps the
+  scope it started with and an orphaned CronJob is reconciled by nobody.
 - **Backups read as root with `DAC_OVERRIDE`.** The image runs as root; with
   every capability dropped, root cannot read another user's `0700` directory
   and restic saves an incomplete snapshot. Restore Jobs add `CHOWN`,
