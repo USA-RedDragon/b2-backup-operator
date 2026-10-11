@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -297,5 +298,33 @@ func TestRotatePasswordSaysTheSeedIsNowStale(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestARotatedPasswordIsProtectedAtOnce(t *testing.T) {
+	t.Parallel()
+	repo := initializedRepo()
+	secret := credentialsSecret(repo.SecretName())
+	c := clientBuilder(t, repo, secret).Build()
+	current := &corev1.Secret{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(secret), current); err != nil {
+		t.Fatal(err)
+	}
+	if err := pointSecretAtPassword(context.Background(), c, repo, current, "new-password"); err != nil {
+		t.Fatal(err)
+	}
+	after := &corev1.Secret{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(secret), after); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(after.Data[controller.KeyResticPassword]); got != "new-password" {
+		t.Errorf("RESTIC_PASSWORD = %q", got)
+	}
+	if !slices.Contains(after.Finalizers, controller.SecretFinalizer) {
+		t.Error("the only copy of the new password is unprotected until the operator's next pass")
+	}
+	if got := after.Annotations[b2backupv1.AnnotationProtectedBy]; got != string(repo.UID) {
+		t.Errorf("%s = %q, want the Repository's UID so the operator may release it later",
+			b2backupv1.AnnotationProtectedBy, got)
 	}
 }

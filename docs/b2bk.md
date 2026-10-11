@@ -502,7 +502,9 @@ Any copy of the old password, such as the `passwordSecretRef` seed and its
 source in Git or SOPS, is now stale, and the command says so. Replace it with
 the new password. Until the seed holds it again, the operator keeps the
 credentials Secret behind its `protect-password` finalizer, since that Secret
-is the only copy.
+is the only copy. `b2bk` adds the finalizer in the same write as the new
+password, so the Secret is never unprotected while it waits for the
+operator's next pass.
 
 ## Escape hatch
 
