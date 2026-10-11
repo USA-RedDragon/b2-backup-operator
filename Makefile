@@ -64,6 +64,12 @@ MARIADB_IMAGE ?= mariadb:11
 test-mariadb: ## Run the restoredb mariadb tests against a throwaway MariaDB container. Needs Docker.
 	MARIADB_IMAGE=$(MARIADB_IMAGE) go test -tags mariadb ./cmd/restoredb/mariadb/ -count=1 -v
 
+POSTGRES_IMAGE ?= postgres:18-alpine
+
+.PHONY: test-postgres
+test-postgres: ## Run the restoredb postgres tests against a throwaway Postgres container. Needs Docker.
+	POSTGRES_IMAGE=$(POSTGRES_IMAGE) go test -tags postgres ./cmd/restoredb/postgres/ -count=1 -v
+
 KIND_CLUSTER ?= b2-backup-operator-test-e2e
 
 .PHONY: setup-test-e2e
