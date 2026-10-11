@@ -183,6 +183,8 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if other, err := r.repositoryConflict(ctx, &repo); err != nil {
 		return ctrl.Result{}, err
 	} else if other != "" {
+		r.setNotOwned(&repo, reasonConflict, fmt.Sprintf("bucket %s path %s overlaps Repository %s",
+			repo.Spec.Bucket, displayPath(repo.EffectivePath()), other))
 		r.setCondition(&repo, metav1.Condition{
 			Type:   b2backupv1.RepositoryConditionReady,
 			Status: metav1.ConditionFalse,
@@ -212,6 +214,9 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	result, err := r.reconcile(ctx, &repo, api)
 	if err != nil {
+		if reason := reasonFor(err); slices.Contains(notOwnReasons, reason) {
+			r.setNotOwned(&repo, reason, err.Error())
+		}
 		r.setCondition(&repo, metav1.Condition{
 			Type:    b2backupv1.RepositoryConditionReady,
 			Status:  metav1.ConditionFalse,
@@ -239,18 +244,30 @@ var notOwnReasons = []string{
 
 // RepositoryNotOwn says why nothing may run against the repository the
 // Repository's credentials Secret names, or returns "" when it may. That is
-// so while the Repository is Ready=False for a reason under which the Secret or
-// its location may belong to something else, and while spec.secretName is not
-// the Secret status records.
+// so while the Owned condition is False, which only the ownership checks set
+// and clear, and while spec.secretName is not the Secret status records. A
+// Repository that has not set Owned yet falls back to its Ready reason.
 func RepositoryNotOwn(repo *b2backupv1.Repository) string {
 	if recorded := repo.Status.SecretName; recorded != "" && recorded != repo.SecretName() {
 		return fmt.Sprintf("names Secret %s in spec.secretName but recorded %s in status", repo.SecretName(), recorded)
+	}
+	if owned := apimeta.FindStatusCondition(repo.Status.Conditions, b2backupv1.RepositoryConditionOwned); owned != nil {
+		if owned.Status == metav1.ConditionTrue {
+			return ""
+		}
+		return fmt.Sprintf("is not its own (%s: %s)", owned.Reason, owned.Message)
 	}
 	ready := apimeta.FindStatusCondition(repo.Status.Conditions, b2backupv1.RepositoryConditionReady)
 	if ready != nil && ready.Status == metav1.ConditionFalse && slices.Contains(notOwnReasons, ready.Reason) {
 		return fmt.Sprintf("is not Ready (%s: %s)", ready.Reason, ready.Message)
 	}
 	return ""
+}
+
+func (r *RepositoryReconciler) setNotOwned(repo *b2backupv1.Repository, reason, message string) {
+	r.setCondition(repo, metav1.Condition{
+		Type: b2backupv1.RepositoryConditionOwned, Status: metav1.ConditionFalse, Reason: reason, Message: message,
+	})
 }
 
 type reasonError struct {
@@ -357,6 +374,10 @@ func (r *RepositoryReconciler) reconcile(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	r.setCondition(repo, metav1.Condition{
+		Type: b2backupv1.RepositoryConditionOwned, Status: metav1.ConditionTrue, Reason: "Owned",
+		Message: "the credentials Secret and the location it names are this Repository's own",
+	})
 
 	r.reconcileUsage(ctx, repo, api)
 

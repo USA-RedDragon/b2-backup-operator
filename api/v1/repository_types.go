@@ -40,6 +40,12 @@ const (
 
 	// RepositoryConditionLifecycleRule reports whether old file versions are being cleaned up.
 	RepositoryConditionLifecycleRule = "LifecycleRule"
+
+	// RepositoryConditionOwned reports whether the credentials Secret and the
+	// location it names are this Repository's own. Only the checks that decide
+	// it change it, so a later failure that replaces Ready leaves it as it was.
+	// Backups and b2bk refuse to run while it is False.
+	RepositoryConditionOwned = "Owned"
 )
 
 // DefaultDaysFromHidingToDeleting is the window the operator gives a path that no

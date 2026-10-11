@@ -16,6 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/b2"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/b2/b2fake"
 )
 
 func TestSecretFinalizerProtectsAnUnseededPassword(t *testing.T) {
@@ -413,5 +415,99 @@ func TestASeedThatIsTheCredentialsSecretPreservesNothing(t *testing.T) {
 	reconcileUntilGone(t, r, c)
 	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
 		t.Error("finalize took the Secret as a copy of its own password")
+	}
+}
+
+func TestNotOwningTheSecretOutlastsEveryOtherFailure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		fail   func(*testing.T, *RepositoryReconciler, client.Client, *b2fake.Server)
+		reason string
+	}{
+		{"a B2 outage", func(_ *testing.T, _ *RepositoryReconciler, _ client.Client, f *b2fake.Server) {
+			f.Fail("b2_list_buckets", b2fake.Failure{Status: 503, Code: b2.CodeServiceUnavailable, Times: 1000})
+		}, "ReconcileFailed"},
+		{"suspension", func(t *testing.T, _ *RepositoryReconciler, c client.Client, _ *b2fake.Server) {
+			repo := getRepo(t, c)
+			repo.Spec.Suspend = true
+			if err := c.Update(context.Background(), repo); err != nil {
+				t.Fatal(err)
+			}
+		}, "Suspended"},
+		{"missing credentials", func(_ *testing.T, r *RepositoryReconciler, _ client.Client, _ *b2fake.Server) {
+			r.DefaultCredentialsSecret.Name = missingSecret
+		}, "CredentialsUnavailable"},
+		{"rejected credentials", func(t *testing.T, r *RepositoryReconciler, c client.Client, _ *b2fake.Server) {
+			if err := c.Create(context.Background(), &corev1.Secret{
+				Name: "bad-b2", Namespace: credsNS,
+				Data: map[string][]byte{
+					b2backupv1.CredentialsKeyID: []byte(masterKeyID), b2backupv1.CredentialsKey: []byte("wrong"),
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			r.DefaultCredentialsSecret.Name = "bad-b2"
+		}, "CredentialsRejected"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeB2(t)
+			f.AddBucket(sharedBucket)
+			r, c := newHarness(t, f, prefixRepo(usePasswordSeed), seedSecretFixture())
+			reconcileN(t, r, 1)
+			succeedInitJob(t, c)
+			reconcileN(t, r, 1)
+			if why := RepositoryNotOwn(getRepo(t, c)); why != "" {
+				t.Fatalf("precondition: a provisioned Repository is its own, got %q", why)
+			}
+
+			secret := getSecret(t, c, credsSecretName)
+			delete(secret.Labels, labelManagedBy)
+			if err := c.Update(context.Background(), secret); err != nil {
+				t.Fatal(err)
+			}
+			_ = reconcileErr(r)
+			if RepositoryNotOwn(getRepo(t, c)) == "" {
+				t.Fatal("precondition: an unmanaged Secret is not the Repository's own")
+			}
+
+			tt.fail(t, r, c, f)
+			_ = reconcileErr(r)
+			if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason != tt.reason {
+				t.Fatalf("precondition: Ready = %+v, want %s", cond, tt.reason)
+			}
+			if RepositoryNotOwn(getRepo(t, c)) == "" {
+				t.Errorf("%s replaced Ready and the Repository was taken as its own again", tt.reason)
+			}
+		})
+	}
+}
+
+func TestOwnershipIsRegainedOnlyByPassingTheChecks(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	r, c := newHarness(t, f, prefixRepo(usePasswordSeed), seedSecretFixture())
+	reconcileN(t, r, 1)
+	secret := getSecret(t, c, credsSecretName)
+	delete(secret.Labels, labelManagedBy)
+	if err := c.Update(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	_ = reconcileErr(r)
+	if cond := condition(t, c, b2backupv1.RepositoryConditionOwned); cond == nil || cond.Status != metav1.ConditionFalse ||
+		cond.Reason != reasonSecretNotManaged {
+		t.Fatalf("Owned = %+v, want False %s", cond, reasonSecretNotManaged)
+	}
+	secret = getSecret(t, c, credsSecretName)
+	secret.Labels = map[string]string{labelManagedBy: managedByValue}
+	if err := c.Update(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	reconcileN(t, r, 1)
+	if why := RepositoryNotOwn(getRepo(t, c)); why != "" {
+		t.Errorf("the Repository passed every check and is still not its own: %s", why)
 	}
 }
