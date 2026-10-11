@@ -971,8 +971,11 @@ spec:
                 description: Cache configures restic's cache volume.
                 properties:
                   accessMode:
-                    default: ReadWriteMany
-                    description: AccessMode for the cache claim.
+                    default: ReadWriteOnce
+                    description: |-
+                      AccessMode for the cache claim. The backup pod runs beside the app's pod
+                      and one backup uses the cache at a time, so ReadWriteOnce, which every
+                      common StorageClass provides, is enough.
                     type: string
                   enabled:
                     description: Enabled turns the cache volume on. Defaults to true.

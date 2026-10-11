@@ -325,7 +325,7 @@ What to expect:
 | `--b2-credentials-secret` | `b2-credentials` | Secret holding the operator's B2 application key, as `name` in the operator's namespace or `namespace/name`. See below |
 | `--b2-auth-url` | `https://api.backblazeb2.com` | Where `b2_authorize_account` is called. Only tests change it |
 | `--backup-image` | `ghcr.io/usa-reddragon/restic:0.19.1` | The image every backup pod runs. More than a list of binaries; see the contract below |
-| `--cache-storage-class` | *(none)* | StorageClass for restic cache volumes. **Cache claims request `ReadWriteMany`**, which most cluster default classes cannot satisfy; see below |
+| `--cache-storage-class` | *(none)* | StorageClass for restic cache volumes. Empty uses the cluster's default class. Cache claims request `ReadWriteOnce`; see below |
 
 `/manager --help` lists the rest.
 
@@ -367,11 +367,11 @@ The part that is easy to miss: **`restic` in this image is a wrapper** sitting a
 
 So a custom image without the wrapper does not error. It changes retention grouping and restore paths, and you find out at the point you need the snapshot. If you pin `spec.image`, pin a tag of the same image rather than a different one.
 
-### Cache claims and ReadWriteMany
+### Cache claims
 
-`spec.cache.accessMode` defaults to `ReadWriteMany` unconditionally, and the claim is created whether or not `--cache-storage-class` names a class that can provide it. Leaving the flag empty falls back to the cluster's default StorageClass, which usually cannot: the claim stays `Pending`, the backup pod never schedules, and nothing about the ScheduledBackup looks wrong: it is `Ready`, with a CronJob, firing on time into a pod that cannot start.
+`spec.cache.accessMode` defaults to `ReadWriteOnce`, which every common StorageClass provides, the cluster default included. One backup uses the cache at a time, and its pod already runs beside the app's pod (see the affinity above), so a single-node claim is enough. `ReadWriteMany` costs more than it gives: on Longhorn, for one, every RWX claim runs its own share-manager pod and serves the volume over NFS. Set `spec.cache.accessMode: ReadWriteMany` only for a class that cannot provide RWO. `spec.cache.enabled: false` drops the claim entirely, at the cost of re-fetching metadata every run.
 
-Two ways out: point `--cache-storage-class` at a class that provides RWX, or set `spec.cache.accessMode: ReadWriteOnce` per backup. `spec.cache.enabled: false` drops the claim entirely, at the cost of re-fetching metadata every run.
+The operator creates the cache claim once and never changes it, since a claim's access mode cannot change in place. A ScheduledBackup created while the default was `ReadWriteMany` keeps its RWX claim, and one created with `spec.cache` set keeps `accessMode: ReadWriteMany` in its spec. To move one to RWO, set `spec.cache.accessMode: ReadWriteOnce` if it says otherwise, then delete the `<name>-cache` claim between runs: the operator creates a new one, and restic rebuilds the cache on the next run.
 
 ## Optional monitoring manifests
 

@@ -261,8 +261,10 @@ type CacheSpec struct {
 	// +optional
 	Size string `json:"size,omitempty"`
 
-	// AccessMode for the cache claim.
-	// +kubebuilder:default:="ReadWriteMany"
+	// AccessMode for the cache claim. The backup pod runs beside the app's pod
+	// and one backup uses the cache at a time, so ReadWriteOnce, which every
+	// common StorageClass provides, is enough.
+	// +kubebuilder:default:="ReadWriteOnce"
 	// +optional
 	AccessMode corev1.PersistentVolumeAccessMode `json:"accessMode,omitempty"`
 }

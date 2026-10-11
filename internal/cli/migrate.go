@@ -643,8 +643,11 @@ func migrateCache(hr *helmRelease, v hrVolume, cacheDir, script string, m *migra
 	case v.kind == volumeClaim && v.name != "":
 		m.notes = append(m.notes, fmt.Sprintf("cache: %s, the existing claim %s at %s, held restic's cache. "+
 			"The operator creates a cache claim of its own, so %s is no longer used.", v.key, v.name, v.path, v.name))
-	case p.StorageClass != "":
-		m.backup.Spec.Cache = &b2backupv1.CacheSpec{StorageClass: p.StorageClass}
+	case p.StorageClass != "" || p.AccessMode != "":
+		m.backup.Spec.Cache = &b2backupv1.CacheSpec{
+			StorageClass: p.StorageClass,
+			AccessMode:   corev1.PersistentVolumeAccessMode(p.AccessMode),
+		}
 	}
 	return nil
 }

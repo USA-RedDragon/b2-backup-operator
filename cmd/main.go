@@ -103,10 +103,8 @@ func main() {
 	flag.StringVar(&backupImage, "backup-image", defaults.Image,
 		"Image used for backup and init jobs. It must provide restic, ts and dumpdb.")
 	flag.StringVar(&cacheStorageClass, "cache-storage-class", "",
-		"StorageClass for restic cache volumes. Cache claims request ReadWriteMany by default, "+
-			"which most cluster default StorageClasses do not support: leaving this empty will "+
-			"usually leave the claim Pending and the backup unable to start. Set a class that "+
-			"provides ReadWriteMany, or set spec.cache.accessMode on each ScheduledBackup.")
+		"StorageClass for restic cache volumes. Empty uses the cluster's default StorageClass. "+
+			"Cache claims request ReadWriteOnce unless spec.cache.accessMode says otherwise.")
 
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()

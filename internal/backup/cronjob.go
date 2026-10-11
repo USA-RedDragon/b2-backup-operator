@@ -258,7 +258,7 @@ func BuildCachePVC(sb *b2backupv1.ScheduledBackup, cfg Config) (*corev1.Persiste
 		return nil, nil
 	}
 
-	size, accessMode, storageClass := "1Gi", corev1.ReadWriteMany, cfg.CacheStorageClass
+	size, accessMode, storageClass := "1Gi", corev1.ReadWriteOnce, cfg.CacheStorageClass
 	if c := sb.Spec.Cache; c != nil {
 		if c.Size != "" {
 			size = c.Size
