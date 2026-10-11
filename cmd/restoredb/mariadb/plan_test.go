@@ -150,98 +150,151 @@ func TestDumpComplete(t *testing.T) {
 	}
 }
 
-func TestClassify(t *testing.T) {
+// TestAllowStatement pins the statement shapes the allowlist takes and the
+// kind it gives each. Anything not shaped like a mariadb-dump statement is
+// refused, so the cases below are the whole of what a dump may hold.
+func TestAllowStatement(t *testing.T) {
 	t.Parallel()
-	const (
-		createFK = "CREATE TABLE `t` (\n  `id` int,\n" +
-			"  CONSTRAINT `fk` FOREIGN KEY (`id`) REFERENCES `other`.`p` (`id`)\n)"
-		otherT = "`other`.`t`"
-		oT     = "`o`.`t`"
-	)
+	const createFK = "CREATE TABLE `t` (\n  `id` int,\n" +
+		"  CONSTRAINT `fk` FOREIGN KEY (`id`) REFERENCES `other`.`p` (`id`)\n)"
 	tests := []struct {
-		stmt string
-		kind stmtKind
-		arg  string
+		stmt  string
+		kind  stmtKind
+		arg   string
+		shape shape
 	}{
-		{"USE `app`", stmtDatabase, testLive},
-		{"use `My``Db`", stmtDatabase, "My`Db"},
-		{"CREATE DATABASE /*!32312 IF NOT EXISTS*/ `app` /*!40100 DEFAULT CHARACTER SET utf8mb4 */",
-			stmtDatabase, testLive},
-		{"CREATE DATABASE `app`", stmtDatabase, testLive},
-		{"CREATE SCHEMA IF NOT EXISTS `app`", stmtDatabase, testLive},
-		{"/*!40000 DROP DATABASE IF EXISTS `app`*/", stmtDatabase, testLive},
-		{"DROP SCHEMA `app`", stmtDatabase, testLive},
-		{"USE app", stmtUnsupported, "USE app"},
-		{"ALTER DATABASE `app` CHARACTER SET latin1 ", stmtUnsupported, "ALTER DATABASE `app` CHARACTER SET latin1 "},
-		{"/*!50003 ALTER DATABASE `app` CHARACTER SET latin1 */", stmtUnsupported,
-			"/*!50003 ALTER DATABASE `app` CHARACTER SET latin1 */"},
-		{"CREATE OR REPLACE DATABASE `app`", stmtUnsupported, "CREATE OR REPLACE DATABASE `app`"},
-		{"DELIMITER ", stmtRefused, objectsTriggers},
-		{"  delimiter //\nCREATE TRIGGER x", stmtRefused, objectsTriggers},
-		{"/*!50001 CREATE ALGORITHM=UNDEFINED */", stmtRefused, objectsViews},
-		{"/*!50001 CREATE TABLE `v` (\n", stmtRefused, objectsViews},
-		{"CREATE DEFINER=`root`@`%` PROCEDURE `p`() SELECT 1", stmtRefused, objectsTriggers},
-		{"/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `x` BEFORE INSERT ON `t`",
-			stmtRefused, objectsTriggers},
-		{"CREATE OR REPLACE VIEW `v` AS SELECT 1", stmtRefused, objectsViews},
-		{"CREATE TABLE `t` (\n", stmtObject, ""},
-		{createFK, stmtObject, ""},
-		{"CREATE SEQUENCE `s` start with 1 minvalue 1 maxvalue 9223372036854775806 increment by 1 cache 1000 " +
-			"nocycle ENGINE=InnoDB", stmtObject, ""},
-		{"DROP TABLE IF EXISTS `t`", stmtObject, ""},
-		{"INSERT INTO `t` VALUES (1)", stmtObject, ""},
-		{"/*!40101 SET NAMES utf8mb4 */", stmtPass, ""},
-		{"/*M!999999 enable the sandbox mode */ \n/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */",
-			stmtPass, ""},
-		{"/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */", stmtPass, ""},
-		{"LOCK TABLES `t` WRITE", stmtPass, ""},
-		{"/*!40000 ALTER TABLE `t` DISABLE KEYS */", stmtPass, ""},
-		{"SELECT SETVAL(`s`, 1001, 0)", stmtPass, ""},
-		{"START TRANSACTION", stmtPass, ""},
-		{"INSERT INTO `other`.`t` VALUES (1)", stmtOtherDatabase, otherT},
-		{"insert ignore into other.t values (1)", stmtOtherDatabase, otherT},
-		{"REPLACE INTO `app`.`t` VALUES (1)", stmtOtherDatabase, "`app`.`t`"},
-		{"/*!40000 ALTER TABLE `other`.`t` DISABLE KEYS */", stmtOtherDatabase, otherT},
-		{"LOCK TABLES `t` WRITE, `o`.`u` READ", stmtOtherDatabase, "`o`.`u`"},
-		{"DROP TABLE IF EXISTS `t`, `o`.`u`", stmtOtherDatabase, "`o`.`u`"},
-		{"RENAME TABLE `t` TO `o`.`t`", stmtOtherDatabase, oT},
-		{"ALTER TABLE `t` RENAME TO `o`.`t`", stmtOtherDatabase, oT},
-		{"SELECT SETVAL(`o`.`s`, 5, 0)", stmtOtherDatabase, "`o`.`s`"},
-		{"TRUNCATE TABLE `o`.`t`", stmtOtherDatabase, oT},
-		{"DELETE FROM `o`.`t`", stmtOtherDatabase, oT},
-		{"UPDATE `o`.`t` SET `a` = 1", stmtOtherDatabase, oT},
-		{"CREATE INDEX `i` ON `o`.`t` (`a`)", stmtOtherDatabase, oT},
-		{"CREATE TABLE `o`.`t` (`a` int)", stmtOtherDatabase, oT},
-		{"CHANGE MASTER TO MASTER_LOG_FILE='x', MASTER_LOG_POS=4", stmtServer,
-			"CHANGE MASTER TO MASTER_LOG_FILE='x', MASTER_LOG_POS=4"},
-		{"SET GLOBAL gtid_slave_pos='0-1-2'", stmtServer, "SET GLOBAL gtid_slave_pos='0-1-2'"},
-		{"/*!40101 SET @@GLOBAL.x=1 */", stmtServer, "/*!40101 SET @@GLOBAL.x=1 */"},
-		{"SET @a = 1, global x = 2", stmtServer, "SET @a = 1, global x = 2"},
-		{"SET PASSWORD = PASSWORD('x')", stmtServer, "SET PASSWORD = PASSWORD('x')"},
-		{"SET STATEMENT max_statement_time=1 FOR DELETE FROM `o`.`t`", stmtServer,
-			"SET STATEMENT max_statement_time=1 FOR DELETE FROM `o`.`t`"},
-		{"START SLAVE", stmtServer, "START SLAVE"},
-		{"STOP ALL SLAVES", stmtServer, "STOP ALL SLAVES"},
-		{"GRANT ALL ON *.* TO `x`", stmtServer, "GRANT ALL ON *.* TO `x`"},
-		{"CREATE USER `x`", stmtServer, "CREATE USER `x`"},
-		{"EXECUTE IMMEDIATE 'DELETE FROM o.t'", stmtServer, "EXECUTE IMMEDIATE 'DELETE FROM o.t'"},
-		{"PREPARE s FROM 'DELETE FROM o.t'", stmtServer, "PREPARE s FROM 'DELETE FROM o.t'"},
-		{"CALL `o`.`p`()", stmtServer, "CALL `o`.`p`()"},
-		{"LOAD DATA INFILE 'x' INTO TABLE `t`", stmtServer, "LOAD DATA INFILE 'x' INTO TABLE `t`"},
-		{"SET SQL_MODE='ANSI_QUOTES'", stmtUnsupported,
-			"an sql_mode the restore cannot read the dump under: SET SQL_MODE='ANSI_QUOTES'"},
-		{"/*!40101 SET SQL_MODE='STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES' */", stmtUnsupported,
-			"an sql_mode the restore cannot read the dump under: " +
-				"/*!40101 SET SQL_MODE='STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES' */"},
+		{stmt: "USE `app`", kind: stmtDatabase, arg: testLive},
+		{stmt: "use `My``Db`", kind: stmtDatabase, arg: "My`Db"},
+		{stmt: "USE\t`app`", kind: stmtDatabase, arg: testLive},
+		{stmt: "USE\n`app`", kind: stmtDatabase, arg: testLive},
+		{stmt: "CREATE DATABASE /*!32312 IF NOT EXISTS*/ `app` /*!40100 DEFAULT CHARACTER SET utf8mb4 */",
+			kind: stmtDatabase, arg: testLive},
+		{stmt: "CREATE DATABASE `app`", kind: stmtDatabase, arg: testLive},
+		{stmt: "CREATE  DATABASE `app`", kind: stmtDatabase, arg: testLive},
+		{stmt: "CREATE SCHEMA IF NOT EXISTS `app`", kind: stmtDatabase, arg: testLive},
+		{stmt: "/*!40000 DROP DATABASE IF EXISTS `app`*/", kind: stmtDatabase, arg: testLive},
+		{stmt: "DROP\tDATABASE `app`", kind: stmtDatabase, arg: testLive},
+		{stmt: "DROP  SCHEMA `app`", kind: stmtDatabase, arg: testLive},
+		{stmt: "DROP TABLE IF EXISTS `t`", kind: stmtObject},
+		{stmt: "DROP TABLE `t`, `u`", kind: stmtObject},
+		{stmt: "DROP SEQUENCE IF EXISTS `s`", kind: stmtPass},
+		{stmt: "CREATE TABLE `t` (\n", kind: stmtObject, shape: shapeTableDef},
+		{stmt: createFK, kind: stmtObject, shape: shapeTableDef},
+		{stmt: "CREATE SEQUENCE `s` start with 5 minvalue 1 increment by 2 cache 1000 nocycle ENGINE=InnoDB",
+			kind: stmtObject},
+		{stmt: "DO SETVAL(`s`, 2005, 0)", kind: stmtPass},
+		{stmt: "SELECT SETVAL(`s`, 1001, 0)", kind: stmtPass},
+		{stmt: "LOCK TABLES `t` WRITE", kind: stmtPass},
+		{stmt: "LOCK TABLES `t` READ LOCAL, `u` WRITE", kind: stmtPass},
+		{stmt: "UNLOCK TABLES", kind: stmtPass},
+		{stmt: "/*!40000 ALTER TABLE `t` DISABLE KEYS */", kind: stmtPass},
+		{stmt: "/*!40000 ALTER TABLE `t` ENABLE KEYS */", kind: stmtPass},
+		{stmt: "INSERT INTO `t` VALUES (1)", kind: stmtObject, shape: shapeValues},
+		{stmt: "INSERT INTO `t` (`a`, `b`) VALUES (1,'x')", kind: stmtObject, shape: shapeValues},
+		{stmt: "INSERT INTO `t` VALUES", kind: stmtObject, shape: shapeValues},
+		{stmt: "COMMIT", kind: stmtPass},
+		{stmt: "START TRANSACTION", kind: stmtPass},
+		{stmt: "/*!40101 SET NAMES utf8mb4 */", kind: stmtPass},
+		{stmt: "SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO'", kind: stmtPass},
+		{stmt: "SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT, @@AUTOCOMMIT=0", kind: stmtPass},
+		{stmt: "SET AUTOCOMMIT=@OLD_AUTOCOMMIT", kind: stmtPass},
+		{stmt: "/*M!999999 enable the sandbox mode */", kind: stmtPass},
+		{stmt: "/*!40101 SET @saved_cs_client     = @@character_set_client */", kind: stmtPass},
+		{stmt: "DELIMITER ", kind: stmtRefused, arg: objectsTriggers},
+		{stmt: "  delimiter //\nCREATE TRIGGER x", kind: stmtRefused, arg: objectsTriggers},
+		{stmt: "/*!50001 CREATE ALGORITHM=UNDEFINED */", kind: stmtRefused, arg: objectsViews},
+		{stmt: "CREATE DEFINER=`root`@`%` PROCEDURE `p`() SELECT 1", kind: stmtRefused, arg: objectsTriggers},
+		{stmt: "CREATE OR REPLACE VIEW `v` AS SELECT 1", kind: stmtRefused, arg: objectsViews},
+		{stmt: "DROP VIEW IF EXISTS `v`", kind: stmtRefused, arg: objectsViews},
+		{stmt: "CREATE USER `x`", kind: stmtServer, arg: "CREATE USER `x`"},
+		{stmt: "GRANT ALL ON *.* TO `x`", kind: stmtServer, arg: "GRANT ALL ON *.* TO `x`"},
+		{stmt: "CHANGE MASTER TO MASTER_LOG_POS=4", kind: stmtServer, arg: "CHANGE MASTER TO MASTER_LOG_POS=4"},
+		{stmt: "START SLAVE", kind: stmtServer, arg: "START SLAVE"},
+		{stmt: "ALTER USER `x` IDENTIFIED BY 'y'", kind: stmtServer, arg: "ALTER USER `x` IDENTIFIED BY 'y'"},
 	}
 	for _, tt := range tests {
-		kind, arg := classify(tt.stmt, true)
-		if kind != tt.kind || arg != tt.arg {
-			t.Errorf("classify(%q) = %d, %q, want %d, %q", tt.stmt, kind, arg, tt.kind, tt.arg)
+		kind, arg, sh := allowStatement(tt.stmt, true)
+		if kind != tt.kind || sh != tt.shape || tt.arg != "" && arg != tt.arg {
+			t.Errorf("allowStatement(%q) = %d, %q, %d, want %d, %q, %d",
+				tt.stmt, kind, arg, sh, tt.kind, tt.arg, tt.shape)
 		}
 	}
-	if kind, _ := classify("LOCK TABLES `t` WRITE, ", false); kind != stmtUnsupported {
-		t.Errorf("an unfinished list statement is %d", kind)
+}
+
+// Everything the allowlist does not know is refused, whatever it would have
+// done on the server.
+func TestAllowStatementRefusesEverythingElse(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		"USE app",
+		"USE `a`.`b`",
+		"ALTER DATABASE `app` CHARACTER SET latin1",
+		"ALTER  DATABASE `app` CHARACTER SET gbk",
+		"CREATE OR REPLACE DATABASE `app`",
+		"SELECT 1",
+		"SELECT * FROM `t`",
+		"DO 1",
+		"TRUNCATE `t`",
+		"DELETE FROM `t`",
+		"UPDATE `t` SET `a` = 1",
+		"ANALYZE TABLE `t`",
+		"OPTIMIZE TABLE `t`",
+		"CHECK TABLE `t`",
+		"REPAIR TABLE `t`",
+		"RENAME TABLE `t` TO `u`",
+		"ALTER TABLE `t` ADD COLUMN `b` int",
+		"ALTER TABLE `t` DISABLE KEYS, ENABLE KEYS",
+		"LOCK TABLES `t`",
+		"LOCK TABLES `t` WRITE,",
+		"UNLOCK TABLES `t`",
+		"INSERT INTO `t` SET `a` = 1",
+		"INSERT INTO `t` SELECT * FROM `u`",
+		"INSERT INTO `t` VALUES (REPEAT('x',10))",
+		"INSERT INTO `t` VALUES (`a`)",
+		"INSERT INTO `t` VALUES (1) ON DUPLICATE KEY UPDATE `a` = 1",
+		"CREATE TABLE `t` AS SELECT 1",
+		"CREATE TABLE `t` LIKE `u`",
+		"DROP TABLE `t` CASCADE",
+		"SET @a = (SELECT 1)",
+		"SET innodb_fake_variable = 1",
+		"SET NAMES utf8mb4, @a = (SELECT 1)",
+		"DO SETVAL(`s`, (SELECT 1), 0)",
+		"SELECT SETVAL(`s`, 1) INTO OUTFILE '/tmp/x'",
+		"COMMIT AND CHAIN",
+		"START TRANSACTION WITH CONSISTENT SNAPSHOT",
+		"(SELECT 1)",
+		"1",
+	} {
+		kind, _, _ := allowStatement(stmt, true)
+		if kind != stmtUnsupported && kind != stmtServer {
+			t.Errorf("allowStatement(%q) = %d, want it refused", stmt, kind)
+		}
+	}
+}
+
+// A statement cut short by the head is refused unless its shape says the rest
+// is data the watchers check.
+func TestAllowStatementRefusesACutStatement(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		"DROP",
+		"DROP TABLE",
+		"DROP  DATABASE",
+		"CREATE",
+		"CREATE TABLE",
+		"LOCK TABLES `t` WRITE, ",
+		"SET @OLD_SQL_MODE=",
+		"USE",
+		"INSERT INTO `t` (`a`",
+	} {
+		if kind, _, _ := allowStatement(stmt, false); kind != stmtUnsupported {
+			t.Errorf("allowStatement(%q, false) = %d, want it refused", stmt, kind)
+		}
+	}
+	for _, stmt := range []string{"INSERT INTO `t` VALUES (1", "CREATE TABLE `t` (`a` int"} {
+		if kind, _, _ := allowStatement(stmt, false); kind != stmtObject {
+			t.Errorf("allowStatement(%q, false) = %d, want it allowed", stmt, kind)
+		}
 	}
 }
 
@@ -339,7 +392,7 @@ func TestFilterRefusals(t *testing.T) {
 		},
 		{
 			name: "a second statement on a line",
-			dump: createTable + "SELECT 1; INSERT INTO `other`.`t` VALUES (1);\n",
+			dump: createTable + "COMMIT; INSERT INTO `other`.`t` VALUES (1);\n",
 			want: ErrOtherDatabase, passed: createTable,
 		},
 		{
@@ -351,6 +404,11 @@ func TestFilterRefusals(t *testing.T) {
 			name: "a comment between the words",
 			dump: createTable + "SET/* x */GLOBAL max_connections = 1;\n",
 			want: ErrServerStatement, passed: createTable,
+		},
+		{
+			name: "a statement no mariadb-dump writes",
+			dump: createTable + "SELECT 1;\n",
+			want: ErrUnsupportedStatement, passed: createTable,
 		},
 		{
 			name: "replication",
@@ -375,7 +433,7 @@ func TestFilterRefusals(t *testing.T) {
 		{
 			name: "a file written by the server",
 			dump: createTable + "SELECT * FROM `t` INTO OUTFILE '/tmp/x';\n",
-			want: ErrServerStatement, passed: createTable,
+			want: ErrUnsupportedStatement, passed: createTable,
 		},
 		{
 			name: "a client command",
@@ -498,7 +556,6 @@ func TestFilterRefusesNamesInOtherDatabases(t *testing.T) {
 		"ANALYZE TABLE `other`.`u`",
 		"SELECT `other` . `f`()",
 		"SELECT `other`/* x */.`f`()",
-		"INSERT INTO `t` VALUES " + rows + "(`other`.`f`())",
 	} {
 		got, _, err := filterString(t, createTable+stmt+";\n")
 		if !errors.Is(err, ErrOtherDatabase) {
@@ -512,14 +569,22 @@ func TestFilterRefusesNamesInOtherDatabases(t *testing.T) {
 	if _, _, err := filterString(t, "CREATE TABLE `t2` AS SELECT 1;\n"); !errors.Is(err, ErrUnsupportedStatement) {
 		t.Errorf("CREATE TABLE ... SELECT: err = %v", err)
 	}
+	// A name past the head of a long INSERT is caught by the value check as it
+	// streams, after the head of the INSERT has gone to the client. Nothing
+	// runs: load kills the client before it sees the end of its input.
+	long := createTable + "INSERT INTO `t` VALUES " + rows + "(`other`.`f`());\n"
+	got, _, err := filterString(t, long)
+	if !errors.Is(err, ErrUnsupportedStatement) || !strings.HasPrefix(got, createTable) ||
+		strings.Contains(got, "`other`") {
+		t.Errorf("a name past the head: err = %v, passed %.80q", err, got)
+	}
 	for _, stmt := range []string{
 		"CREATE TABLE `d` (\n  `id` int(11) DEFAULT nextval(`app`.`s`),\n" +
 			"  CONSTRAINT `fk` FOREIGN KEY (`id`) REFERENCES `other`.`p` (`id`)\n) ENGINE=InnoDB",
 		"SET @@SESSION.SQL_LOG_BIN = 0",
 		"/*!40101 SET @saved_cs_client     = @@character_set_client */",
-		"INSERT INTO `a.b` VALUES (1.5,'a.b',0x2E,.5,1.e3,_binary 'x.y',X'2E')," + rows + "(2,NULL)",
+		"INSERT INTO `a.b` VALUES (1.5,'a.b',0x2E,.5,-1.2345e30,_binary 'x.y',X'2E')," + rows + "(2,NULL)",
 		"DO SETVAL(`s`, 1001, 0)",
-		"UPDATE `t`, `u` SET `x` = 1",
 	} {
 		if _, _, err := filterString(t, stmt+";\n"); err != nil {
 			t.Errorf("%.80q: err = %v", stmt, err)
@@ -565,7 +630,7 @@ func TestFilterRefusesADatabaseNameLedByADigit(t *testing.T) {
 			t.Errorf("%q: err = %v, passed on %q", stmt, err, got)
 		}
 	}
-	if _, _, err := filterString(t, "INSERT INTO `t` VALUES (1.e3,1.5e3,0x1F,1e5,.5,1.,12.34);\n"); err != nil {
+	if _, _, err := filterString(t, "INSERT INTO `t` VALUES (1.5e3,0x1F,1e5,.5,1.,12.34,-0.0001);\n"); err != nil {
 		t.Errorf("numbers: err = %v", err)
 	}
 }
@@ -584,7 +649,6 @@ func TestFilterRefusesEnginesThatReachOutside(t *testing.T) {
 		"CREATE TABLE `s` (`id` INT) ENGINE=SPIDER COMMENT='wrapper \"mysql\", table \"t\"'",
 		"CREATE TABLE `q` (`id` INT) ENGINE='MRG_MyISAM'",
 		"CREATE TABLE `q` (`id` INT) ENGINE=`MERGE`",
-		"ALTER TABLE `t` ENGINE=FEDERATED CONNECTION='mysql://u@h/other/t'",
 		"/*!40000 ALTER TABLE `t` ENGINE=MERGE */",
 	} {
 		got, _, err := filterString(t, createTable+stmt+";\n")
@@ -658,13 +722,8 @@ func TestFilterRefusesAnEngineNamedAtTheEndOfAStatement(t *testing.T) {
 			t.Errorf("%q: err = %v, passed on %q", stmt, err, got)
 		}
 	}
-	for _, stmt := range []string{
-		"ALTER TABLE `t` ENGINE=InnoDB",
-		"CREATE TABLE `t` (`i` int) ENGINE=Aria",
-	} {
-		if _, _, err := filterString(t, stmt+";\n"); err != nil {
-			t.Errorf("%q: err = %v", stmt, err)
-		}
+	if _, _, err := filterString(t, "CREATE TABLE `t` (`i` int) ENGINE=Aria;\n"); err != nil {
+		t.Errorf("err = %v", err)
 	}
 }
 
@@ -793,3 +852,44 @@ func TestFilterRefusesTheDefaultCharset(t *testing.T) {
 		}
 	}
 }
+
+// A statement is read as tokens, never as a text prefix, so whitespace in a
+// database statement does not hide it, and a long one is not passed on
+// unchecked when its head is cut short.
+func TestFilterRefusesDatabaseStatementsWhateverTheirSpacing(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		"USE\tapp",
+		"USE\napp",
+		"DROP  DATABASE `app`",
+		"DROP\tDATABASE `app`",
+		"DROP\nSCHEMA `app`",
+		"CREATE  DATABASE `app`",
+		"ALTER  DATABASE `app` CHARACTER SET gbk",
+		"ALTER\tDATABASE `app` CHARACTER SET gbk",
+	} {
+		got, f, err := filterString(t, createTable+stmt+";\n")
+		if err == nil && f.database == "" {
+			t.Errorf("%q: passed on %q", stmt, got)
+		}
+		if got != createTable {
+			t.Errorf("%q: passed on %q", stmt, got)
+		}
+	}
+	for _, stmt := range []string{
+		"DROP" + strings.Repeat(" ", 5000) + "DATABASE `app`",
+		"CREATE" + strings.Repeat(" ", 5000) + "USER `x`",
+		"DROP" + strings.Repeat(" ", 5000) + "TABLE `t`",
+		"SET" + strings.Repeat(" ", 5000) + "GLOBAL `x`=1",
+	} {
+		got, _, err := filterString(t, createTable+stmt+";\n")
+		if err == nil || got != createTable {
+			t.Errorf("%.40q: err = %v, passed on %q", stmt, err, got)
+		}
+	}
+}
+
+// The server skips an executable comment whose version is above its own, and
+// reads what is inside without minding quotes, so the restore refuses a quote
+
+// The server takes -- followed by a control byte as a comment where the client

@@ -22,12 +22,13 @@ import (
 )
 
 const (
-	rootPassword = "root-pw"
-	appDB        = "app"
-	stagingDB    = appDB + mariadb.StagingSuffix
-	oldDB        = appDB + mariadb.OldSuffix
-	argDropOld   = "--drop-old"
-	argDryRun    = "--dry-run"
+	rootPassword    = "root-pw"
+	appDB           = "app"
+	stagingDB       = appDB + mariadb.StagingSuffix
+	oldDB           = appDB + mariadb.OldSuffix
+	argDropOld      = "--drop-old"
+	argDryRun       = "--dry-run"
+	argAddDropTable = "--add-drop-table"
 )
 
 var server string
@@ -119,10 +120,10 @@ func sql(t *testing.T, stmts string) string {
 // dump takes a dump the way dumpdb mariadb does, with any extra flags.
 func dump(t *testing.T, args ...string) string {
 	t.Helper()
-	base := []string{"mariadb-dump", "-h127.0.0.1", "-uroot", "--add-drop-table", "--skip-dump-date",
+	base := []string{"mariadb-dump", "-h127.0.0.1", "-uroot", argAddDropTable, "--skip-dump-date",
 		"--single-transaction"}
-	if len(args) == 0 {
-		args = []string{appDB}
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") && !slices.Contains(args, appDB) {
+		args = append(args, appDB)
 	}
 	return docker(t, "", slices.Concat(base, args)...)
 }
@@ -309,12 +310,22 @@ func TestMariaDBRefusesATruncatedDump(t *testing.T) {
 func TestMariaDBStopsAtAFailingStatement(t *testing.T) {
 	backup, _ := seed(t)
 	at := strings.Index(backup, "UNLOCK TABLES;\n") + len("UNLOCK TABLES;\n")
-	broken := backup[:at] + "THIS IS NOT SQL;\n" + backup[at:]
-	out := refused(t, broken, nil)
-	if !strings.Contains(out, "ERROR 1064") {
-		t.Errorf("the client's own error is missing:\n%s", out)
-	}
-	assertNoStaging(t)
+
+	t.Run("the filter refuses what is not a dump statement", func(t *testing.T) {
+		out := refused(t, backup[:at]+"THIS IS NOT SQL;\n"+backup[at:], mariadb.ErrUnsupportedStatement)
+		if !strings.Contains(out, "THIS IS NOT SQL") {
+			t.Errorf("the refusal does not name the statement:\n%s", out)
+		}
+		assertNoStaging(t)
+	})
+
+	t.Run("the server's own error on a statement the filter takes", func(t *testing.T) {
+		out := refused(t, backup[:at]+"INSERT INTO `no_such_table` VALUES (1);\n"+backup[at:], nil)
+		if !strings.Contains(out, "ERROR 1146") {
+			t.Errorf("the client's own error is missing:\n%s", out)
+		}
+		assertNoStaging(t)
+	})
 }
 
 func TestMariaDBRefusesWhatRenameCannotMove(t *testing.T) {
@@ -690,4 +701,100 @@ func TestMariaDBKeepsCraftedDumpsInsideStaging(t *testing.T) {
 			assertNoStaging(t)
 		})
 	}
+}
+
+// richSQL builds a database with the shapes real apps use, so the allowlist is
+// checked against what mariadb-dump writes for them.
+const richSQL = `
+DROP DATABASE IF EXISTS app; CREATE DATABASE app CHARACTER SET utf8mb4;
+CREATE TABLE app.parent (id INT PRIMARY KEY,
+  code VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_bin) ENGINE=InnoDB;
+CREATE TABLE app.child (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, pid INT, payload BLOB, doc JSON,
+  amount DECIMAL(10,2) DEFAULT 0.00, dbl DOUBLE, flt FLOAT, bits BIT(8), yr YEAR,
+  tm TIME(6), st SET('x','y'), en ENUM('p','q'),
+  gen INT AS (pid * 2) VIRTUAL, stored VARCHAR(10) AS (CONCAT('a', pid)) PERSISTENT,
+  ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  note TEXT COMMENT 'it''s a note; really -- yes',
+  CONSTRAINT ck CHECK (amount >= 0), KEY idx_pid (pid), UNIQUE KEY uq (pid, amount),
+  FULLTEXT KEY ft (note),
+  CONSTRAINT fk FOREIGN KEY (pid) REFERENCES parent (id) ON DELETE CASCADE
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC COMMENT='table comment' AUTO_INCREMENT=100;
+CREATE TABLE app.part (id INT, d DATE, PRIMARY KEY (id, d)) ENGINE=InnoDB
+  PARTITION BY RANGE (YEAR(d)) (PARTITION p0 VALUES LESS THAN (2020),
+  PARTITION p1 VALUES LESS THAN MAXVALUE);
+CREATE TABLE app.aria (id INT) ENGINE=Aria;
+CREATE SEQUENCE app.s1 START WITH 5 INCREMENT BY 2;
+INSERT INTO app.parent VALUES (1,'a'),(2,'b');
+INSERT INTO app.child (pid,payload,doc,amount,dbl,flt,bits,yr,tm,st,en,note) VALUES
+ (1,0x00FF0A5C27,'{"k":[1,2]}',12.34,1.2345678901234e30,1.5e-3,b'10101010',2026,
+  '12:34:56.789012','x,y','q','line\nbreak'),
+ (2,_binary 'bin\\data',NULL,1.50,-1e-10,-0.5,255,0,'-00:00:01','','p','quote '' and -- dash'),
+ (1,REPEAT('x',3000),'{}',0,0,0,0,0,'00:00:00',NULL,NULL,NULL);
+INSERT INTO app.part VALUES (1,'2019-01-01'),(2,'2021-06-06');
+SELECT NEXTVAL(app.s1);
+`
+
+// Every dump mariadb-dump writes of that database still restores: the
+// allowlist takes the statement shapes it writes and no others.
+func TestMariaDBRestoresEveryRealDumpShape(t *testing.T) {
+	sql(t, richSQL)
+	want := fingerprint(t, appDB)
+	for name, args := range map[string][]string{
+		"as dumpdb takes it":           nil,
+		argAddDropTable:                {argAddDropTable},
+		"--databases":                  {argAddDropTable, "--databases", appDB},
+		"--skip-extended-insert":       {"--skip-extended-insert"},
+		"--complete-insert --hex-blob": {"--complete-insert", "--hex-blob"},
+		"--no-autocommit":              {"--no-autocommit"},
+		"--quick --order-by-primary":   {"--quick", "--order-by-primary"},
+		"--insert-ignore":              {"--insert-ignore"},
+		"--skip-quote-names":           {"--skip-quote-names"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			backup := dump(t, args...)
+			sql(t, "UPDATE app.parent SET code = 'changed'")
+			if _, err := restore(t, backup, argDropOld); err != nil {
+				t.Fatalf("restore: %v", err)
+			}
+			if got := fingerprint(t, appDB); got != want {
+				t.Errorf("app does not match the backup:\n%s", firstDiff(want, got))
+			}
+		})
+	}
+}
+
+// firstDiff names the first line where two dumps differ.
+func firstDiff(want, got string) string {
+	w, g := strings.Split(want, "\n"), strings.Split(got, "\n")
+	for i := range max(len(w), len(g)) {
+		var wl, gl string
+		if i < len(w) {
+			wl = w[i]
+		}
+		if i < len(g) {
+			gl = g[i]
+		}
+		if wl != gl {
+			return fmt.Sprintf("line %d is %.120q, want %.120q", i+1, gl, wl)
+		}
+	}
+	return "no difference"
+}
+
+// A dump taken with --no-create-info holds no tables, only rows, so the swap
+// would move every live table out and bring nothing in. The restore fails
+// before the swap instead of emptying the database.
+func TestMariaDBRefusesADataOnlyDump(t *testing.T) {
+	sql(t, richSQL)
+	before := fingerprint(t, appDB)
+	out, err := restore(t, dump(t, "--no-create-info"))
+	if err == nil {
+		t.Error("the restore succeeded on a dump that holds no tables")
+	}
+	t.Logf("error: %v\n%s", err, out)
+	if after := fingerprint(t, appDB); after != before {
+		t.Errorf("app changed: %s", firstDiff(before, after))
+	}
+	assertNoStaging(t)
 }
