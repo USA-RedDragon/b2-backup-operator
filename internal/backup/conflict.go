@@ -18,6 +18,14 @@ const (
 	// it comes from, the Repository, host and tags its forget reaches, as JSON.
 	// A Job keeps the scope it started with after its ScheduledBackup changes.
 	AnnotationForgetScope = "b2backup.mcswain.dev/forget-scope"
+
+	// AnnotationSpecHash records on a CronJob a hash of what the operator
+	// rendered, to tell its own writes from drift.
+	AnnotationSpecHash = "b2backup.mcswain.dev/spec-hash"
+
+	// AnnotationRenderedFrom records on a CronJob the ScheduledBackup and
+	// Repository generations it was last rendered from.
+	AnnotationRenderedFrom = "b2backup.mcswain.dev/rendered-from"
 )
 
 // ForgetScope is what a backup's forget can reach.
@@ -57,6 +65,17 @@ func ScopeFrom(annotations map[string]string) (ForgetScope, bool) {
 		return ForgetScope{}, false
 	}
 	return s, true
+}
+
+// RenderedFrom is the AnnotationRenderedFrom value for a CronJob rendered from
+// these objects.
+func RenderedFrom(sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository) string {
+	return fmt.Sprintf("scheduledbackup=%d,repository=%d", sb.Generation, repo.Generation)
+}
+
+// Equal reports whether two scopes reach the same snapshots.
+func (s ForgetScope) Equal(o ForgetScope) bool {
+	return s.Repository == o.Repository && s.Host == o.Host && s.Script == o.Script && slices.Equal(s.Tags, o.Tags)
 }
 
 func overlap(own, other ForgetScope) string {

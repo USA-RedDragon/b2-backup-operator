@@ -25,6 +25,19 @@ How a `DESTROYS` command is gated:
   and `restore --to-database` print what they are about to overwrite and ask you
   to type the resource name. With no terminal they refuse outright unless `--yes`
   is passed, so a script cannot fall through the prompt.
+- **A current, uncontested backup.** `prune`, `restore --in-place` and
+  `restore --to-database` act on the ScheduledBackup's spec, so they run only
+  when the operator has caught up with it: `status.observedGeneration` equals
+  `metadata.generation`, `Ready` is `True` at that generation, and the CronJob
+  is controlled by the ScheduledBackup and records, in its
+  `b2backup.mcswain.dev/rendered-from` and `forget-scope` annotations, that it
+  was rendered from the ScheduledBackup and Repository generations of now and
+  forgets under the same tags and host. They also re-check the tag conflict
+  themselves, against every ScheduledBackup, CronJob and running backup Job in
+  the namespace, rather than trust a `Ready` written before a sibling changed.
+  Otherwise they refuse and say to wait for the operator. `--to DIR` and
+  `--to-new-pvc` write nothing live and are not held back, so a restore stays
+  possible while the operator is down.
 - **A flag that names the risk.** `rotate-password` never prompts. It refuses
   unless `--i-have-somewhere-to-archive-the-new-password` is passed, because the
   danger is losing the new password afterwards, not running the command.

@@ -788,3 +788,38 @@ func TestACronJobThatCannotBeRebuiltIsSuspended(t *testing.T) {
 		})
 	}
 }
+
+func TestTheCronJobRecordsTheGenerationsItWasRenderedFrom(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repo := initializedRepo()
+	repo.Generation = 4
+	sb := scheduledBackup()
+	sb.Generation = 7
+	r, c := backupHarness(t, repo, sb)
+	reconcileBackup(t, r)
+	rendered := func() string {
+		t.Helper()
+		var cj batchv1.CronJob
+		if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+			t.Fatal(err)
+		}
+		return cj.Annotations["b2backup.mcswain.dev/rendered-from"]
+	}
+	if got := rendered(); got != "scheduledbackup=7,repository=4" {
+		t.Fatalf("rendered-from = %q", got)
+	}
+
+	var latest b2backupv1.Repository
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: resticName}, &latest); err != nil {
+		t.Fatal(err)
+	}
+	latest.Generation = 5
+	if err := c.Update(ctx, &latest); err != nil {
+		t.Fatal(err)
+	}
+	reconcileBackup(t, r)
+	if got := rendered(); got != "scheduledbackup=7,repository=5" {
+		t.Errorf("rendered-from = %q after a Repository change that renders the same CronJob", got)
+	}
+}

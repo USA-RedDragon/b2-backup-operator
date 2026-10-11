@@ -93,12 +93,19 @@ func resticCommand(args ...string) []string {
 	return append([]string{"restic"}, args...)
 }
 
-func runRestic(
+type resticBuild func(sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository) ([]string, error)
+
+func runRestic(ctx context.Context, f *Factory, arg string, purpose string, build resticBuild, opts runner.Options) error {
+	return runResticGuarded(ctx, f, arg, purpose, nil, build, opts)
+}
+
+func runResticGuarded(
 	ctx context.Context,
 	f *Factory,
 	arg string,
 	purpose string,
-	build func(sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository) ([]string, error),
+	guard func(context.Context, client.Client, *b2backupv1.ScheduledBackup, *b2backupv1.Repository) error,
+	build resticBuild,
 	opts runner.Options,
 ) error {
 	c, err := f.Client()
@@ -113,6 +120,12 @@ func runRestic(
 	sb, repo, err := resolveRunTarget(ctx, c, ns, arg)
 	if err != nil {
 		return err
+	}
+
+	if guard != nil {
+		if err := guard(ctx, c, sb, repo); err != nil {
+			return err
+		}
 	}
 
 	command, err := build(sb, repo)

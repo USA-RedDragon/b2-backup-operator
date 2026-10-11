@@ -169,7 +169,7 @@ func runRestore(
 	case o.toNewPVC != "":
 		return restoreToNewPVC(ctx, f, c, sb, o)
 	case o.toDatabase:
-		return restoreToDatabase(ctx, f, sb, o)
+		return restoreToDatabase(ctx, f, c, sb, o)
 	default:
 		return restoreInPlace(ctx, f, c, sb, o)
 	}

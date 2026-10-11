@@ -396,6 +396,9 @@ func restoreInPlace(
 		}
 	}
 
+	if err := requireCurrentBackup(ctx, c, sb); err != nil {
+		return err
+	}
 	what := fmt.Sprintf("%s under %s in %s in namespace %s",
 		strings.Join(src.paths, ", "), src.tag, strings.Join(claims, ", "), sb.Namespace)
 	if err := confirm(f, o.yes || o.dryRun, what, sb.Name); err != nil {
@@ -505,7 +508,7 @@ func suspendForRestore(
 }
 
 func restoreToDatabase(
-	ctx context.Context, f *Factory, sb *b2backupv1.ScheduledBackup, o *restoreOptions,
+	ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup, o *restoreOptions,
 ) error {
 	db := sb.Spec.Database
 	if db == nil {
@@ -513,6 +516,9 @@ func restoreToDatabase(
 	}
 	src, err := o.databaseSource(sb)
 	if err != nil {
+		return err
+	}
+	if err := requireCurrentBackup(ctx, c, sb); err != nil {
 		return err
 	}
 

@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -738,19 +737,16 @@ func TestInPlaceRestoreWaitsForARunningBackupAndStaysSuspendedOnFailure(t *testi
 		}
 		return got.Spec.Suspend
 	}
-	running := func(sb *b2backupv1.ScheduledBackup) []client.Object {
-		cj := &batchv1.CronJob{Namespace: testNS, Name: backup.CronJobName(sb), UID: "uid-cj"}
-		job := &batchv1.Job{Namespace: testNS, Name: testBackupName + "-backup-123", OwnerReferences: []metav1.OwnerReference{{
+	running := func(cj *batchv1.CronJob) client.Object {
+		return &batchv1.Job{Namespace: testNS, Name: testBackupName + "-backup-123", OwnerReferences: []metav1.OwnerReference{{
 			APIVersion: "batch/v1", Kind: "CronJob", Name: cj.Name, UID: cj.UID, Controller: ptr.To(true),
 		}}}
-		return []client.Object{cj, job}
 	}
 
 	t.Run("a backup in flight", func(t *testing.T) {
-		sb := newBackup(testBackupName, testRepoName)
-		withVolume(sb)
-		c := newClient(t, append(running(sb), sb)...)
-		err := restoreInPlace(ctx, offlineFactory(t, testStreams()), c, sb, &restoreOptions{snapshot: latest, yes: true})
+		fx := currentBackup(t, withVolume)
+		c := newClient(t, fx.objects(running(fx.cj))...)
+		err := restoreInPlace(ctx, offlineFactory(t, testStreams()), c, fx.sb, &restoreOptions{snapshot: latest, yes: true})
 		if !errors.Is(err, ErrBackupRunning) {
 			t.Fatalf("err = %v, want ErrBackupRunning", err)
 		}
@@ -760,13 +756,12 @@ func TestInPlaceRestoreWaitsForARunningBackupAndStaysSuspendedOnFailure(t *testi
 	})
 
 	t.Run("a restore that fails", func(t *testing.T) {
-		sb := newBackup(testBackupName, testRepoName)
-		withVolume(sb)
-		c := newClient(t, sb)
+		fx := currentBackup(t, withVolume)
+		c := newClient(t, fx.objects()...)
 		var errOut bytes.Buffer
 		streams := testStreams()
 		streams.ErrOut = &errOut
-		err := restoreInPlace(ctx, offlineFactory(t, streams), c, sb, &restoreOptions{snapshot: latest, yes: true})
+		err := restoreInPlace(ctx, offlineFactory(t, streams), c, fx.sb, &restoreOptions{snapshot: latest, yes: true})
 		if err == nil {
 			t.Fatal("expected the offline factory to fail")
 		}
