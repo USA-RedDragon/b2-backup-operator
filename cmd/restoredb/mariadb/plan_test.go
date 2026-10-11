@@ -944,3 +944,26 @@ func TestFilterRefusesADashCommentWithAControlByte(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterChecksTheValuesThatCrossTheHead(t *testing.T) {
+	t.Parallel()
+	for _, size := range []int{64, 4096, 64 << 10} {
+		for _, tail := range []string{",NOW()", ",(@a:=1)", ",SLEEP(1)"} {
+			dump := "CREATE TABLE `t` (\n  `id` int\n);\n" +
+				"INSERT INTO `t` VALUES (1" + strings.Repeat(",1", 2100) + tail + ");\n" +
+				"-- Dump completed\n"
+			var out strings.Builder
+			f := &dumpFilter{}
+			err := f.copy(&out, bufio.NewReaderSize(strings.NewReader(dump), size))
+			if !errors.Is(err, ErrUnsupportedStatement) {
+				t.Errorf("reader %d, %s: err = %v, want the expression past the head refused", size, tail, err)
+			}
+		}
+	}
+	dump := "CREATE TABLE `t` (\n  `id` int\n);\n" +
+		"INSERT INTO `t` VALUES (1" + strings.Repeat(",12345", 1000) + ",NULL,-1.5e3,0x1F,'x');\n"
+	var out strings.Builder
+	if err := (&dumpFilter{}).copy(&out, bufio.NewReaderSize(strings.NewReader(dump), 64<<10)); err != nil {
+		t.Errorf("a plain value list across the head was refused: %v", err)
+	}
+}
