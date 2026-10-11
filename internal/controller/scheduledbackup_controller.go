@@ -268,7 +268,40 @@ func (r *ScheduledBackupReconciler) tagConflict(
 	if err := r.List(ctx, &jobs, client.InNamespace(sb.Namespace), managed); err != nil {
 		return nil, err
 	}
+	if err := r.suspendStrays(ctx, backups.Items, cronJobs.Items); err != nil {
+		return nil, err
+	}
 	return backup.FindConflict(sb, backups.Items, cronJobs.Items, jobs.Items), nil
+}
+
+// suspendStrays suspends every CronJob the operator rendered that no live
+// ScheduledBackup controls and none would adopt by name, as kubectl delete
+// --cascade=orphan leaves one: it would go on backing up and forgetting under a
+// spec that no longer exists.
+func (r *ScheduledBackupReconciler) suspendStrays(
+	ctx context.Context, backups []b2backupv1.ScheduledBackup, cronJobs []batchv1.CronJob,
+) error {
+	live := map[types.UID]bool{}
+	names := map[string]bool{}
+	for i := range backups {
+		if backups[i].DeletionTimestamp.IsZero() {
+			live[backups[i].UID] = true
+			names[backup.CronJobName(&backups[i])] = true
+		}
+	}
+	for i := range cronJobs {
+		cj := &cronJobs[i]
+		owner := metav1.GetControllerOf(cj)
+		if (owner != nil && live[owner.UID]) || names[cj.Name] || (cj.Spec.Suspend != nil && *cj.Spec.Suspend) {
+			continue
+		}
+		if err := r.suspendCronJob(ctx, cj); err != nil {
+			return err
+		}
+		r.Recorder.Eventf(cj, nil, corev1.EventTypeWarning, "StrayCronJobSuspended", "Suspend",
+			"Suspended CronJob %s: no ScheduledBackup owns it", cj.Name)
+	}
+	return nil
 }
 
 // suspendOwnCronJob stops this ScheduledBackup's CronJob from firing. It runs
