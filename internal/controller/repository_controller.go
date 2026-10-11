@@ -448,7 +448,7 @@ func (r *RepositoryReconciler) reconcileReinit(ctx context.Context, repo *b2back
 
 	var job batchv1.Job
 	key := types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name + initJobSuffix}
-	switch err := r.Get(ctx, key, &job); {
+	switch err := r.uncached().Get(ctx, key, &job); {
 	case err == nil:
 		if metav1.IsControlledBy(&job, repo) {
 			if err := r.deleteJob(ctx, &job); err != nil {
@@ -459,6 +459,7 @@ func (r *RepositoryReconciler) reconcileReinit(ctx context.Context, repo *b2back
 		return err
 	}
 	repo.Status.Initialized = false
+	repo.Status.InitJobUID = ""
 	repo.Status.LastReinitTime = &metav1.Time{Time: at}
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Reinitializing", "Reinit",
 		"Deleted init Job %s and cleared status.initialized as %s asked", key.Name, b2backupv1.AnnotationReinitAt)
@@ -1340,6 +1341,20 @@ func (r *RepositoryReconciler) reconcileInitJob(
 			r.setInitializing(repo, "Initializing", fmt.Sprintf("waiting for the old init Job %s to be deleted", name))
 			return 5 * time.Second, nil
 		}
+		created, err := r.createdInitJob(ctx, repo, &job)
+		if err != nil {
+			return 0, err
+		}
+		if !created {
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "InitJobReplaced", "Initialize",
+				"Deleting Job %s: it names this Repository as its owner, but the operator did not create it", name)
+			if err := r.deleteJob(ctx, &job); err != nil {
+				return 0, err
+			}
+			r.setInitializing(repo, "Initializing", fmt.Sprintf(
+				"replacing Job %s, which the operator did not create", name))
+			return 5 * time.Second, nil
+		}
 		if job.Status.Succeeded > 0 {
 			recorded, err := r.initializationRecorded(ctx, repo)
 			if err != nil {
@@ -1384,9 +1399,51 @@ func (r *RepositoryReconciler) reconcileInitJob(
 		}
 		return 0, fmt.Errorf("creating init job: %w", err)
 	}
+	if err := r.recordInitJob(ctx, repo, string(job.UID)); err != nil {
+		if delErr := r.deleteJob(ctx, &job); delErr != nil {
+			err = errors.Join(err, delErr)
+		}
+		return 0, err
+	}
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initializing", "Initialize", "Started init job %s", name)
 	r.setInitializing(repo, "Initializing", fmt.Sprintf("started init Job %s", name))
 	return 15 * time.Second, nil
+}
+
+// createdInitJob reports whether job is the init Job the operator created: it
+// carries the operator's label and the UID status recorded when it was
+// created. A Job anyone else made with this Repository as its owner proves
+// nothing about the repository. The cache may lag behind the UID just
+// recorded, so a mismatch is checked against the live Repository.
+func (r *RepositoryReconciler) createdInitJob(
+	ctx context.Context, repo *b2backupv1.Repository, job *batchv1.Job,
+) (bool, error) {
+	if job.Labels[labelManagedBy] != managedByValue || job.UID == "" {
+		return false, nil
+	}
+	if string(job.UID) == repo.Status.InitJobUID {
+		return true, nil
+	}
+	var live b2backupv1.Repository
+	if err := r.uncached().Get(ctx, client.ObjectKeyFromObject(repo), &live); err != nil {
+		return false, err
+	}
+	if string(job.UID) != live.Status.InitJobUID {
+		return false, nil
+	}
+	repo.Status.InitJobUID = live.Status.InitJobUID
+	return true, nil
+}
+
+func (r *RepositoryReconciler) recordInitJob(ctx context.Context, repo *b2backupv1.Repository, uid string) error {
+	obj := repo.DeepCopy()
+	base := obj.DeepCopy()
+	obj.Status.InitJobUID = uid
+	if err := r.Status().Patch(ctx, obj, client.MergeFrom(base)); err != nil {
+		return fmt.Errorf("recording init Job %s on %s/%s: %w", uid, repo.Namespace, repo.Name, err)
+	}
+	repo.Status.InitJobUID = uid
+	return nil
 }
 
 func (r *RepositoryReconciler) setInitializing(repo *b2backupv1.Repository, reason, message string) {

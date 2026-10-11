@@ -192,6 +192,11 @@ type RepositoryStatus struct {
 	// +optional
 	Adopted bool `json:"adopted,omitempty"`
 
+	// InitJobUID is the UID of the init Job the operator created. Only that Job's
+	// success marks the repository initialized.
+	// +optional
+	InitJobUID string `json:"initJobUID,omitempty"`
+
 	// Initialized reports whether restic init has completed.
 	// +optional
 	Initialized bool `json:"initialized,omitempty"`
