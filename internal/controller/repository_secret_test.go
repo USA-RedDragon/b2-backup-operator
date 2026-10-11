@@ -386,3 +386,32 @@ func TestALeftoverSecretForAnotherRepositoryNeverSuppliesThePassword(t *testing.
 		})
 	}
 }
+
+func TestASeedThatIsTheCredentialsSecretPreservesNothing(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	r, c := newHarness(t, f, bucketRepo(nil))
+	reconcileN(t, r, 2)
+	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Fatal("precondition: a generated password is protected")
+	}
+	repo := getRepo(t, c)
+	repo.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: credsSecretName, Key: KeyResticPassword}
+	if err := c.Update(context.Background(), repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileErr(r); err == nil {
+		t.Error("a passwordSecretRef naming the credentials Secret itself was accepted")
+	}
+	if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason != reasonSeedIsCredentials {
+		t.Errorf("Ready = %+v, want %s", cond, reasonSeedIsCredentials)
+	}
+	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Fatal("the Secret was taken as a copy of its own password and lost its finalizer")
+	}
+	deleteRepo(t, c)
+	reconcileUntilGone(t, r, c)
+	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Error("finalize took the Secret as a copy of its own password")
+	}
+}
