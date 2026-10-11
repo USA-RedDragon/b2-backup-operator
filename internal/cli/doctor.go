@@ -341,10 +341,14 @@ func checkCronJob(ctx context.Context, c client.Client, sb *b2backupv1.Scheduled
 
 	r.add(levelOK, fmt.Sprintf("CronJob %q is owned by this ScheduledBackup", name))
 
-	if suspended := cj.Spec.Suspend != nil && *cj.Spec.Suspend; suspended != sb.Spec.Suspend {
-		r.add(levelWarn, "CronJob suspend state does not match spec.suspend",
-			fmt.Sprintf("CronJob suspended=%t, spec.suspend=%t. The operator has not reconciled yet.",
-				suspended, sb.Spec.Suspend))
+	hold := backup.RestoreHold(sb)
+	if hold != "" {
+		r.add(levelWarn, "backups are held for a restore", hold)
+	}
+	if suspended := cj.Spec.Suspend != nil && *cj.Spec.Suspend; suspended != (sb.Spec.Suspend || hold != "") {
+		r.add(levelWarn, "CronJob suspend state does not match spec.suspend and the restore hold",
+			fmt.Sprintf("CronJob suspended=%t, spec.suspend=%t, held=%t. The operator has not reconciled yet.",
+				suspended, sb.Spec.Suspend, hold != ""))
 	}
 }
 

@@ -154,8 +154,9 @@ module version; anything else reports `unknown`.
 ### `backup <name>` — `writes` — alias `run`
 
 **Runs even when the schedule is suspended** — suspending and then backing up by
-hand is the main reason to suspend. Refused only if a run is already in flight
-and `concurrencyPolicy: Forbid`. A backup that is not Ready reports that the run
+hand is the main reason to suspend. Refused if a run is already in flight and
+`concurrencyPolicy: Forbid`, and while a restore holds the backup (see
+`restore`), so a half-restored claim or database is never saved. A backup that is not Ready reports that the run
 is deferred rather than appearing to hang.
 
 | Flag | |
@@ -217,22 +218,35 @@ never restores somewhere it did not name.
 | `--in-place` | `DESTROYS` | Over the source claims. Held like `--to-database`, below |
 | `--to-database` | `DESTROYS` | Streams the dump back through `restoredb` |
 
-Both overwriting targets are refused while a Job of this ScheduledBackup is
-running: a scheduled or triggered backup, or a b2bk restore, which b2bk labels
-`b2backup.mcswain.dev/b2bk-purpose`. A b2bk Job without that label, from an
-older b2bk, counts as a restore. The restore then takes the ScheduledBackup: it
-sets the `b2backup.mcswain.dev/restore-lock` annotation, so a second
-overwriting restore is refused until it is done, and suspends the schedule,
-recording in `b2backup.mcswain.dev/restore-resume` that it did. Just before the
-first write it checks, from the restore pod, that the operator has suspended
-the CronJob and that no backup started in the meantime, and stops without
-writing if not. A restore that succeeds, or stops before writing, resumes a
-schedule it suspended. One that fails after writing leaves it suspended, since
-the next backup would save a partial restore and retention could keep it over
-good snapshots; the next restore that succeeds resumes it, and so do `b2bk
-resume` and `b2bk suspend`, which clear the annotation. A restore killed before
-it lets go leaves the lock behind: remove it with `kubectl annotate
-scheduledbackup NAME b2backup.mcswain.dev/restore-lock-` once it is gone.
+Both overwriting targets work on every ScheduledBackup in the namespace that
+backs up the same thing: for `--in-place`, each one with one of the restored
+claims in `spec.volumes`; for `--to-database`, each one whose `spec.database`
+has the same engine and credentials Secret. They are refused while a Job of any
+of them is running: a scheduled or triggered backup, or a b2bk restore, which
+b2bk labels `b2backup.mcswain.dev/b2bk-purpose`. A b2bk Job without that label,
+from an older b2bk, counts as a restore.
+
+The restore then holds them all with the `b2backup.mcswain.dev/restore-lock`
+annotation, written with the resourceVersion it read so that of two restores
+only one wins. While it is set the operator keeps their CronJobs suspended and
+starts no triggered backup, `b2bk backup` and `b2bk resume` are refused, and a
+second overwriting restore is refused. `spec.suspend` is left as you set it.
+Just before the first write, from the restore pod, b2bk checks that the
+ScheduledBackup still has the spec the restore was planned from and the
+operator has rendered it, that every held CronJob is suspended, and that no
+backup started in the meantime, and stops without writing if not.
+
+A restore that fails after it started writing records what it was writing in
+`b2backup.mcswain.dev/restore-partial` on every held ScheduledBackup, as
+`pvc/<claim>:<path>` or `db/<engine>/<secret>/<database>` entries. While any
+entry is recorded the hold stays: the next backup would save the partial
+restore, and retention could then keep it over good snapshots. A later restore
+of the whole of the same target that succeeds removes its entry; one narrowed
+with `--path`, `--include` or `--exclude`, one of another target, and one that
+stops before writing do not. `b2bk resume` removes them all once you have
+checked the data. `b2bk status` and `b2bk doctor` show the hold. A restore
+killed before it lets go leaves the lock behind: once it is gone, remove it
+with `kubectl annotate scheduledbackup NAME b2backup.mcswain.dev/restore-lock-`.
 
 **Which snapshot.** Every target restores one source. A files target takes the
 backup's files source, or the one `--tag` names when there are several. The

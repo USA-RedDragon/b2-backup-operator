@@ -77,21 +77,30 @@ func runSetSuspend(
 
 	p := newPrinter(out)
 	label := fmt.Sprintf("%s/%s", target.Kind, target.Name())
-	_, resumeAfterRestore := obj.GetAnnotations()[b2backupv1.AnnotationRestoreResume]
-	if *current == suspend && !resumeAfterRestore {
+	var partial []string
+	if sb := target.ScheduledBackup; target.Kind == TargetScheduledBackup && !suspend {
+		if holder := sb.Annotations[b2backupv1.AnnotationRestoreLock]; holder != "" {
+			return fmt.Errorf("%w: %s is held by %s; it resumes when that restore ends", ErrRestoreRunning, label, holder)
+		}
+		partial = partialTargets(sb)
+	}
+	if *current == suspend && len(partial) == 0 {
 		p.printf("%s is already %s\n", label, past)
 		return p.Err()
 	}
 
 	patch := client.MergeFrom(obj.DeepCopyObject().(client.Object))
 	*current = suspend
-	if target.Kind == TargetScheduledBackup {
-		delete(target.ScheduledBackup.Annotations, b2backupv1.AnnotationRestoreResume)
+	if len(partial) > 0 {
+		delete(target.ScheduledBackup.Annotations, b2backupv1.AnnotationRestorePartial)
 	}
 	if err := c.Patch(ctx, obj, patch); err != nil {
 		return err
 	}
 
+	if len(partial) > 0 {
+		p.printf("%s no longer held for a partial restore of %s\n", label, strings.Join(partial, ", "))
+	}
 	p.printf("%s %s\n", label, past)
 	return p.Err()
 }

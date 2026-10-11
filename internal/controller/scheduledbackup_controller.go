@@ -414,7 +414,8 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
-		For(&b2backupv1.ScheduledBackup{}, builder.WithPredicates(ignoreOwnStatusWrites(b2backupv1.AnnotationTriggerAt))).
+		For(&b2backupv1.ScheduledBackup{}, builder.WithPredicates(ignoreOwnStatusWrites(
+			b2backupv1.AnnotationTriggerAt, b2backupv1.AnnotationRestoreLock, b2backupv1.AnnotationRestorePartial))).
 		Owns(&batchv1.CronJob{}).
 		Owns(&batchv1.Job{}).
 		Watches(

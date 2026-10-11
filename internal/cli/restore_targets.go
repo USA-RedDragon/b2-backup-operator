@@ -403,9 +403,20 @@ func restoreInPlace(
 	if err := confirm(f, o.yes || o.dryRun, what, sb.Name); err != nil {
 		return err
 	}
-	lock, err := lockForRestore(ctx, c, sb, o.dryRun)
-	if err != nil {
-		return err
+	var hold *restoreHold
+	if !o.dryRun {
+		var claimNames []string
+		for _, claim := range claims {
+			claimNames = append(claimNames, strings.TrimPrefix(claim, "pvc/"))
+		}
+		sharing, err := sharingBackups(ctx, c, sb, claimNames, false)
+		if err != nil {
+			return err
+		}
+		full := o.path == "" && len(o.include) == 0 && len(o.exclude) == 0
+		if hold, err = holdForRestore(ctx, c, sb, sharing, claimTargets(sb, src.paths), full); err != nil {
+			return err
+		}
 	}
 
 	wrote := false
@@ -415,30 +426,15 @@ func restoreInPlace(
 		if err != nil {
 			return err
 		}
-		if lock != nil {
-			if err := readyToWrite(ctx, c, sb, job); err != nil {
+		if hold != nil {
+			if err := hold.readyToWrite(ctx, job); err != nil {
 				return err
 			}
 		}
 		wrote = true
 		return o.runVolumes(ctx, pod, src, plan, f.Streams.Out)
 	})
-	return lock.finish(f, sb, err, wrote, "the claims")
-}
-
-// lockForRestore refuses an overwriting restore while a backup or another
-// restore runs, then takes the ScheduledBackup for this one. A dry run takes
-// nothing.
-func lockForRestore(
-	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, dryRun bool,
-) (*restoreLock, error) {
-	if dryRun {
-		return nil, nil
-	}
-	if err := refuseActive(ctx, c, sb, ""); err != nil {
-		return nil, err
-	}
-	return acquireRestoreLock(ctx, c, sb)
+	return hold.finish(f, err, wrote)
 }
 
 // attachRestorePod runs fn against a pod started for sb, with the name of its Job.
@@ -473,9 +469,15 @@ func restoreToDatabase(
 		return err
 	}
 	target := databaseTarget(sb, src.database)
-	lock, err := lockForRestore(ctx, c, sb, o.dryRun)
-	if err != nil {
-		return err
+	var hold *restoreHold
+	if !o.dryRun {
+		sharing, err := sharingBackups(ctx, c, sb, nil, true)
+		if err != nil {
+			return err
+		}
+		if hold, err = holdForRestore(ctx, c, sb, sharing, []string{databaseKey(sb, src.database)}, true); err != nil {
+			return err
+		}
 	}
 
 	wrote := false
@@ -486,8 +488,8 @@ func restoreToDatabase(
 				if err := confirm(f, o.yes || o.dryRun, dumpConfirmation(target, src, snap), sb.Name); err != nil {
 					return err
 				}
-				if lock != nil {
-					if err := readyToWrite(ctx, c, sb, job); err != nil {
+				if hold != nil {
+					if err := hold.readyToWrite(ctx, job); err != nil {
 						return err
 					}
 				}
@@ -495,7 +497,7 @@ func restoreToDatabase(
 				return nil
 			})
 	})
-	return lock.finish(f, sb, err, wrote, target)
+	return hold.finish(f, err, wrote)
 }
 
 // dumpConfirmation names what a database restore overwrites and with which dump.

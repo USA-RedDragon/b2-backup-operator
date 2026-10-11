@@ -42,6 +42,14 @@ func (r *ScheduledBackupReconciler) reconcileTrigger(
 		return nil
 	}
 
+	if hold := backup.RestoreHold(sb); hold != "" {
+		r.Recorder.Eventf(sb, nil, corev1.EventTypeWarning, "TriggerSkipped", "Trigger",
+			"Not starting a backup: %s", hold)
+		sb.Status.LastTriggerTime = &metav1.Time{Time: at}
+		sb.Status.LastTriggerJob = ""
+		return nil
+	}
+
 	wanted := backup.ManualJobName(sb, at)
 
 	if sb.Spec.ConcurrencyPolicy == batchv1.ForbidConcurrent {
