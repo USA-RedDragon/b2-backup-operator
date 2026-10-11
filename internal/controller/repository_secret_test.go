@@ -339,3 +339,50 @@ func TestAnUnattributedRetainedSecretForAnotherPathIsNotTakenOver(t *testing.T) 
 		t.Error("a blocked Repository created an application key")
 	}
 }
+
+func TestALeftoverSecretForAnotherRepositoryNeverSuppliesThePassword(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		seeded bool
+		adopt  bool
+	}{
+		{"a seeded fresh path", true, false},
+		{"a seeded adoption", true, true},
+		{"an unseeded fresh path", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeB2(t)
+			bucket := f.AddBucket(sharedBucket)
+			if tt.adopt {
+				f.PutFile(bucket.BucketID, myappPath+"/config", 1)
+			}
+			leftover := &corev1.Secret{
+				Name: credsSecretName, Namespace: testNS,
+				Labels: map[string]string{labelManagedBy: managedByValue},
+				Data: map[string][]byte{
+					KeyResticRepository: []byte("s3:https://s3.us-east-005.backblazeb2.com/" + sharedBucket + "/restic/old"),
+					KeyResticPassword:   []byte("old-repository-password"),
+				},
+			}
+			objs := []client.Object{leftover}
+			repo := prefixRepo(nil)
+			if tt.seeded {
+				usePasswordSeed(repo)
+				objs = append(objs, seedSecretFixture())
+			}
+			r, c := newHarness(t, f, append(objs, repo)...)
+			reconcileN(t, r, 2)
+
+			got := string(getSecret(t, c, credsSecretName).Data[KeyResticPassword])
+			if got == "old-repository-password" {
+				t.Fatal("the password of another repository was used for this one")
+			}
+			if want := string(seedSecretFixture().Data[KeyResticPassword]); tt.seeded && got != want {
+				t.Errorf("password = %q, want the seed's", got)
+			}
+		})
+	}
+}
