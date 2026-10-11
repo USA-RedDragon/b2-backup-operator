@@ -1,0 +1,459 @@
+//go:build mariadb
+
+package mariadb_test
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/USA-RedDragon/b2-backup-operator/cmd/restoredb/mariadb"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/dbtools/testutil"
+)
+
+const (
+	rootPassword = "root-pw"
+	appDB        = "app"
+	stagingDB    = appDB + mariadb.StagingSuffix
+	oldDB        = appDB + mariadb.OldSuffix
+)
+
+var server string
+
+// TestMain starts one MariaDB server in Docker for the whole suite and puts a
+// mariadb shim on PATH that runs the client inside it, so the suite needs
+// nothing but Docker. MARIADB_IMAGE overrides the image.
+func TestMain(m *testing.M) {
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
+	image := os.Getenv("MARIADB_IMAGE")
+	if image == "" {
+		image = "mariadb:11"
+	}
+	suffix := make([]byte, 4)
+	_, _ = rand.Read(suffix)
+	server = "b2bk-restoredb-e2e-" + hex.EncodeToString(suffix)
+	if out, err := exec.Command("docker", "run", "-d", "--rm", "--name", server,
+		"-e", "MARIADB_ROOT_PASSWORD="+rootPassword, image).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "start %s: %v\n%s", image, err, out)
+		return 1
+	}
+	defer func() { _ = exec.Command("docker", "rm", "-f", "-v", server).Run() }()
+
+	ready := false
+	for range 120 {
+		if exec.Command("docker", "exec", "-e", "MYSQL_PWD="+rootPassword, server,
+			"mariadb", "-h127.0.0.1", "-uroot", "-e", "SELECT 1").Run() == nil {
+			ready = true
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if !ready {
+		fmt.Fprintln(os.Stderr, "the MariaDB server did not come up")
+		return 1
+	}
+
+	bin, err := os.MkdirTemp("", "b2bk-mariadb-shim")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer func() { _ = os.RemoveAll(bin) }()
+	shim := "#!/bin/sh\nexec docker exec -i -e MYSQL_PWD " + server + " mariadb \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "mariadb"), []byte(shim), 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	_ = os.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return m.Run()
+}
+
+func docker(t *testing.T, stdin string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("docker", slices.Concat([]string{"exec", "-i", "-e", "MYSQL_PWD=" + rootPassword, server},
+		args)...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%v: %v\n%s", args, err, errOut.String())
+	}
+	return out.String()
+}
+
+func sql(t *testing.T, stmts string) string {
+	t.Helper()
+	return docker(t, stmts, "mariadb", "-h127.0.0.1", "-uroot", "--batch", "--skip-column-names")
+}
+
+// dump takes a dump the way dumpdb mariadb does, with any extra flags.
+func dump(t *testing.T, args ...string) string {
+	t.Helper()
+	base := []string{"mariadb-dump", "-h127.0.0.1", "-uroot", "--add-drop-table", "--skip-dump-date",
+		"--single-transaction"}
+	if len(args) == 0 {
+		args = []string{appDB}
+	}
+	return docker(t, "", slices.Concat(base, args)...)
+}
+
+// fingerprint is a deterministic dump of a database: its tables, rows and
+// auto-increment counters.
+func fingerprint(t *testing.T, db string) string {
+	t.Helper()
+	return docker(t, "", "mariadb-dump", "-h127.0.0.1", "-uroot", "--skip-dump-date", "--skip-comments",
+		"--triggers", "--routines", "--events", db)
+}
+
+func schemas(t *testing.T) []string {
+	t.Helper()
+	return strings.Fields(sql(t, "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA"))
+}
+
+func assertNoStaging(t *testing.T) {
+	t.Helper()
+	for _, s := range schemas(t) {
+		if s == stagingDB || s == oldDB {
+			t.Errorf("%s was left behind", s)
+		}
+	}
+}
+
+const seedSQL = `
+DROP DATABASE IF EXISTS app; DROP DATABASE IF EXISTS app__b2bk_restore; DROP DATABASE IF EXISTS app__b2bk_old;
+DROP DATABASE IF EXISTS other; DROP DATABASE IF EXISTS app2;
+CREATE DATABASE app; CREATE DATABASE other;
+CREATE TABLE app.parent (id INT PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE app.child (id INT AUTO_INCREMENT PRIMARY KEY, pid INT,
+  FOREIGN KEY (pid) REFERENCES parent (id)) ENGINE=InnoDB;
+CREATE TABLE app.keep (id INT PRIMARY KEY, v VARCHAR(20));
+CREATE TABLE app.gone (id INT PRIMARY KEY);
+CREATE SEQUENCE app.seq;
+INSERT INTO app.parent VALUES (1), (2);
+INSERT INTO app.child (pid) VALUES (1), (2), (1);
+INSERT INTO app.keep VALUES (1, 'backup'), (2, 'line\nbreak');
+INSERT INTO app.gone VALUES (7);
+SELECT NEXTVAL(app.seq);
+CREATE TABLE other.t (id INT PRIMARY KEY);
+INSERT INTO other.t VALUES (42);
+`
+
+// mutateSQL changes app after the backup: rows change, a table goes away, and
+// one appears that the backup never had.
+const mutateSQL = `
+UPDATE app.keep SET v = 'changed';
+INSERT INTO app.parent VALUES (3);
+INSERT INTO app.child (pid) VALUES (3);
+DROP TABLE app.gone;
+CREATE TABLE app.extra (id INT PRIMARY KEY);
+INSERT INTO app.extra VALUES (9);
+`
+
+func seed(t *testing.T) (backup, backupState string) {
+	t.Helper()
+	sql(t, seedSQL)
+	backupState = fingerprint(t, appDB)
+	backup = dump(t)
+	sql(t, mutateSQL)
+	return backup, backupState
+}
+
+func restore(t *testing.T, input string, args ...string) (string, error) {
+	t.Helper()
+	testutil.ClearEnv(t)
+	cmd := mariadb.New()
+	cmd.SetContext(context.Background())
+	cmd.SetIn(strings.NewReader(input))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SilenceErrors = true
+	cmd.SetArgs(slices.Concat([]string{"-H", "127.0.0.1", "-u", "root", "-p", rootPassword, "-d", appDB}, args))
+	err := cmd.Execute()
+	t.Logf("restoredb output:\n%s", out.String())
+	return out.String(), err
+}
+
+// refused runs a restore that must fail with want and leave app exactly as it was.
+func refused(t *testing.T, input string, want error, args ...string) string {
+	t.Helper()
+	before := fingerprint(t, appDB)
+	out, err := restore(t, input, args...)
+	if want != nil && !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+	if err == nil {
+		t.Fatal("the restore succeeded")
+	}
+	if !strings.Contains(err.Error(), "was not changed") {
+		t.Errorf("the error does not say the live database was left alone: %v", err)
+	}
+	if after := fingerprint(t, appDB); after != before {
+		t.Errorf("the live database changed:\n--- before\n%s\n--- after\n%s", before, after)
+	}
+	t.Logf("error: %v", err)
+	return out + err.Error()
+}
+
+func TestMariaDBRestoreSwapsAllTablesAtOnce(t *testing.T) {
+	backup, want := seed(t)
+	mutated := fingerprint(t, appDB)
+
+	out, err := restore(t, backup)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := fingerprint(t, appDB); got != want {
+		t.Errorf("app does not match the backup:\n--- got\n%s\n--- want\n%s", got, want)
+	}
+	if got := strings.Fields(sql(t, "SHOW TABLES FROM app__b2bk_old")); !slices.Equal(got,
+		[]string{"child", "extra", "keep", "parent", "seq"}) {
+		t.Errorf("app__b2bk_old holds %v", got)
+	}
+	if got := sql(t, "SELECT v FROM app__b2bk_old.keep WHERE id = 1"); got != "changed\n" {
+		t.Errorf("the replaced rows were not kept: %q", got)
+	}
+	if slices.Contains(schemas(t), stagingDB) {
+		t.Error("the staging database was left behind")
+	}
+	if !strings.Contains(out, "DROP DATABASE `app__b2bk_old`;") || !strings.Contains(out, "To roll back") {
+		t.Errorf("the output does not say how to drop or roll back:\n%s", out)
+	}
+
+	refs := sql(t, "SELECT CONSTRAINT_SCHEMA, TABLE_NAME, UNIQUE_CONSTRAINT_SCHEMA FROM "+
+		"information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA LIKE 'app%' ORDER BY 1")
+	if refs != "app\tchild\tapp\napp__b2bk_old\tchild\tapp__b2bk_old\n" {
+		t.Errorf("foreign keys point across databases:\n%s", refs)
+	}
+
+	t.Run("a second restore keeps the rollback copy", func(t *testing.T) {
+		out := refused(t, backup, mariadb.ErrOldExists)
+		if !strings.Contains(out, "DROP DATABASE `app__b2bk_old`") {
+			t.Errorf("the refusal does not say how to drop the rollback copy:\n%s", out)
+		}
+		if got := fingerprint(t, oldDB); !strings.Contains(got, "'changed'") {
+			t.Error("the rollback copy was touched")
+		}
+	})
+
+	t.Run("the printed rollback restores the replaced tables", func(t *testing.T) {
+		var stmts []string
+		for line := range strings.SplitSeq(out[strings.Index(out, "To roll back"):], "\n") {
+			if s := strings.TrimSpace(line); strings.HasSuffix(s, ";") {
+				stmts = append(stmts, s)
+			}
+		}
+		sql(t, strings.Join(stmts, "\n"))
+		if got := fingerprint(t, appDB); got != mutated {
+			t.Errorf("the rollback did not bring back the replaced tables:\n%s", got)
+		}
+		sql(t, "DROP DATABASE app__b2bk_old")
+	})
+
+	t.Run("--drop-old drops the replaced tables", func(t *testing.T) {
+		if _, err := restore(t, backup, "--drop-old"); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		if got := fingerprint(t, appDB); got != want {
+			t.Errorf("app does not match the backup")
+		}
+		assertNoStaging(t)
+	})
+}
+
+func TestMariaDBRefusesATruncatedDump(t *testing.T) {
+	backup, _ := seed(t)
+	lastLine := strings.LastIndex(strings.TrimRight(backup, "\n"), "\n")
+	for name, cut := range map[string]string{
+		"mid-line":           backup[:len(backup)/2],
+		"at a line boundary": backup[:strings.LastIndex(backup[:len(backup)/2], "\n")+1],
+		"just the trailer":   backup[:lastLine+1],
+	} {
+		t.Run(name, func(t *testing.T) {
+			refused(t, cut, mariadb.ErrIncomplete)
+			assertNoStaging(t)
+		})
+	}
+}
+
+func TestMariaDBStopsAtAFailingStatement(t *testing.T) {
+	backup, _ := seed(t)
+	at := strings.Index(backup, "UNLOCK TABLES;\n") + len("UNLOCK TABLES;\n")
+	broken := backup[:at] + "THIS IS NOT SQL;\n" + backup[at:]
+	out := refused(t, broken, nil)
+	if !strings.Contains(out, "ERROR 1064") {
+		t.Errorf("the client's own error is missing:\n%s", out)
+	}
+	assertNoStaging(t)
+}
+
+func TestMariaDBRefusesWhatRenameCannotMove(t *testing.T) {
+	backup, _ := seed(t)
+
+	t.Run("a trigger on a live table", func(t *testing.T) {
+		sql(t, "CREATE TRIGGER app.keep_bi BEFORE INSERT ON app.keep FOR EACH ROW SET NEW.v = UPPER(NEW.v)")
+		defer sql(t, "DROP TRIGGER app.keep_bi")
+		refused(t, backup, mariadb.ErrUnsupportedObjects)
+		if slices.Contains(schemas(t), stagingDB) {
+			t.Error("the staging database was created before the refusal")
+		}
+	})
+
+	t.Run("a live view", func(t *testing.T) {
+		sql(t, "CREATE VIEW app.v AS SELECT id FROM app.keep")
+		defer sql(t, "DROP VIEW app.v")
+		refused(t, backup, mariadb.ErrUnsupportedObjects)
+	})
+
+	for name, setup := range map[string]string{
+		"a view in the dump":    "CREATE VIEW app.v AS SELECT id FROM app.keep",
+		"a trigger in the dump": "CREATE TRIGGER app.keep_bi BEFORE INSERT ON app.keep FOR EACH ROW SET NEW.v = 'x'",
+		"a routine in the dump": "CREATE PROCEDURE app.p() SELECT 1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			sql(t, setup)
+			withObject := dump(t, "--routines", appDB)
+			sql(t, "DROP VIEW IF EXISTS app.v; DROP TRIGGER IF EXISTS app.keep_bi; DROP PROCEDURE IF EXISTS app.p")
+			refused(t, withObject, mariadb.ErrUnsupportedObjects)
+			assertNoStaging(t)
+		})
+	}
+}
+
+func TestMariaDBKeepsADatabasesDumpOutOfTheNamedDatabase(t *testing.T) {
+	seed(t)
+	named := dump(t, "--add-drop-database", "--databases", appDB)
+	for _, line := range []string{"DROP DATABASE IF EXISTS `app`", "CREATE DATABASE", "USE `app`;"} {
+		if !strings.Contains(named, line) {
+			t.Fatalf("the --databases dump has no %q line", line)
+		}
+	}
+
+	t.Run("a failure after the USE line leaves the named database alone", func(t *testing.T) {
+		at := strings.Index(named, "UNLOCK TABLES;\n") + len("UNLOCK TABLES;\n")
+		refused(t, named[:at]+"THIS IS NOT SQL;\n"+named[at:], nil)
+		assertNoStaging(t)
+	})
+
+	t.Run("the dump restores into the database given", func(t *testing.T) {
+		want := fingerprint(t, appDB)
+		sql(t, "CREATE DATABASE app2; CREATE TABLE app2.junk (id INT)")
+		cmdArgs := []string{"-d", "app2", "--drop-old"}
+		out, err := restore(t, named, cmdArgs...)
+		if err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		if got := fingerprint(t, "app2"); got != want {
+			t.Errorf("app2 does not match the dump of app:\n%s", got)
+		}
+		if got := fingerprint(t, appDB); got != want {
+			t.Error("app, which the dump names, was changed")
+		}
+		if !strings.Contains(out, "name `app`; they were left out") {
+			t.Errorf("the output does not say the database lines were left out:\n%s", out)
+		}
+	})
+
+	t.Run("a dump of two databases is refused", func(t *testing.T) {
+		otherBefore := fingerprint(t, "other")
+		refused(t, dump(t, "--databases", appDB, "other"), mariadb.ErrMultipleDatabases)
+		if fingerprint(t, "other") != otherBefore {
+			t.Error("the other database was changed")
+		}
+		assertNoStaging(t)
+	})
+}
+
+func TestMariaDBDryRunDropsStagingWithoutSwapping(t *testing.T) {
+	backup, _ := seed(t)
+	sql(t, "CREATE DATABASE app__b2bk_restore; CREATE TABLE app__b2bk_restore.leftover (id INT)")
+	before := fingerprint(t, appDB)
+	out, err := restore(t, backup, "--dry-run")
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if fingerprint(t, appDB) != before {
+		t.Error("the dry run changed the live database")
+	}
+	if !strings.Contains(out, "RENAME TABLE `app`.`child` TO `app__b2bk_old`.`child`") {
+		t.Errorf("the dry run does not show the swap:\n%s", out)
+	}
+	assertNoStaging(t)
+
+	refused(t, backup[:len(backup)/2], mariadb.ErrIncomplete, "--dry-run")
+}
+
+func TestMariaDBRestoreUserPrivileges(t *testing.T) {
+	backup, want := seed(t)
+	sql(t, `DROP USER IF EXISTS 'limited'@'%';
+CREATE USER 'limited'@'%' IDENTIFIED BY 'limited-pw';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, LOCK TABLES, REFERENCES ON app.* TO 'limited'@'%';`)
+	defer sql(t, "DROP USER 'limited'@'%'")
+	as := []string{"-u", "limited", "-p", "limited-pw"}
+
+	out := refused(t, backup, mariadb.ErrPrivileges, as...)
+	if !strings.Contains(out, "grant ALL on both") && !strings.Contains(out, "Access denied") {
+		t.Errorf("the refusal does not explain the privileges:\n%s", out)
+	}
+	assertNoStaging(t)
+
+	sql(t, "GRANT ALL ON `app\\_\\_b2bk\\_restore`.* TO 'limited'@'%';\n"+
+		"GRANT ALL ON `app\\_\\_b2bk\\_old`.* TO 'limited'@'%';")
+	if _, err := restore(t, backup, slices.Concat(as, []string{"--drop-old"})...); err != nil {
+		t.Fatalf("restore with the documented grants: %v", err)
+	}
+	if fingerprint(t, appDB) != want {
+		t.Error("app does not match the backup")
+	}
+	assertNoStaging(t)
+}
+
+// The dump runs in binary mode, so a client command that would switch
+// databases reaches the server as text and fails instead.
+func TestMariaDBDoesNotRunClientCommands(t *testing.T) {
+	backup, _ := seed(t)
+	otherBefore := fingerprint(t, "other")
+	at := strings.Index(backup, "UNLOCK TABLES;\n") + len("UNLOCK TABLES;\n")
+	refused(t, backup[:at]+"\\u other\n"+backup[at:], nil)
+	if fingerprint(t, "other") != otherBefore {
+		t.Error("the dump wrote into the database a client command named")
+	}
+	assertNoStaging(t)
+}
+
+// A transaction holding a live table makes the swap wait for its metadata
+// lock. After lock_wait_timeout the RENAME fails as a whole.
+func TestMariaDBSwapGivesUpOnAHeldLock(t *testing.T) {
+	backup, _ := seed(t)
+	holder := exec.Command("docker", "exec", "-i", "-e", "MYSQL_PWD="+rootPassword, server,
+		"mariadb", "-h127.0.0.1", "-uroot")
+	holder.Stdin = strings.NewReader("START TRANSACTION; SELECT * FROM app.keep; SELECT SLEEP(300);\n")
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		sql(t, "SELECT CONCAT('KILL ', ID, ';') FROM information_schema.PROCESSLIST WHERE INFO LIKE 'SELECT SLEEP(300)%'"+
+			" INTO @k; EXECUTE IMMEDIATE @k")
+		_ = holder.Wait()
+	}()
+	time.Sleep(2 * time.Second)
+
+	out := refused(t, backup, nil)
+	if !strings.Contains(out, "Lock wait timeout exceeded") {
+		t.Errorf("the swap did not time out on the lock:\n%s", out)
+	}
+	assertNoStaging(t)
+}
