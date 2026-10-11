@@ -32,14 +32,37 @@ metadata:
   namespace: prod
 spec:
   values:
+    defaultPodOptions:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: prod
     controllers:
       restic:
+        type: cronjob
         cronjob:
           schedule: "` + schedule + `"
           timeZone: America/Chicago
         containers:
           restic:
+            image:
+              repository: ghcr.io/gabe565/restic
+              tag: 0.19.1
+            envFrom:
+              - secretRef:
+                  name: restic-b2
+              - secretRef:
+                  name: restic-envs
             workingDir: /data
+            resources:
+              requests:
+                cpu: 10m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
             command:
               - sh
               - -c
@@ -304,6 +327,14 @@ metadata:
   namespace: copied-from-elsewhere
 spec:
   values:
+    defaultPodOptions:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: myapp
     controllers:
       restic:
         type: cronjob
@@ -313,6 +344,14 @@ spec:
           concurrencyPolicy: Forbid
         containers:
           restic:
+            image:
+              repository: ghcr.io/gabe565/restic
+              tag: 0.19.1
+            envFrom:
+              - secretRef:
+                  name: restic-b2
+              - secretRef:
+                  name: restic-envs
             workingDir: /
             env:
               TZ: America/Chicago
@@ -539,17 +578,7 @@ func TestMigrateTurnsAnEmptyDirIntoScratchSpace(t *testing.T) {
 }
 
 func TestMigrateCopiesAffinityAndDerivesTheCNPGCluster(t *testing.T) {
-	body := strings.Replace(homeClusterRelease, "spec:\n  values:\n", `spec:
-  values:
-    defaultPodOptions:
-      affinity:
-        podAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - topologyKey: kubernetes.io/hostname
-              labelSelector:
-                matchLabels:
-                  app.kubernetes.io/name: grafana
-`, 1)
+	body := strings.Replace(homeClusterRelease, "app.kubernetes.io/name: myapp", "app.kubernetes.io/name: grafana", 1)
 	body = strings.Replace(body, "name: postgresql-app\n", "name: obsidibot-app\n", 1)
 
 	var buf bytes.Buffer

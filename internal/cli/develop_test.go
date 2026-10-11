@@ -25,16 +25,31 @@ spec:
   values:
     controllers:
       restic:
+        type: cronjob
         cronjob:
           schedule: "` + schedule + `"
           timeZone: America/Chicago
         containers:
           restic:
+            image:
+              repository: ghcr.io/gabe565/restic
+              tag: 0.19.1
+            envFrom:
+              - secretRef:
+                  name: restic-b2
+              - secretRef:
+                  name: restic-envs
             env:
               TZ: America/Chicago
               RESTIC_HOST:
                 fieldRef:
                   fieldPath: metadata.namespace
+            resources:
+              requests:
+                cpu: 10m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
             command:
               - sh
               - -c
@@ -63,6 +78,9 @@ spec:
     name: store
   schedule: "` + schedule + `"
   timeZone: America/Chicago
+  resources:
+    requests: {cpu: 10m, memory: 256Mi}
+    limits: {memory: 1Gi}
   sources:
     - type: cnpg
 `
@@ -104,16 +122,58 @@ func TestParityCatchesACadenceChange(t *testing.T) {
 	}
 }
 
-func TestParityIdenticalWhenNothingMoved(t *testing.T) {
+func TestParityDoesNotRescheduleWhenNothingMoved(t *testing.T) {
 	out, err := parity(t, "36 * * * *", "36 * * * *")
 	if err != nil {
 		t.Fatalf("unexpected difference: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "IDENTICAL") {
-		t.Errorf("expected IDENTICAL in output:\n%s", out)
+	if !strings.Contains(out, verdictEquivalent) {
+		t.Errorf("expected EQUIVALENT in output:\n%s", out)
 	}
 	if strings.Contains(out, "RESCHEDULED") {
 		t.Errorf("nothing moved, so nothing should be reported as rescheduled:\n%s", out)
+	}
+}
+
+func TestParityIsIdenticalAgainstTheOperatorsOwnCronJob(t *testing.T) {
+	t.Parallel()
+	generated := writeGenerated(t, "36 * * * *")
+	cj, _, _, err := generatedCronJob(generated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := yaml.Marshal(cj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(t.TempDir(), "cronjob.yaml")
+	if err := os.WriteFile(original, append([]byte("apiVersion: batch/v1\nkind: CronJob\n"), data...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runParity(&out, generated, original, migrateOptions{}); err != nil || strings.TrimSpace(out.String()) != "IDENTICAL" {
+		t.Errorf("parity against the operator's own CronJob = %v:\n%s", err, out.String())
+	}
+}
+
+func TestParityRefusesAGeneratedBackupTheOperatorRejects(t *testing.T) {
+	t.Parallel()
+	generated := writeManifest(t, `apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: web-files
+  namespace: prod
+spec:
+  repositoryRef: {name: store}
+  schedule: "36 * * * *"
+  env: {DB_HOST: elsewhere}
+  database: {engine: mariadb, host: db, name: app, user: app}
+  sources:
+    - type: mariadb
+`)
+	err := runParity(&bytes.Buffer{}, generated, writeHelmRelease(t, "36 * * * *"), migrateOptions{})
+	if err == nil || !strings.Contains(err.Error(), "DB_HOST") {
+		t.Errorf("parity = %v, want the operator's refusal of DB_HOST in spec.env", err)
 	}
 }
 
@@ -405,14 +465,37 @@ metadata:
   namespace: app
 spec:
   values:
+    defaultPodOptions:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: app
     controllers:
       restic:
+        type: cronjob
         cronjob:
           schedule: 44 0 * * *
           timeZone: America/Chicago
         containers:
           restic:
+            image:
+              repository: ghcr.io/gabe565/restic
+              tag: 0.19.1
+            envFrom:
+              - secretRef:
+                  name: restic-b2
+              - secretRef:
+                  name: restic-envs
             workingDir: /data
+            resources:
+              requests:
+                cpu: 10m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
             env:
               TZ: America/Chicago
               RESTIC_HOST:
@@ -451,6 +534,16 @@ spec:
   repositoryRef: {name: restic}
   schedule: "@daily"
   timeZone: America/Chicago
+  affinity:
+    podAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: app
+  resources:
+    requests: {cpu: 10m, memory: 256Mi}
+    limits: {memory: 1Gi}
   volumes:
     - existingClaim: app-data
       mountPath: /data
@@ -535,5 +628,58 @@ func TestNormalizeRenderedKeepsAForgetScopedToOtherTags(t *testing.T) {
 	}
 	if got, _, _ := normalizeRendered(rendered, []string{"db"}); !strings.Contains(got, "--tag=files") {
 		t.Errorf("a forget scoped to tags the backup does not take was normalized away: %q", got)
+	}
+}
+
+func TestParityComparesTheWholePodTheOriginalRuns(t *testing.T) {
+	t.Parallel()
+	const pod = "    controllers:\n      restic:\n        type: cronjob\n"
+	const container = "            workingDir: /data\n"
+	tests := []struct {
+		name, old, new, want string
+	}{
+		{"a node selector", pod, pod + "        pod:\n          nodeSelector: {disk: ssd}\n", "NODE SELECTOR DIFFERS"},
+		{"tolerations", pod, pod + "        pod:\n          tolerations: [{key: backup, operator: Exists}]\n",
+			"TOLERATIONS DIFFER"},
+		{"a priority class", pod, pod + "        pod:\n          priorityClassName: low\n", "PRIORITY CLASS DIFFERS"},
+		{"a pod label", pod, pod + "        pod:\n          labels: {team: storage}\n", "POD LABELS DIFFER"},
+		{"suspend", "          timeZone: America/Chicago\n", "          timeZone: America/Chicago\n          suspend: true\n",
+			"SUSPEND DIFFERS"},
+		{"another image", "repository: ghcr.io/gabe565/restic", "repository: docker.io/restic/restic", "IMAGE DIFFERS"},
+		{"another envFrom Secret", "                  name: restic-envs\n",
+			"                  name: restic-envs\n              - secretRef:\n                  name: app-extra\n", "ENVFROM DIFFERS"},
+		{"an init container", pod, pod + "        initContainers:\n          prepare:\n            image: {repository: busybox, tag: '1'}\n" +
+			"            command: [sh, -c, 'true']\n", "CONTAINERS DIFFER"},
+		{"a sidecar", "        containers:\n", "        containers:\n          sidecar:\n" +
+			"            image: {repository: busybox, tag: '1'}\n            args: [sleep, '60']\n", "CONTAINERS DIFFER"},
+		{"another controller", "    controllers:\n", "    controllers:\n      notify:\n        type: job\n        containers:\n" +
+			"          notify:\n            image: {repository: busybox, tag: '1'}\n            command: [sh, -c, 'curl x']\n",
+			"CONTROLLER DROPPED"},
+		{"a container port", container, container + "            ports: [{containerPort: 80}]\n", "CONTAINER DIFFERS"},
+		{"host networking", pod, pod + "        pod:\n          hostNetwork: true\n", "POD SPEC DIFFERS"},
+		{"a time limit", "          timeZone: America/Chicago\n",
+			"          timeZone: America/Chicago\n          activeDeadlineSeconds: 600\n", "JOB SETTINGS DIFFER"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if !strings.Contains(parityRelease, tt.old) {
+				t.Fatalf("fixture has no %q", tt.old)
+			}
+			dir := t.TempDir()
+			hr := filepath.Join(dir, "helmrelease.yaml")
+			gen := filepath.Join(dir, "generated.yaml")
+			if err := os.WriteFile(hr, []byte(strings.Replace(parityRelease, tt.old, tt.new, 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(gen, []byte(parityGenerated), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			err := runParity(&out, gen, hr, migrateOptions{})
+			if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), tt.want) {
+				t.Errorf("parity = %v, want %s in:\n%s", err, tt.want, out.String())
+			}
+		})
 	}
 }

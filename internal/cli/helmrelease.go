@@ -127,10 +127,16 @@ func readHelmRelease(path string) (*helmRelease, error) {
 	if err := yaml.Unmarshal(raw, &hr); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	if ns := kustomizeNamespace(filepath.Dir(path)); ns != "" {
-		hr.Metadata.Namespace = ns
-	}
+	hr.Metadata.Namespace = releaseNamespace(path, hr.Metadata.Namespace)
 	return &hr, nil
+}
+
+// releaseNamespace is the namespace a HelmRelease file is applied in.
+func releaseNamespace(path, declared string) string {
+	if ns := kustomizeNamespace(filepath.Dir(path)); ns != "" {
+		return ns
+	}
+	return declared
 }
 
 func kustomizeNamespace(dir string) string {
@@ -202,21 +208,6 @@ func (c hrContainer) env(name string) string {
 	default:
 		return ""
 	}
-}
-
-// resticHost returns the host the container's snapshots are recorded under.
-func (c hrContainer) resticHost(namespace string) (string, error) {
-	value, ok := c.Env[envResticHost]
-	switch {
-	case !ok:
-		return "(the pod's hostname)", nil
-	case isNamespaceFieldRef(value):
-		return namespace, nil
-	}
-	if host, ok := value.(string); ok {
-		return host, nil
-	}
-	return "", fmt.Errorf("%w: RESTIC_HOST is neither a string nor the namespace", ErrUnsupportedEnv)
 }
 
 func (hr *helmRelease) volumes() []hrVolume {

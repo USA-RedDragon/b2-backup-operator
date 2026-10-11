@@ -1,0 +1,165 @@
+---
+# Source: app-template/templates/common.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restic
+  labels:
+    app.kubernetes.io/controller: restic
+    app.kubernetes.io/instance: restic
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: restic
+    helm.sh/chart: app-template-4.6.2
+    tier: backup
+  namespace: app
+spec:
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 0
+  schedule: "17 3 * * *"
+  successfulJobsHistoryLimit: 4
+  failedJobsHistoryLimit: 0
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200
+      backoffLimit: 0
+      template:
+        metadata:
+          annotations: 
+            note: kept
+          labels: 
+            app.kubernetes.io/controller: restic
+            app.kubernetes.io/instance: restic
+            app.kubernetes.io/name: restic
+            extra: "1"
+        spec: 
+          enableServiceLinks: false
+          serviceAccountName: default
+          automountServiceAccountToken: true
+          priorityClassName: low
+          securityContext: 
+            runAsUser: 1000
+          hostIPC: false
+          hostNetwork: false
+          hostPID: false
+          dnsPolicy: None
+          dnsConfig: 
+            nameservers:
+            - 1.1.1.1
+          restartPolicy: Never
+          nodeSelector: 
+            kubernetes.io/hostname: alpha
+          tolerations: 
+            - effect: NoSchedule
+              key: dedicated
+              operator: Equal
+              value: backup
+          initContainers: 
+            - command:
+              - sh
+              - -c
+              - mkdir -p /backup/x
+              image: busybox:1.37
+              name: prepare
+              volumeMounts:
+              - mountPath: /backup
+                name: backup
+              - mountPath: /cache
+                name: cache
+              - mountPath: /creds
+                name: creds
+              - mountPath: /data
+                name: data
+                readOnly: true
+              - mountPath: /etc/settings
+                name: settings
+                subPathExpr: $(POD_NAME)
+          containers: 
+            - args:
+              - |
+                restic backup --tag=files /data /cache
+              command:
+              - sh
+              - -c
+              env:
+              - name: BIG
+                value: "1e+06"
+              - name: EXPLICIT
+                value: "42"
+              - name: FLAG
+                value: "true"
+              - name: FROM_SECRET
+                valueFrom:
+                  secretKeyRef:
+                    key: value
+                    name: other
+              - name: RATIO
+                value: "1.5"
+              - name: SMALL
+                value: "12"
+              envFrom:
+              - secretRef:
+                  name: restic-envs
+              - configMapRef:
+                  name: settings
+                  optional: true
+                prefix: APP_
+              image: ghcr.io/gabe565/restic:0.18.1@sha256:bd0fed3ab5e55f4267cc75c218f3dfa27e3edd490cddb6ec0a27fd2cd85927f8
+              imagePullPolicy: IfNotPresent
+              name: restic
+              securityContext:
+                readOnlyRootFilesystem: true
+              volumeMounts:
+              - mountPath: /backup
+                name: backup
+              - mountPath: /cache
+                name: cache
+              - mountPath: /creds
+                name: creds
+              - mountPath: /data
+                name: data
+                readOnly: true
+              - mountPath: /also
+                name: data
+              - mountPath: /also
+                name: data
+                subPath: nested
+              - mountPath: /etc/settings
+                name: settings
+                subPathExpr: $(POD_NAME)
+            - args:
+              - sleep
+              - "60"
+              image: busybox:1.37
+              name: sidecar
+              volumeMounts:
+              - mountPath: /backup
+                name: backup
+              - mountPath: /cache
+                name: cache
+              - mountPath: /creds
+                name: creds
+              - mountPath: /data
+                name: data
+                readOnly: true
+              - mountPath: /etc/settings
+                name: settings
+                subPathExpr: $(POD_NAME)
+          volumes: 
+            - emptyDir:
+                medium: Memory
+                sizeLimit: 2Gi
+              name: backup
+            - name: cache
+              persistentVolumeClaim:
+                claimName: app-cache
+            - name: creds
+              secret:
+                defaultMode: 256
+                secretName: db-creds
+            - name: data
+              persistentVolumeClaim:
+                claimName: app
+            - configMap:
+                name: settings
+              name: settings

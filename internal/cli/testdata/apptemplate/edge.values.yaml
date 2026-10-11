@@ -1,0 +1,107 @@
+defaultPodOptions:
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: backup
+      effect: NoSchedule
+  priorityClassName: low
+  labels:
+    team: storage
+  annotations:
+    note: kept
+  securityContext:
+    runAsUser: 1000
+controllers:
+  restic:
+    type: cronjob
+    labels:
+      tier: backup
+    cronjob:
+      schedule: 17 3 * * *
+      suspend: true
+      successfulJobsHistory: 4
+      failedJobsHistory: 0
+      backoffLimit: 0
+      startingDeadlineSeconds: 0
+      activeDeadlineSeconds: 7200
+    pod:
+      nodeSelector:
+        kubernetes.io/hostname: alpha
+      labels:
+        extra: "1"
+      dnsPolicy: None
+      dnsConfig:
+        nameservers: [1.1.1.1]
+    initContainers:
+      prepare:
+        image:
+          repository: busybox
+          tag: 1.37
+        command: [sh, -c, "mkdir -p /backup/x"]
+    containers:
+      restic:
+        image:
+          repository: ghcr.io/gabe565/restic
+          tag: 0.18.1
+          digest: sha256:bd0fed3ab5e55f4267cc75c218f3dfa27e3edd490cddb6ec0a27fd2cd85927f8
+          pullPolicy: IfNotPresent
+        command: [sh, -c]
+        args:
+          - |
+            restic backup --tag=files /data /cache
+        env:
+          BIG: 1000000
+          RATIO: 1.5
+          FLAG: true
+          SMALL: 12
+          FROM_SECRET:
+            secretKeyRef:
+              name: other
+              key: value
+          EXPLICIT:
+            value: 42
+        envFrom:
+          - secret: restic-envs
+          - configMapRef:
+              name: settings
+              optional: true
+            prefix: APP_
+        securityContext:
+          readOnlyRootFilesystem: true
+      sidecar:
+        image:
+          repository: busybox
+          tag: "1.37"
+        args: [sleep, "60"]
+persistence:
+  data:
+    existingClaim: app
+    globalMounts:
+      - path: /data
+        readOnly: true
+    advancedMounts:
+      restic:
+        restic:
+          - path: /also
+          - subPath: nested
+  cache:
+    existingClaim: app-cache
+  backup:
+    type: emptyDir
+    sizeLimit: 2Gi
+    medium: Memory
+  creds:
+    type: secret
+    name: db-creds
+    defaultMode: 256
+  settings:
+    type: configMap
+    name: settings
+    globalMounts:
+      - path: /etc/settings
+        subPathExpr: $(POD_NAME)
+  disabled:
+    enabled: false
+    existingClaim: never

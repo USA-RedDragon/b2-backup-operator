@@ -1,0 +1,43 @@
+defaultPodOptionsStrategy: merge
+defaultPodOptions:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values: [amd64]
+  hostNetwork: true
+controllers:
+  restic:
+    type: cronjob
+    cronjob:
+      schedule: "*/30 * * * *"
+      timeZone: UTC
+      concurrencyPolicy: Replace
+    pod:
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 10
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: app
+      automountServiceAccountToken: false
+    containers:
+      restic:
+        image:
+          repository: ghcr.io/gabe565/restic
+          tag: 0.19.1
+        command: ["/bin/sh", "-c", "restic backup /data"]
+        env:
+          - name: TZ
+            value: Europe/Berlin
+          - name: RESTIC_HOST
+            value: legacy
+persistence:
+  data:
+    existingClaim: app
