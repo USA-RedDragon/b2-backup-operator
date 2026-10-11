@@ -244,7 +244,7 @@ func (r *appTemplateRenderer) cronJob(c map[string]any) (*batchv1.CronJob, error
 	}
 
 	cj := &batchv1.CronJob{}
-	cj.APIVersion, cj.Kind = "batch/v1", "CronJob"
+	cj.APIVersion, cj.Kind = "batch/v1", kindCronJob
 	cj.Name, cj.Namespace = r.release, r.namespace
 	cj.Labels = map[string]string{labelController: resticController}
 	if err := mergeStrings(cj.Labels, c["labels"], "controllers.restic.labels"); err != nil {

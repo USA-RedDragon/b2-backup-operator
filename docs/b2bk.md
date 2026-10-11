@@ -582,7 +582,9 @@ Confirms that migrating an app does not change what gets backed up, or where.
 Needs nothing on PATH. Only `--from-secret` shells out, to `sops`. The second
 argument takes the same directory `migrate` does, or a manifest holding the
 original CronJob itself, such as `helm template` output or a CronJob read from
-the cluster.
+the cluster. Out of several CronJobs it takes the one labelled
+`app.kubernetes.io/controller: restic`; every other CronJob, Job, Deployment,
+StatefulSet or DaemonSet in the manifest is compared as another controller.
 
 Both sides are compared as the CronJob each one runs. The generated side is the
 CronJob the operator builds, with `backup.BuildCronJob` and the CRD's defaults,
