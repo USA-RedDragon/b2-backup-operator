@@ -227,7 +227,10 @@ in-place restore cut off there is a failed one, and stays held.
 
 Running backups and restores are checked by their Jobs and by their pods, since
 `b2bk cancel` and a finished restore delete a Job at once while its pod's restic
-runs on for the pod's grace period.
+runs on for the pod's grace period, about 30 seconds. A pod left Terminating on a
+node that went down keeps refusing overwriting restores and `unlock
+--remove-all`, since it may still be writing: once the node is known to be off,
+remove it with `kubectl delete pod NAME --force --grace-period=0`.
 
 Both overwriting targets work on every ScheduledBackup in the namespace that
 backs up the same thing: for `--in-place`, each one with one of the restored

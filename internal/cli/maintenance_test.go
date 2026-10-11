@@ -84,7 +84,7 @@ func TestUnlockRemoveAllRefusesWhileAnythingUsesTheRepository(t *testing.T) {
 			other.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: "other"}}
 			c := newClient(t, fx.objects(other, tt.job(fx))...)
 			cmd := newUnlockCommand(factoryWithClient(t, c))
-			cmd.SetArgs([]string{subjectBackup, "--remove-all", flagYes})
+			cmd.SetArgs([]string{subjectBackup, flagRemoveAll, flagYes})
 			cmd.SilenceUsage, cmd.SilenceErrors = true, true
 			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "is running") {
 				t.Errorf("err = %v, want --remove-all refused while a Job may hold a live lock", err)
@@ -100,7 +100,7 @@ func TestUnlockRemoveAllRefusesARepositoryThatIsNotItsOwn(t *testing.T) {
 		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse, Reason: reasonRepositoryConflict,
 	}}
 	cmd := newUnlockCommand(factoryWithClient(t, newClient(t, fx.objects()...)))
-	cmd.SetArgs([]string{subjectBackup, "--remove-all", flagYes})
+	cmd.SetArgs([]string{subjectBackup, flagRemoveAll, flagYes})
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	if err := cmd.Execute(); !errors.Is(err, ErrRepositoryNotUsable) {
 		t.Errorf("err = %v, want --remove-all refused while the locks may be another repository's", err)

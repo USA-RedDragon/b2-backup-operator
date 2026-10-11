@@ -18,6 +18,7 @@ import (
 
 const (
 	flagYes                  = "--yes"
+	flagRemoveAll            = "--remove-all"
 	reasonRepositoryConflict = "RepositoryConflict"
 	targetInPlace            = "in place"
 	notRendered              = "has not rendered"
