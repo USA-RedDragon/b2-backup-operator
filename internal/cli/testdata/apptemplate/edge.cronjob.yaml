@@ -108,7 +108,7 @@ spec:
                   name: settings
                   optional: true
                 prefix: APP_
-              image: ghcr.io/gabe565/restic:0.18.1@sha256:bd0fed3ab5e55f4267cc75c218f3dfa27e3edd490cddb6ec0a27fd2cd85927f8
+              image: ghcr.io/gabe565/restic:0.18.1@sha256:83fd2a25fdc5ab311de6bbf9a6b4f158d3c30744c419045aaf5406834ad715cc
               imagePullPolicy: IfNotPresent
               name: restic
               securityContext:
