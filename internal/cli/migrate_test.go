@@ -495,7 +495,7 @@ func TestMigrateNeedsTheRepositoryURL(t *testing.T) {
 }
 
 func TestMigrateReadsTheURLFromTheEncryptedSecret(t *testing.T) {
-	secret := fakeSops(t, sopsEmitting("stringData:\n  RESTIC_REPOSITORY: "+sopsRepoURL+"\n"))
+	secret := fakeSops(t, sopsEmitting("stringData:\n  RESTIC_REPOSITORY: "+sopsRepoURL+"\n  RESTIC_PASSWORD: p\n"))
 	var buf bytes.Buffer
 	if err := runMigrate(&buf, writeHomeClusterRelease(t, homeClusterRelease),
 		migrateOptions{fromSecret: secret}); err != nil {
@@ -1296,5 +1296,19 @@ func TestMigrateRefusesAnAmbiguousEnvFromItem(t *testing.T) {
 	out, err := migrate(t, body)
 	if !errors.Is(err, ErrUnsupportedValues) {
 		t.Errorf("err = %v; app-template reads other-secret here, not restic-envs\n%s", err, out)
+	}
+}
+
+func TestMigrateRefusesAnotherKeyForTheRepository(t *testing.T) {
+	body := strings.Replace(homeClusterRelease, "              TZ: America/Chicago\n",
+		"              TZ: America/Chicago\n              RESTIC_PASSWORD_COMMAND: cat /pw\n", 1)
+	if out, err := migrate(t, body); !errors.Is(err, ErrUnsupportedValues) {
+		t.Errorf("err = %v, want RESTIC_PASSWORD_COMMAND in env refused\n%s", err, out)
+	}
+
+	secret := fakeSops(t, sopsEmitting("stringData:\n  RESTIC_REPOSITORY: "+sopsRepoURL+"\n"))
+	err := runMigrate(&bytes.Buffer{}, writeHomeClusterRelease(t, homeClusterRelease), migrateOptions{fromSecret: secret})
+	if !errors.Is(err, ErrUnsupportedValues) {
+		t.Errorf("err = %v, want a restic-envs without RESTIC_PASSWORD refused, since the Repository reads it", err)
 	}
 }
