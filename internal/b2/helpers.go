@@ -55,10 +55,64 @@ func Usage(ctx context.Context, api API, bucketID, prefix string, maxPages int) 
 	return total, true, nil
 }
 
-// DeleteVersionsUnder permanently deletes file versions and unfinished large
-// files whose names start with prefix, at most budget of them. done is true when
-// nothing under the prefix is left. An empty prefix means the whole bucket.
-func DeleteVersionsUnder(ctx context.Context, api API, bucketID, prefix string, budget int) (int, bool, error) {
+// ResticLayout is what restic writes under a repository's path: the config
+// file and these directories. Deletion touches nothing else.
+var ResticLayout = []string{"locks/", "snapshots/", "index/", "data/", "keys/", "config"}
+
+// DeleteResticRepository permanently deletes the file versions and unfinished
+// large files that make up the restic repository at path, at most budget of
+// them. Only names in ResticLayout under path are touched, so anything else
+// that shares the path or the bucket is left alone. done is true when none of
+// them is left. An empty path means the bucket root.
+func DeleteResticRepository(ctx context.Context, api API, bucketID, path string, budget int) (int, bool, error) {
+	base := ""
+	if path != "" {
+		base = path + "/"
+	}
+	deleted := 0
+	for _, entry := range ResticLayout {
+		n, done, err := deleteUnder(ctx, api, bucketID, base+entry, !strings.HasSuffix(entry, "/"), budget-deleted)
+		deleted += n
+		if err != nil || !done {
+			return deleted, false, err
+		}
+	}
+	return deleted, true, nil
+}
+
+// ResticRepositoryRemains reports whether any version of a name in ResticLayout
+// under path is left.
+func ResticRepositoryRemains(ctx context.Context, api API, bucketID, path string) (bool, error) {
+	base := ""
+	if path != "" {
+		base = path + "/"
+	}
+	for _, entry := range ResticLayout {
+		left, err := remains(ctx, api, bucketID, base+entry, !strings.HasSuffix(entry, "/"))
+		if err != nil || left {
+			return left, err
+		}
+	}
+	return false, nil
+}
+
+func matcher(prefix string, exact bool) func(string) bool {
+	if exact {
+		return func(name string) bool { return name == prefix }
+	}
+	return func(name string) bool { return strings.HasPrefix(name, prefix) }
+}
+
+func remains(ctx context.Context, api API, bucketID, prefix string, exact bool) (bool, error) {
+	page, err := api.ListFileVersions(ctx, ListFilesRequest{BucketID: bucketID, Prefix: prefix, MaxFileCount: 1})
+	if err != nil {
+		return false, err
+	}
+	return len(page.Files) > 0 && matcher(prefix, exact)(page.Files[0].FileName), nil
+}
+
+func deleteUnder(ctx context.Context, api API, bucketID, prefix string, exact bool, budget int) (int, bool, error) {
+	match := matcher(prefix, exact)
 	deleted := 0
 
 	start := ""
@@ -73,7 +127,7 @@ func DeleteVersionsUnder(ctx context.Context, api API, bucketID, prefix string, 
 			if deleted >= budget {
 				return deleted, false, nil
 			}
-			if !strings.HasPrefix(f.FileName, prefix) {
+			if !match(f.FileName) {
 				continue
 			}
 			if err := api.CancelLargeFile(ctx, f.FileID); err != nil && !errors.Is(err, ErrNotFound) {
@@ -94,14 +148,17 @@ func DeleteVersionsUnder(ctx context.Context, api API, bucketID, prefix string, 
 		if err != nil {
 			return deleted, false, err
 		}
-		if len(page.Files) == 0 {
+		var matching []File
+		for _, f := range page.Files {
+			if match(f.FileName) {
+				matching = append(matching, f)
+			}
+		}
+		if len(matching) == 0 {
 			return deleted, true, nil
 		}
 		removed := 0
-		for _, f := range page.Files {
-			if !strings.HasPrefix(f.FileName, prefix) {
-				continue
-			}
+		for _, f := range matching {
 			if f.Action == ActionStart {
 				err = api.CancelLargeFile(ctx, f.FileID)
 			} else {
@@ -117,15 +174,15 @@ func DeleteVersionsUnder(ctx context.Context, api API, bucketID, prefix string, 
 		deleted += removed
 		if removed == 0 {
 			return deleted, false, fmt.Errorf("%w: B2 still lists %d versions under %q that it says are gone",
-				ErrNoProgress, len(page.Files), prefix)
+				ErrNoProgress, len(matching), prefix)
 		}
 	}
 
-	remaining, err := AnyVersionUnder(ctx, api, bucketID, prefix)
+	left, err := remains(ctx, api, bucketID, prefix, exact)
 	if err != nil {
 		return deleted, false, err
 	}
-	return deleted, !remaining, nil
+	return deleted, !left, nil
 }
 
 // RuleOutcome says what MergeLifecycleRule decided.

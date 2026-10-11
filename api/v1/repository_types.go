@@ -196,6 +196,11 @@ type RepositoryStatus struct {
 	// UsageTime is when CurrentUsage was measured.
 	// +optional
 	UsageTime *metav1.Time `json:"usageTime,omitempty"`
+
+
+	// LastReinitTime is the reinit-at annotation the operator has already acted on.
+	// +optional
+	LastReinitTime *metav1.Time `json:"lastReinitTime,omitempty"`
 }
 
 // Repository is a restic repository stored in Backblaze B2.

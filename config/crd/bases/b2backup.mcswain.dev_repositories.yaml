@@ -282,6 +282,11 @@ spec:
               initialized:
                 description: Initialized reports whether restic init has completed.
                 type: boolean
+              lastReinitTime:
+                description: LastReinitTime is the reinit-at annotation the operator
+                  has already acted on.
+                format: date-time
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the spec generation this status
                   was computed from.
