@@ -309,14 +309,17 @@ func TestPlainDumpCompleteOnlyAtTheEnd(t *testing.T) {
 		want bool
 	}{
 		{"pg_dump 18 with \\unrestrict", body + "\\.\n\n" + plainTrailer, true},
-		{"before \\restrict was added", body + "\\.\n\n--\n-- PostgreSQL database dump complete\n--\n\n", true},
+		{"before \\restrict was added", strings.Replace(body, "\\restrict abc\n", "", 1) +
+			"\\.\n\n--\n-- PostgreSQL database dump complete\n--\n\n", true},
 		{"the trailer text inside data, then cut", body + "z\n", false},
 		{"cut inside the trailer", body + "\\.\n\n--\n-- PostgreSQL database dump compl", false},
 		{"cut before the closing --", body + "\\.\n\n--\n-- PostgreSQL database dump complete\n", false},
 		{"empty", "", false},
+		{"trailer-like rows at a cut inside COPY", body + "-- PostgreSQL database dump complete\n--\n", false},
+		{"another key", body + "\\.\n\n--\n-- PostgreSQL database dump complete\n--\n\n\\unrestrict xyz\n", false},
 	}
 	for _, tt := range tests {
-		if got := postgres.PlainDumpComplete([]byte(tt.dump)); got != tt.want {
+		if got := postgres.PlainDumpComplete(postgres.RestrictKey([]byte(tt.dump)), []byte(tt.dump)); got != tt.want {
 			t.Errorf("%s: PlainDumpComplete = %t, want %t", tt.name, got, tt.want)
 		}
 	}
