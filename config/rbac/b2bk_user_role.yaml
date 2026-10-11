@@ -67,7 +67,6 @@ rules:
       - scheduledbackups/status
     verbs:
       - get
-      - patch
   - apiGroups:
       - batch
     resources:

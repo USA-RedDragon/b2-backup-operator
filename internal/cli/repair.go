@@ -5,12 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/spf13/cobra"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -33,11 +32,15 @@ func newReinitCommand(f *Factory) *cobra.Command {
 A failed init Job is retried indefinitely on a five minute delay: the operator
 deletes the failed Job and builds a fresh one on the next pass. If it failed for
 a reason since fixed -- a bad credential, a network policy -- this skips the
-wait, clearing the recorded state and the failed Job so the operator starts over
-now.
+wait by setting the ` + b2backupv1.AnnotationReinitAt + ` annotation. The operator
+then deletes its init Job, clears status.initialized and starts over now.
 
-This does not touch the repository's contents. restic init on a repository that
-already exists is a no-op.`,
+b2bk never writes a Repository's status: what status records decides what the
+operator may delete, so only the operator writes it.
+
+This does not touch the repository's contents. The init Job probes with
+restic cat config first, and restic init refuses a repository that already
+holds a config.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
@@ -55,38 +58,26 @@ already exists is a no-op.`,
 			if target.Kind != TargetRepository {
 				return fmt.Errorf("reinit needs a Repository, not a %s", target.Kind)
 			}
-			return runReinit(cmd.Context(), c, f.Streams.Out, target.Repository)
+			return runReinit(cmd.Context(), c, f.Streams.Out, target.Repository, time.Now())
 		},
 	}
 	return cmd
 }
 
-func runReinit(ctx context.Context, c client.Client, out io.Writer, repo *b2backupv1.Repository) error {
-	p := newPrinter(out)
-
-	var jobs batchv1.JobList
-	if err := c.List(ctx, &jobs, client.InNamespace(repo.Namespace)); err != nil {
-		return err
-	}
-	for i := range jobs.Items {
-		if !metav1.IsControlledBy(&jobs.Items[i], repo) {
-			continue
-		}
-		err := c.Delete(ctx, &jobs.Items[i],
-			client.PropagationPolicy(metav1.DeletePropagationBackground))
-		if err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("deleting job/%s: %w", jobs.Items[i].Name, err)
-		}
-		p.printf("deleted job/%s\n", jobs.Items[i].Name)
-	}
-
+func runReinit(
+	ctx context.Context, c client.Client, out io.Writer, repo *b2backupv1.Repository, now time.Time,
+) error {
 	patch := client.MergeFrom(repo.DeepCopy())
-	repo.Status.Initialized = false
-	if err := c.Status().Patch(ctx, repo, patch); err != nil {
-		return fmt.Errorf("clearing status.initialized: %w", err)
+	if repo.Annotations == nil {
+		repo.Annotations = map[string]string{}
+	}
+	repo.Annotations[b2backupv1.AnnotationReinitAt] = now.UTC().Format(time.RFC3339)
+	if err := c.Patch(ctx, repo, patch); err != nil {
+		return fmt.Errorf("annotating repository/%s: %w", repo.Name, err)
 	}
 
-	p.printf("repository/%s will be initialized again\n", repo.Name)
+	p := newPrinter(out)
+	p.printf("asked the operator to initialize repository/%s again\n", repo.Name)
 	p.printf("  watch it with: b2bk doctor repo/%s\n", repo.Name)
 	return p.Err()
 }
