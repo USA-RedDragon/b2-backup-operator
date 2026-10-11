@@ -83,6 +83,7 @@ const (
 
 	reasonSeedIsCredentials = "PasswordSecretRefIsCredentialsSecret"
 	reasonInitJobNotOwned   = "InitJobNotOwned"
+	reasonNotProven         = "DeletionNotProven"
 	reasonOtherFiles        = "OtherFilesInBucket"
 
 	// SecretFinalizer keeps a credentials Secret holding the only copy of a
@@ -1502,6 +1503,12 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 	dataDeleted := false
 	switch {
 	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.BucketID != "":
+		if err := deletionProven(repo); err != nil {
+			if !r.forceFinalize(repo, err) {
+				return r.refuseDeletion(ctx, repo, err)
+			}
+			break
+		}
 		if err := deletionScope(repo); err != nil {
 			if !r.forceFinalize(repo, err) {
 				return r.refuseDeletion(ctx, repo, err)
@@ -1575,6 +1582,22 @@ func deletionScope(repo *b2backupv1.Repository) error {
 		return &scopeError{msg: "a Prefix mode repository has an empty path, which would be the whole shared bucket"}
 	}
 	return nil
+}
+
+// deletionProven refuses to delete a restic repository this Repository never
+// opened. status.initialized is set only once this Repository's own init Job
+// succeeded: it either created the repository or read its config with the
+// password in this Repository's credentials Secret. A Repository that stopped
+// before that, for want of a password or a Secret of its own, may have
+// recorded a location holding someone else's repository.
+func deletionProven(repo *b2backupv1.Repository) error {
+	if repo.Status.Initialized {
+		return nil
+	}
+	return &scopeError{reason: reasonNotProven, msg: fmt.Sprintf(
+		"this Repository never opened the restic repository at %s/%s: its init Job has not succeeded with "+
+			"the password in its credentials Secret, so the repository may not be its own",
+		repo.Status.BucketName, displayPath(repo.Status.Path))}
 }
 
 func (r *RepositoryReconciler) refuseDeletion(
