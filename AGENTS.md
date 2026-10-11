@@ -57,6 +57,10 @@ one of these:
   `data/`, `index/`, `snapshots/` and `locks/` under it; a Bucket mode bucket
   is deleted only when it is then empty. Key deletion matches a key name that
   embeds the Repository's UID, never an ID from status.
+- **Delete removes only a repository this Repository opened.**
+  `deletionProven` requires `status.initialized`, which only a succeeded init
+  Job of its own sets (created the repository, or read its config with this
+  Repository's password); otherwise `DeletionNotProven`.
 - **Status is not trusted to scope deletion.** `deletionScope` requires
   `status.bucketName == spec.bucket`, `status.path == EffectivePath()` and a
   non-empty Prefix path, and `deleteRemote` re-reads the bucket and checks its

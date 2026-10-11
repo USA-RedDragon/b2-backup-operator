@@ -90,7 +90,7 @@ func TestTamperedStatusNeverWidensDeletion(t *testing.T) {
 			r, c := newHarness(t, f, prefixRepo(func(r *b2backupv1.Repository) {
 				r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
 			}))
-			reconcileN(t, r, 2)
+			provision(t, r, c)
 			for _, name := range []string{"restic/myapp/config", "restic/otherapp/config", "restic/otherapp/data/00/aa"} {
 				f.PutFile(bucket.BucketID, name, 1)
 			}
@@ -283,7 +283,7 @@ func TestABucketMissingFromAnotherAccountIsNotTakenAsGone(t *testing.T) {
 				r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
 			}))
 			bucket := f.AddBucket(sharedBucket)
-			reconcileN(t, r, 2)
+			provision(t, r, c)
 			f.PutFile(bucket.BucketID, myappPath+"/config", 1)
 			if tt.legacy {
 				repo := getRepo(t, c)
@@ -355,7 +355,7 @@ func TestDataLeftForAnotherRepositoryKeepsItsPassword(t *testing.T) {
 	r, c := newHarness(t, f, prefixRepo(func(r *b2backupv1.Repository) {
 		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
 	}))
-	reconcileN(t, r, 2)
+	provision(t, r, c)
 	f.PutFile(bucket.BucketID, myappPath+"/config", 1)
 	if err := c.Create(context.Background(), prefixRepo(func(r *b2backupv1.Repository) {
 		r.Name, r.UID = "nested", "uid-nested"
@@ -438,7 +438,7 @@ func TestFinalizeReadsStatusPastAStaleCache(t *testing.T) {
 	}, bucketRepo(func(r *b2backupv1.Repository) {
 		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
 	}))
-	reconcileN(t, r, 2)
+	provision(t, r, c)
 	bucket := f.Bucket(ownBucket)
 	f.PutFile(bucket.BucketID, "data/00/aa", 1)
 
@@ -537,5 +537,65 @@ func TestAnUnlabelledInitJobOfAnotherIsReported(t *testing.T) {
 	}
 	if getRepo(t, c).Status.Initialized {
 		t.Error("recorded as initialized from a Job it does not own")
+	}
+}
+
+func TestDeleteNeverRemovesARepositoryItNeverOpened(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		objs   func() []client.Object
+		reason string
+	}{
+		{"no password for an existing repository", func() []client.Object {
+			return []client.Object{prefixRepo(func(r *b2backupv1.Repository) {
+				r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+			})}
+		}, "PasswordUnavailable"},
+		{"a credentials Secret it does not manage", func() []client.Object {
+			return []client.Object{prefixRepo(func(r *b2backupv1.Repository) {
+				r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+				usePasswordSeed(r)
+			}), seedSecretFixture(), &corev1.Secret{Name: credsSecretName, Namespace: testNS}}
+		}, reasonSecretNotManaged},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeB2(t)
+			bucket := f.AddBucket(sharedBucket)
+			f.PutFile(bucket.BucketID, configPath(myappPath), 1)
+			for _, dir := range []string{"keys/", "data/", "snapshots/"} {
+				f.PutFile(bucket.BucketID, myappPrefix+dir+"x", 1)
+			}
+			r, c := newHarness(t, f, tt.objs()...)
+			_ = reconcileErr(r)
+			if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason != tt.reason {
+				t.Fatalf("precondition: Ready = %+v, want %s", cond, tt.reason)
+			}
+			if getRepo(t, c).Status.BucketID == "" {
+				t.Fatal("precondition: the location is recorded")
+			}
+
+			deleteRepo(t, c)
+			for range 3 {
+				_ = reconcileErr(r)
+			}
+			if !slices.Contains(getRepo(t, c).Finalizers, FinalizerName) {
+				t.Fatal("the finalizer was released")
+			}
+			if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason != reasonNotProven {
+				t.Errorf("Ready = %+v, want %s", cond, reasonNotProven)
+			}
+			if n := len(f.FileNames(bucket.BucketID)); n != 4 {
+				t.Fatalf("%d files left, want all 4: a repository this Repository never opened was deleted", n)
+			}
+
+			annotateRepo(t, c, b2backupv1.AnnotationForceFinalize, "true")
+			reconcileUntilGone(t, r, c)
+			if n := len(f.FileNames(bucket.BucketID)); n != 4 {
+				t.Errorf("force-finalize deleted data: %d files left", n)
+			}
+		})
 	}
 }

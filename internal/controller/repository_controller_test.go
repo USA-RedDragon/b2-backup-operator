@@ -987,9 +987,18 @@ func TestTheOlderRepositoryKeepsThePath(t *testing.T) {
 	}
 }
 
+// provision reconciles a Repository until its init Job has succeeded, as one
+// that created or opened its repository has.
+func provision(t *testing.T, r *RepositoryReconciler, c client.Client) {
+	t.Helper()
+	reconcileN(t, r, 1)
+	succeedInitJob(t, c)
+	reconcileN(t, r, 1)
+}
+
 func provisionForDeletion(t *testing.T, r *RepositoryReconciler, c client.Client) *b2backupv1.Repository {
 	t.Helper()
-	reconcileN(t, r, 2)
+	provision(t, r, c)
 	repo := getRepo(t, c)
 	if repo.Status.BucketID == "" {
 		t.Fatal("nothing was provisioned")
@@ -1266,6 +1275,7 @@ func TestDeleteLeavesDataAnotherRepositoryStillUses(t *testing.T) {
 		r.Finalizers = []string{FinalizerName}
 		r.Status = b2backupv1.RepositoryStatus{
 			BucketID: bucket.BucketID, BucketName: sharedBucket, Path: myappPath, ApplicationKeyID: "key-gone",
+			Initialized: true,
 		}
 	})
 	r, c := newHarness(t, f, other, leaving)
