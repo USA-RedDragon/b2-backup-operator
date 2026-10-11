@@ -172,6 +172,15 @@ func transitionMinutes(zone string) (map[int]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("time zone %q: %w", zone, err)
 	}
+	minutes := locationTransitionMinutes(loc)
+	transitionCache.Store(zone, minutes)
+	return minutes, nil
+}
+
+// locationTransitionMinutes is transitionMinutes for a loaded location. A zone
+// bound where the UTC offset stays the same, such as the one fat zoneinfo files
+// carry at 2038-01-19 03:14:07 UTC, skips and repeats nothing.
+func locationTransitionMinutes(loc *time.Location) map[int]bool {
 	minutes := map[int]bool{}
 	end := time.Date(2050, 1, 1, 0, 0, 0, 0, time.UTC)
 	for at := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC); at.Before(end); {
@@ -185,6 +194,10 @@ func transitionMinutes(zone string) (map[int]bool, error) {
 		}
 		_, before := next.Add(-time.Second).In(loc).Zone()
 		_, after := next.In(loc).Zone()
+		if before == after {
+			at = next
+			continue
+		}
 		lo, hi := next.Unix()+int64(before), next.Unix()+int64(after)
 		if lo > hi {
 			lo, hi = hi, lo
@@ -195,6 +208,5 @@ func transitionMinutes(zone string) (map[int]bool, error) {
 		}
 		at = next
 	}
-	transitionCache.Store(zone, minutes)
-	return minutes, nil
+	return minutes
 }
