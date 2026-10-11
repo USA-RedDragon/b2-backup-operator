@@ -1,0 +1,4 @@
+resources:
+- b2backup_v1_repository.yaml
+- b2backup_v1_scheduledbackup.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

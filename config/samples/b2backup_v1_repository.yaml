@@ -1,0 +1,20 @@
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: myapp-prod
+spec:
+  existingRepositoryID: a1b2c3d4
+  passwordSecretRef:
+    name: restic-envs
+    key: RESTIC_PASSWORD
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: otherapp-prod
+spec:
+  region: us
+  quotaGiB: 100
+  alertDays: 3

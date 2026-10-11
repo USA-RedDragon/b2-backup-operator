@@ -1,0 +1,54 @@
+version: 2
+
+project_name: b2bk
+
+release:
+  github:
+    owner: USA-RedDragon
+    name: b2-backup-operator
+  prerelease: auto
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: b2bk
+    main: ./cmd/kubectl-b2bk
+    binary: b2bk
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/USA-RedDragon/b2-backup-operator/internal/cli.version={{ .Version }}
+
+archives:
+  - id: b2bk
+    ids:
+      - b2bk
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  disable: true
+
+milestones:
+  - close: true
