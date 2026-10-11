@@ -267,6 +267,8 @@ func TestPostgresNeverLetsPsqlCommitATruncatedPlainDump(t *testing.T) {
 		{"cut short", plainDump + strings.Repeat("INSERT INTO t VALUES (1);\n", 1<<12), false},
 		{"keyless, cut inside COPY at rows that read as the trailer", keylessDump + "COPY t (v) FROM stdin;\n" +
 			strings.Repeat("x\n", 1<<12) + "--\n-- PostgreSQL database dump complete\n--\n\n", false},
+		{"keyless, a row that reads as a \\restrict line", keylessDump + "COPY t (v) FROM stdin;\n\\restrict x\n" +
+			"\\.\n\n--\n-- PostgreSQL database dump complete\n--\n\n", true},
 		{"keyless, complete", keylessDump + "COPY t (v) FROM stdin;\n--\n-- PostgreSQL database dump complete\n--\n" +
 			"\\.\n\n--\n-- PostgreSQL database dump complete\n--\n\n", true},
 		{"complete", plainDump + strings.Repeat("INSERT INTO t VALUES (1);\n", 1<<12) + plainTrailer, true},
