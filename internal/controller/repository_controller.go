@@ -257,14 +257,14 @@ func (r *RepositoryReconciler) reconcile(
 			displayPath(repo.Status.Path), displayPath(path))
 	}
 
+	if err := r.reconcileReinit(ctx, repo); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	bucket, err := r.resolveBucket(ctx, repo, api)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	repo.Status.BucketName = bucket.BucketName
-	repo.Status.BucketID = bucket.BucketID
-	repo.Status.Path = path
-	repo.Status.Endpoint = auth.S3APIURL
 
 	dataExists := false
 	if !repo.Status.Initialized {
@@ -272,15 +272,32 @@ func (r *RepositoryReconciler) reconcile(
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("checking for an existing restic repository: %w", err)
 		}
+		if dataExists, err = b2.AnyVersionUnder(ctx, api, bucket.BucketID, filePrefix(path)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("checking for existing data: %w", err)
+		}
+		if dataExists && !exists && !known {
+			r.setCondition(repo, metav1.Condition{
+				Type:   b2backupv1.RepositoryConditionReady,
+				Status: metav1.ConditionFalse,
+				Reason: reasonForeign,
+				Message: fmt.Sprintf(
+					"%s/%s holds files but no restic config at %s, so it is not a restic repository "+
+						"this operator can adopt; nothing was created or changed. Point spec.path "+
+						"somewhere else, or empty the path",
+					bucket.BucketName, displayPath(path), joinPath(path, "config")),
+			})
+			return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
+		}
 		if exists && !repo.Status.Adopted {
 			repo.Status.Adopted = true
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryAdopted", "Adopt",
 				"Found an existing restic repository at %s/%s; adopting it", bucket.BucketName, displayPath(path))
 		}
-		if dataExists, err = b2.AnyVersionUnder(ctx, api, bucket.BucketID, filePrefix(path)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("checking for existing data: %w", err)
-		}
 	}
+	repo.Status.BucketName = bucket.BucketName
+	repo.Status.BucketID = bucket.BucketID
+	repo.Status.Path = path
+	repo.Status.Endpoint = auth.S3APIURL
 
 	if err := r.reconcileLifecycle(ctx, repo, api, bucket); err != nil {
 		return ctrl.Result{}, err
@@ -338,6 +355,40 @@ func (r *RepositoryReconciler) reconcile(
 		return ctrl.Result{RequeueAfter: initCleanupDelay}, nil
 	}
 	return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
+}
+
+func (r *RepositoryReconciler) reconcileReinit(ctx context.Context, repo *b2backupv1.Repository) error {
+	raw := repo.Annotations[b2backupv1.AnnotationReinitAt]
+	if raw == "" {
+		return nil
+	}
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "ReinitInvalid", "Reinit",
+			"Ignoring %s=%q: expected an RFC3339 timestamp", b2backupv1.AnnotationReinitAt, raw)
+		return nil
+	}
+	if last := repo.Status.LastReinitTime; last != nil && !at.After(last.Time) {
+		return nil
+	}
+
+	var job batchv1.Job
+	key := types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name + initJobSuffix}
+	switch err := r.Get(ctx, key, &job); {
+	case err == nil:
+		if metav1.IsControlledBy(&job, repo) {
+			if err := r.deleteJob(ctx, &job); err != nil {
+				return err
+			}
+		}
+	case !apierrors.IsNotFound(err):
+		return err
+	}
+	repo.Status.Initialized = false
+	repo.Status.LastReinitTime = &metav1.Time{Time: at}
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Reinitializing", "Reinit",
+		"Deleted init Job %s and cleared status.initialized as %s asked", key.Name, b2backupv1.AnnotationReinitAt)
+	return nil
 }
 
 func (r *RepositoryReconciler) resolveBucket(
@@ -852,6 +903,10 @@ func (r *RepositoryReconciler) reconcileInitJob(
 	err := r.Get(ctx, key, &job)
 	switch {
 	case err == nil:
+		if !job.DeletionTimestamp.IsZero() {
+			r.setInitializing(repo, "Initializing", fmt.Sprintf("waiting for the old init Job %s to be deleted", name))
+			return 5 * time.Second, nil
+		}
 		if job.Status.Succeeded > 0 {
 			recorded, err := r.initializationRecorded(ctx, repo)
 			if err != nil {
@@ -1010,14 +1065,18 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 		return ctrl.Result{}, nil
 	}
 
+	dataDeleted := false
 	switch {
 	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.BucketID != "":
+		if err := deletionScope(repo); err != nil {
+			if !r.forceFinalize(repo, err) {
+				return r.refuseDeletion(ctx, repo, err)
+			}
+			break
+		}
 		api, err := r.apiFor(ctx, repo)
 		if err != nil {
 			if r.forceFinalize(repo, err) {
-				if relErr := r.keepSecret(ctx, repo); relErr != nil {
-					return ctrl.Result{}, relErr
-				}
 				break
 			}
 			r.setCondition(repo, metav1.Condition{
@@ -1030,18 +1089,21 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 			return ctrl.Result{}, err
 		}
 		done, err := r.deleteRemote(ctx, repo, api)
-		if err != nil {
-			if r.forceFinalize(repo, err) {
-				if relErr := r.keepSecret(ctx, repo); relErr != nil {
-					return ctrl.Result{}, relErr
-				}
-				break
+		var scope *scopeError
+		switch {
+		case errors.As(err, &scope):
+			if !r.forceFinalize(repo, err) {
+				return r.refuseDeletion(ctx, repo, err)
 			}
-			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
-			return ctrl.Result{}, err
-		}
-		if !done {
+		case err != nil:
+			if !r.forceFinalize(repo, err) {
+				r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
+				return ctrl.Result{}, err
+			}
+		case !done:
 			return ctrl.Result{RequeueAfter: deleteRequeueDelay}, nil
+		default:
+			dataDeleted = true
 		}
 
 	case repo.Status.BucketID != "":
@@ -1050,9 +1112,53 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 			repo.Status.BucketName, displayPath(repo.Status.Path), repo.Status.ApplicationKeyID)
 	}
 
+	if err := r.releaseSecret(ctx, repo, dataDeleted); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	patch := client.MergeFrom(repo.DeepCopy())
 	controllerutil.RemoveFinalizer(repo, FinalizerName)
 	return ctrl.Result{}, r.Patch(ctx, repo, patch)
+}
+
+type scopeError struct{ msg string }
+
+func (e *scopeError) Error() string { return e.msg }
+
+// deletionScope refuses to delete anything unless what status records is what
+// the spec resolves to. Status is not trusted to name the data on its own: a
+// tampered status.path would otherwise widen deletion to a parent path, or to a
+// whole shared bucket.
+func deletionScope(repo *b2backupv1.Repository) error {
+	switch {
+	case repo.Status.BucketName != repo.Spec.Bucket:
+		return &scopeError{fmt.Sprintf("status.bucketName %q is not spec.bucket %q",
+			repo.Status.BucketName, repo.Spec.Bucket)}
+	case repo.Status.Path != repo.EffectivePath():
+		return &scopeError{fmt.Sprintf("status.path %q is not the path the spec resolves to, %q",
+			repo.Status.Path, repo.EffectivePath())}
+	case repo.Spec.Mode == b2backupv1.StorageModePrefix && repo.Status.Path == "":
+		return &scopeError{"a Prefix mode repository has an empty path, which would be the whole shared bucket"}
+	}
+	return nil
+}
+
+func (r *RepositoryReconciler) refuseDeletion(
+	ctx context.Context, repo *b2backupv1.Repository, err error,
+) (ctrl.Result, error) {
+	msg := fmt.Sprintf("refusing to delete any B2 data: %s. Nothing was deleted and the finalizer is kept; "+
+		"annotate %s=true to release the Repository and leave the data in place", err.Error(),
+		b2backupv1.AnnotationForceFinalize)
+	r.setCondition(repo, metav1.Condition{
+		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse, Reason: reasonScope, Message: msg,
+	})
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, reasonScope, "Delete", "%s", msg)
+	statusBase := repo.DeepCopy()
+	statusBase.Status.Conditions = nil
+	if err := r.patchStatus(ctx, repo, statusBase); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
 }
 
 func (r *RepositoryReconciler) forceFinalize(repo *b2backupv1.Repository, err error) bool {
@@ -1068,7 +1174,10 @@ func (r *RepositoryReconciler) forceFinalize(repo *b2backupv1.Repository, err er
 	return true
 }
 
-func (r *RepositoryReconciler) keepSecret(ctx context.Context, repo *b2backupv1.Repository) error {
+// releaseSecret runs before the Repository's finalizer is removed. Unless the
+// data was deleted, the credentials Secret loses its ownerReference so garbage
+// collection cannot take the password for data left in B2.
+func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backupv1.Repository, dataDeleted bool) error {
 	var secret corev1.Secret
 	err := r.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: repo.SecretName()}, &secret)
 	if apierrors.IsNotFound(err) {
@@ -1077,7 +1186,7 @@ func (r *RepositoryReconciler) keepSecret(ctx context.Context, repo *b2backupv1.
 	if err != nil {
 		return err
 	}
-	if secret.Labels[labelManagedBy] != managedByValue || !metav1.IsControlledBy(&secret, repo) {
+	if dataDeleted || secret.Labels[labelManagedBy] != managedByValue || !metav1.IsControlledBy(&secret, repo) {
 		return nil
 	}
 	updated := secret.DeepCopy()
@@ -1097,7 +1206,7 @@ func (r *RepositoryReconciler) deleteRemote(
 	}
 	name := keyName(repo)
 	for _, k := range keys {
-		if k.ApplicationKeyID != repo.Status.ApplicationKeyID && k.KeyName != name {
+		if k.KeyName != name {
 			continue
 		}
 		if err := api.DeleteKey(ctx, k.ApplicationKeyID); err != nil && !errors.Is(err, b2.ErrNotFound) {
@@ -1114,58 +1223,78 @@ func (r *RepositoryReconciler) deleteRemote(
 		return true, nil
 	}
 
-	bucketID, path := repo.Status.BucketID, repo.Status.Path
-	prefix := filePrefix(path)
-	deleted, done, err := b2.DeleteVersionsUnder(ctx, api, bucketID, prefix, deleteBudget)
+	bucket, err := api.FindBucket(ctx, repo.Spec.Bucket)
 	if errors.Is(err, b2.ErrNotFound) {
-		if _, findErr := api.FindBucket(ctx, repo.Status.BucketName); errors.Is(findErr, b2.ErrNotFound) {
-			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
-				"Bucket %s is already gone", repo.Status.BucketName)
-			return true, nil
-		}
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
+			"Bucket %s is already gone", repo.Spec.Bucket)
+		return true, nil
 	}
+	if err != nil {
+		return false, fmt.Errorf("looking up bucket %s: %w", repo.Spec.Bucket, err)
+	}
+	if bucket.BucketID != repo.Status.BucketID {
+		return false, &scopeError{fmt.Sprintf("bucket %s has ID %s but status.bucketID is %s",
+			repo.Spec.Bucket, bucket.BucketID, repo.Status.BucketID)}
+	}
+
+	path := repo.EffectivePath()
+	deleted, done, err := b2.DeleteResticRepository(ctx, api, bucket.BucketID, path, deleteBudget)
 	switch {
 	case err != nil:
-		return false, fmt.Errorf("deleting files under %s/%s: %w", repo.Status.BucketName, displayPath(path), err)
+		return false, fmt.Errorf("deleting the restic repository at %s/%s: %w", bucket.BucketName, displayPath(path), err)
 	case !done:
 		log.FromContext(ctx).Info("Deleted file versions, more remain", "deleted", deleted)
 		return false, nil
 	}
 
-	bucket, err := api.FindBucket(ctx, repo.Status.BucketName)
-	if errors.Is(err, b2.ErrNotFound) {
-		return true, nil
-	}
+	others, err := b2.AnyVersionUnder(ctx, api, bucket.BucketID, filePrefix(path))
 	if err != nil {
-		return false, fmt.Errorf("re-reading bucket %s: %w", repo.Status.BucketName, err)
+		return false, err
+	}
+	if others {
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "OtherFilesRetained", "Delete",
+			"Left files under %s/%s that are not part of restic's repository layout", bucket.BucketName, displayPath(path))
 	}
 
 	if repo.Spec.Mode == b2backupv1.StorageModeBucket {
-		remaining, err := b2.AnyVersionUnder(ctx, api, bucketID, "")
-		if err != nil {
-			return false, err
-		}
-		if !remaining {
-			if err := api.DeleteBucket(ctx, bucketID); err != nil && !errors.Is(err, b2.ErrNotFound) {
-				return false, fmt.Errorf("deleting bucket %s: %w", repo.Status.BucketName, err)
+		if !others && path == "" {
+			if err := api.DeleteBucket(ctx, bucket.BucketID); err != nil && !errors.Is(err, b2.ErrNotFound) {
+				if errors.Is(err, b2.ErrBucketNotEmpty) {
+					r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "BucketRetained", "Delete",
+						"Bucket %s is not empty, so it was left in place", bucket.BucketName)
+					return true, nil
+				}
+				return false, fmt.Errorf("deleting bucket %s: %w", bucket.BucketName, err)
 			}
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
-				"Deleted application key %s, every file under %s and bucket %s",
-				repo.Status.ApplicationKeyID, displayPath(path), repo.Status.BucketName)
+				"Deleted application key %s, the restic repository and bucket %s",
+				repo.Status.ApplicationKeyID, bucket.BucketName)
+			return true, nil
+		}
+		if remaining, err := b2.AnyVersionUnder(ctx, api, bucket.BucketID, ""); err != nil {
+			return false, err
+		} else if !remaining {
+			if err := api.DeleteBucket(ctx, bucket.BucketID); err != nil && !errors.Is(err, b2.ErrNotFound) {
+				return false, fmt.Errorf("deleting bucket %s: %w", bucket.BucketName, err)
+			}
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
+				"Deleted application key %s, the restic repository under %s and bucket %s",
+				repo.Status.ApplicationKeyID, displayPath(path), bucket.BucketName)
 			return true, nil
 		}
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "BucketRetained", "Delete",
-			"Bucket %s holds files outside %s, so it was left in place", repo.Status.BucketName, displayPath(path))
+			"Bucket %s holds files outside restic's repository layout, so it was left in place", bucket.BucketName)
 	}
 
-	if rules, removed := b2.RemoveLifecycleRule(bucket.LifecycleRules, prefix); removed {
+	prefix := filePrefix(path)
+	if rules, removed := b2.RemoveLifecycleRule(bucket.LifecycleRules, prefix); removed && prefix != "" {
 		if _, err := api.UpdateLifecycleRules(ctx, bucket, rules); err != nil {
 			return false, fmt.Errorf("removing the lifecycle rule for %q: %w", prefix, err)
 		}
 	}
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
-		"Deleted application key %s and every file under %s/%s",
-		repo.Status.ApplicationKeyID, repo.Status.BucketName, displayPath(path))
+		"Deleted application key %s and the restic repository at %s/%s",
+		repo.Status.ApplicationKeyID, bucket.BucketName, displayPath(path))
 	return true, nil
 }
 
@@ -1260,7 +1389,7 @@ func (r *RepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
-		For(&b2backupv1.Repository{}, builder.WithPredicates(ignoreOwnStatusWrites())).
+		For(&b2backupv1.Repository{}, builder.WithPredicates(ignoreOwnStatusWrites(b2backupv1.AnnotationReinitAt))).
 		Owns(&batchv1.Job{}).
 		Named("repository").
 		Complete(r)

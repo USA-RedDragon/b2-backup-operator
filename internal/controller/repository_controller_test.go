@@ -374,15 +374,56 @@ func TestNeverGeneratesAPasswordForAnExistingRepository(t *testing.T) {
 	}
 }
 
-func TestNeverGeneratesAPasswordWhenThePathHoldsAnyData(t *testing.T) {
-	f := newFakeB2(t)
-	bucket := f.AddBucket(sharedBucket)
-	f.PutFile(bucket.BucketID, "restic/myapp/keys/abc", 400)
-	f.HideFile(bucket.BucketID, "restic/myapp/keys/abc")
+func TestForeignDataStopsEverything(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		repo  *b2backupv1.Repository
+		files []string
+		hide  string
+	}{
+		{"a hidden file under the path", prefixRepo(nil), []string{"restic/myapp/keys/abc"}, "restic/myapp/keys/abc"},
+		{"a parent of other repositories", prefixRepo(func(r *b2backupv1.Repository) {
+			r.Spec.Path = "restic"
+			usePasswordSeed(r)
+		}), []string{"restic/app1/config", "restic/app1/data/00/aa", "restic/app2/config"}, ""},
+		{"a shared bucket adopted in Bucket mode", bucketRepo(func(r *b2backupv1.Repository) {
+			r.Spec.Bucket = sharedBucket
+			usePasswordSeed(r)
+		}), []string{"restic/app1/config", "restic/app2/config"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeB2(t)
+			bucket := f.AddBucket(sharedBucket)
+			for _, name := range tt.files {
+				f.PutFile(bucket.BucketID, name, 1)
+			}
+			if tt.hide != "" {
+				f.HideFile(bucket.BucketID, tt.hide)
+			}
+			r, c := newHarness(t, f, tt.repo, seedSecretFixture())
+			reconcileN(t, r, 2)
 
-	r, _ := newHarness(t, f, prefixRepo(nil))
-	if err := reconcileErr(r); err == nil {
-		t.Fatal("a password was generated over existing, even hidden, data")
+			if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason != reasonForeign {
+				t.Errorf("Ready = %+v, want %s", cond, reasonForeign)
+			}
+			if f.CountCalls("b2_create_key") != 0 || f.CountCalls("b2_update_bucket") != 0 {
+				t.Error("a key or lifecycle rule was created for a path holding someone else's files")
+			}
+			if !apierrors.IsNotFound(getSecretErr(c)) {
+				t.Error("a credentials Secret was written")
+			}
+			var job batchv1.Job
+			err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: resticName + initJobSuffix}, &job)
+			if !apierrors.IsNotFound(err) {
+				t.Error("an init Job was created")
+			}
+			if st := getRepo(t, c).Status; st.BucketID != "" || st.Adopted {
+				t.Errorf("status = %+v, want the location left unrecorded", st)
+			}
+		})
 	}
 }
 

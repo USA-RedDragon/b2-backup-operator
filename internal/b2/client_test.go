@@ -344,45 +344,74 @@ func TestUsageSumsVisibleFilesAndStopsAtThePageCap(t *testing.T) {
 	}
 }
 
-func TestDeleteVersionsUnderLeavesOtherPrefixesAlone(t *testing.T) {
+func TestDeleteResticRepositoryTouchesOnlyResticLayout(t *testing.T) {
+	t.Parallel()
 	c, fake, _ := newTestClient(t)
 	bucket := fake.AddBucket("shared-bucket")
-	fake.PutFile(bucket.BucketID, "restic/app/config", 1)
-	fake.PutFile(bucket.BucketID, "restic/app/data/aa", 1)
+	for _, name := range []string{
+		"restic/app/config", "restic/app/keys/k1", "restic/app/data/aa", "restic/app/index/i1",
+		"restic/app/snapshots/s1", "restic/app/locks/l1",
+	} {
+		fake.PutFile(bucket.BucketID, name, 1)
+	}
 	fake.HideFile(bucket.BucketID, "restic/app/data/aa")
 	fake.StartLargeFile(bucket.BucketID, "restic/app/data/big")
-	fake.PutFile(bucket.BucketID, "restic/app2/config", 1)
-	fake.PutFile(bucket.BucketID, "restic/apple", 1)
-	fake.StartLargeFile(bucket.BucketID, "restic/app2/data/big")
+	keep := []string{
+		"restic/app/config.bak", "restic/app/notes.txt", "restic/app/other/config", "restic/app/datax/f",
+		"restic/app2/config", "restic/apple",
+	}
+	for _, name := range keep {
+		fake.PutFile(bucket.BucketID, name, 1)
+	}
+	fake.StartLargeFile(bucket.BucketID, "restic/app/elsewhere/big")
 
-	deleted, done, err := b2.DeleteVersionsUnder(context.Background(), c, bucket.BucketID, appPrefix, 100)
+	deleted, done, err := b2.DeleteResticRepository(context.Background(), c, bucket.BucketID, "restic/app", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !done || deleted != 4 {
-		t.Errorf("deleted %d, done=%t; want 4, true", deleted, done)
+	if !done || deleted != 8 {
+		t.Errorf("deleted %d, done=%t; want 8, true", deleted, done)
 	}
-	got := fake.FileNames(bucket.BucketID)
-	want := []string{"restic/app2/config", "restic/apple", "restic/app2/data/big"}
-	if !slices.Equal(got, want) {
+	want := append(slices.Clone(keep), "restic/app/elsewhere/big")
+	if got := fake.FileNames(bucket.BucketID); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want))) {
 		t.Errorf("remaining = %v, want %v", got, want)
+	}
+	if left, err := b2.ResticRepositoryRemains(context.Background(), c, bucket.BucketID, "restic/app"); err != nil || left {
+		t.Errorf("ResticRepositoryRemains = %t, %v; want false", left, err)
 	}
 }
 
-func TestDeleteVersionsUnderRespectsTheBudget(t *testing.T) {
+func TestDeleteResticRepositoryAtTheBucketRoot(t *testing.T) {
+	t.Parallel()
+	c, fake, _ := newTestClient(t)
+	bucket := fake.AddBucket("root-bucket")
+	fake.PutFile(bucket.BucketID, "config", 1)
+	fake.PutFile(bucket.BucketID, "data/00/aa", 1)
+	fake.PutFile(bucket.BucketID, "restic/other/config", 1)
+
+	if _, done, err := b2.DeleteResticRepository(context.Background(), c, bucket.BucketID, "", 100); err != nil || !done {
+		t.Fatalf("done=%t, err=%v", done, err)
+	}
+	if got := fake.FileNames(bucket.BucketID); !slices.Equal(got, []string{"restic/other/config"}) {
+		t.Errorf("remaining = %v, want another repository's files untouched", got)
+	}
+}
+
+func TestDeleteResticRepositoryRespectsTheBudget(t *testing.T) {
+	t.Parallel()
 	c, fake, _ := newTestClient(t)
 	bucket := fake.AddBucket("budget-bucket")
 	for i := range 10 {
-		fake.PutFile(bucket.BucketID, fmt.Sprintf("p/f%d", i), 1)
+		fake.PutFile(bucket.BucketID, fmt.Sprintf("p/data/f%d", i), 1)
 	}
-	deleted, done, err := b2.DeleteVersionsUnder(context.Background(), c, bucket.BucketID, "p/", 4)
+	deleted, done, err := b2.DeleteResticRepository(context.Background(), c, bucket.BucketID, "p", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if done || deleted != 4 {
 		t.Errorf("deleted %d, done=%t; want 4, false", deleted, done)
 	}
-	deleted, done, err = b2.DeleteVersionsUnder(context.Background(), c, bucket.BucketID, "p/", 100)
+	deleted, done, err = b2.DeleteResticRepository(context.Background(), c, bucket.BucketID, "p", 100)
 	if err != nil || !done || deleted != 6 {
 		t.Errorf("second pass deleted %d, done=%t, err=%v; want 6, true, nil", deleted, done, err)
 	}
@@ -505,99 +534,6 @@ func TestEffectiveHidingDaysIsTheSmallestMatchingRule(t *testing.T) {
 	}
 }
 
-func TestHidingRulesFindsRulesThatWouldHideLiveFiles(t *testing.T) {
-	one, thirty := 1, 30
-	rules := []b2.LifecycleRule{
-		{FileNamePrefix: parentPrefix, DaysFromHidingToDeleting: &one},
-		{FileNamePrefix: "", DaysFromUploadingToHiding: &thirty},
-		{FileNamePrefix: "media/", DaysFromUploadingToHiding: &thirty},
-	}
-	got := b2.HidingRules(rules, appPrefix)
-	if !slices.Equal(got, []string{""}) {
-		t.Errorf("HidingRules = %q, want only the bucket-wide rule", got)
-	}
-}
-
-func TestRemoveLifecycleRuleOnlyRemovesItsOwnExactPrefix(t *testing.T) {
-	t.Parallel()
-	one, three := 1, 3
-	rules := []b2.LifecycleRule{
-		{FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &one},
-		{FileNamePrefix: siblingPrefix, DaysFromHidingToDeleting: &one},
-	}
-	got, removed := b2.RemoveLifecycleRule(rules, appPrefix)
-	if !removed || len(got) != 1 || got[0].FileNamePrefix != siblingPrefix {
-		t.Errorf("got %+v, removed=%t", got, removed)
-	}
-	if _, removed := b2.RemoveLifecycleRule(rules, parentPrefix); removed {
-		t.Error("a parent prefix removed a rule it does not own")
-	}
-	shared := []b2.LifecycleRule{{
-		FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &one, DaysFromStartingToCancelingUnfinishedLargeFiles: &three,
-	}}
-	if _, removed := b2.RemoveLifecycleRule(shared, appPrefix); removed {
-		t.Error("a rule carrying another tool's field was removed")
-	}
-}
-
-func TestAuthorizeReadsTheAllowedBlock(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"accountId":"acct","authorizationToken":"tok","apiInfo":{"storageApi":{
-			"apiUrl":"https://api005.backblazeb2.com","s3ApiUrl":"https://s3.eu-central-003.backblazeb2.com",
-			"allowed":{"bucketId":"b1","bucketName":"one","capabilities":["listFiles"],"namePrefix":"p/"}}}}`)
-	}))
-	defer srv.Close()
-
-	c := b2.NewClient("id", "key")
-	c.AuthURL = srv.URL
-	auth, err := c.Authorize(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(auth.BucketIDs, []string{"b1"}) || auth.NamePrefix != "p/" ||
-		!slices.Equal(auth.Capabilities, []string{"listFiles"}) {
-		t.Errorf("auth = %+v", auth)
-	}
-	if region, _ := auth.S3Region(); region != "eu-central-003" {
-		t.Errorf("region = %q", region)
-	}
-}
-
-func TestDeleteVersionsUnderStopsWhenNothingCanBeDeleted(t *testing.T) {
-	c, fake, _ := newTestClient(t)
-	bucket := fake.AddBucket("stuck-bucket")
-	fake.PutFile(bucket.BucketID, "p/a", 1)
-	fake.Fail("b2_delete_file_version", b2fake.Failure{Status: 400, Code: b2.CodeFileNotPresent, Times: 1000})
-
-	deleted, done, err := b2.DeleteVersionsUnder(context.Background(), c, bucket.BucketID, "p/", 100)
-	if !errors.Is(err, b2.ErrNoProgress) || done || deleted != 0 {
-		t.Errorf("deleted %d, done=%t, err=%v; want ErrNoProgress instead of spinning", deleted, done, err)
-	}
-	if n := fake.CountCalls("b2_delete_file_version"); n != 1 {
-		t.Errorf("tried %d deletes, want 1 before giving up", n)
-	}
-}
-
-func TestDeleteVersionsUnderCancelsUnfinishedFilesItLists(t *testing.T) {
-	c, fake, _ := newTestClient(t)
-	bucket := fake.AddBucket("unfinished-bucket")
-	for i := range 3 {
-		fake.StartLargeFile(bucket.BucketID, fmt.Sprintf("p/big%d", i))
-	}
-	fake.PutFile(bucket.BucketID, "p/small", 1)
-
-	deleted, done, err := b2.DeleteVersionsUnder(context.Background(), c, bucket.BucketID, "p/", 2)
-	if err != nil || done || deleted != 2 {
-		t.Fatalf("deleted %d, done=%t, err=%v; want the budget of 2 spent", deleted, done, err)
-	}
-	if _, done, err = b2.DeleteVersionsUnder(context.Background(), c, bucket.BucketID, "p/", 100); err != nil || !done {
-		t.Fatalf("second pass done=%t, err=%v", done, err)
-	}
-	if got := fake.FileNames(bucket.BucketID); len(got) != 0 {
-		t.Errorf("left %v", got)
-	}
-}
-
 func TestLifecycleRulesRoundTripEveryField(t *testing.T) {
 	t.Parallel()
 	var sent string
@@ -669,5 +605,100 @@ func TestListFileVersionsNeverSendsAStartIDAlone(t *testing.T) {
 		BucketID: bucket.BucketID, StartFileID: "stray-id",
 	}); err != nil {
 		t.Errorf("a start file ID without a start name was sent: %v", err)
+	}
+}
+
+func TestHidingRulesFindsRulesThatWouldHideLiveFiles(t *testing.T) {
+	one, thirty := 1, 30
+	rules := []b2.LifecycleRule{
+		{FileNamePrefix: parentPrefix, DaysFromHidingToDeleting: &one},
+		{FileNamePrefix: "", DaysFromUploadingToHiding: &thirty},
+		{FileNamePrefix: "media/", DaysFromUploadingToHiding: &thirty},
+	}
+	got := b2.HidingRules(rules, appPrefix)
+	if !slices.Equal(got, []string{""}) {
+		t.Errorf("HidingRules = %q, want only the bucket-wide rule", got)
+	}
+}
+
+func TestRemoveLifecycleRuleOnlyRemovesItsOwnExactPrefix(t *testing.T) {
+	t.Parallel()
+	one, three := 1, 3
+	rules := []b2.LifecycleRule{
+		{FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &one},
+		{FileNamePrefix: siblingPrefix, DaysFromHidingToDeleting: &one},
+	}
+	got, removed := b2.RemoveLifecycleRule(rules, appPrefix)
+	if !removed || len(got) != 1 || got[0].FileNamePrefix != siblingPrefix {
+		t.Errorf("got %+v, removed=%t", got, removed)
+	}
+	if _, removed := b2.RemoveLifecycleRule(rules, parentPrefix); removed {
+		t.Error("a parent prefix removed a rule it does not own")
+	}
+	shared := []b2.LifecycleRule{{
+		FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &one, DaysFromStartingToCancelingUnfinishedLargeFiles: &three,
+	}}
+	if _, removed := b2.RemoveLifecycleRule(shared, appPrefix); removed {
+		t.Error("a rule carrying another tool's field was removed")
+	}
+}
+
+func TestAuthorizeReadsTheAllowedBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"accountId":"acct","authorizationToken":"tok","apiInfo":{"storageApi":{
+			"apiUrl":"https://api005.backblazeb2.com","s3ApiUrl":"https://s3.eu-central-003.backblazeb2.com",
+			"allowed":{"bucketId":"b1","bucketName":"one","capabilities":["listFiles"],"namePrefix":"p/"}}}}`)
+	}))
+	defer srv.Close()
+
+	c := b2.NewClient("id", "key")
+	c.AuthURL = srv.URL
+	auth, err := c.Authorize(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(auth.BucketIDs, []string{"b1"}) || auth.NamePrefix != "p/" ||
+		!slices.Equal(auth.Capabilities, []string{"listFiles"}) {
+		t.Errorf("auth = %+v", auth)
+	}
+	if region, _ := auth.S3Region(); region != "eu-central-003" {
+		t.Errorf("region = %q", region)
+	}
+}
+
+func TestDeleteResticRepositoryStopsWhenNothingCanBeDeleted(t *testing.T) {
+	t.Parallel()
+	c, fake, _ := newTestClient(t)
+	bucket := fake.AddBucket("stuck-bucket")
+	fake.PutFile(bucket.BucketID, "p/data/a", 1)
+	fake.Fail("b2_delete_file_version", b2fake.Failure{Status: 400, Code: b2.CodeFileNotPresent, Times: 1000})
+
+	deleted, done, err := b2.DeleteResticRepository(context.Background(), c, bucket.BucketID, "p", 100)
+	if !errors.Is(err, b2.ErrNoProgress) || done || deleted != 0 {
+		t.Errorf("deleted %d, done=%t, err=%v; want ErrNoProgress instead of spinning", deleted, done, err)
+	}
+	if n := fake.CountCalls("b2_delete_file_version"); n != 1 {
+		t.Errorf("tried %d deletes, want 1 before giving up", n)
+	}
+}
+
+func TestDeleteResticRepositoryCancelsUnfinishedFilesItLists(t *testing.T) {
+	t.Parallel()
+	c, fake, _ := newTestClient(t)
+	bucket := fake.AddBucket("unfinished-bucket")
+	for i := range 3 {
+		fake.StartLargeFile(bucket.BucketID, fmt.Sprintf("p/data/big%d", i))
+	}
+	fake.PutFile(bucket.BucketID, "p/data/small", 1)
+
+	deleted, done, err := b2.DeleteResticRepository(context.Background(), c, bucket.BucketID, "p", 2)
+	if err != nil || done || deleted != 2 {
+		t.Fatalf("deleted %d, done=%t, err=%v; want the budget of 2 spent", deleted, done, err)
+	}
+	if _, done, err = b2.DeleteResticRepository(context.Background(), c, bucket.BucketID, "p", 100); err != nil || !done {
+		t.Fatalf("second pass done=%t, err=%v", done, err)
+	}
+	if got := fake.FileNames(bucket.BucketID); len(got) != 0 {
+		t.Errorf("left %v", got)
 	}
 }
