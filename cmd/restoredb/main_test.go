@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -296,5 +297,46 @@ func TestPostgresNeverLetsPsqlCommitATruncatedPlainDump(t *testing.T) {
 				t.Errorf("err = %v", err)
 			}
 		})
+	}
+}
+
+func TestPlainDumpCompleteOnlyAtTheEnd(t *testing.T) {
+	t.Parallel()
+	body := plainDump + "COPY t (v) FROM stdin;\nx\n-- PostgreSQL database dump complete\ny\n"
+	tests := []struct {
+		name string
+		dump string
+		want bool
+	}{
+		{"pg_dump 18 with \\unrestrict", body + "\\.\n\n" + plainTrailer, true},
+		{"before \\restrict was added", body + "\\.\n\n--\n-- PostgreSQL database dump complete\n--\n\n", true},
+		{"the trailer text inside data, then cut", body + "z\n", false},
+		{"cut inside the trailer", body + "\\.\n\n--\n-- PostgreSQL database dump compl", false},
+		{"cut before the closing --", body + "\\.\n\n--\n-- PostgreSQL database dump complete\n", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		if got := postgres.PlainDumpComplete([]byte(tt.dump)); got != tt.want {
+			t.Errorf("%s: PlainDumpComplete = %t, want %t", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestPsqlFailingOnItsOwnKeepsItsExitStatus(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\nhead -c 10 >/dev/null\nexit 3\n"
+	if err := os.WriteFile(filepath.Join(bin, "psql"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	testutil.ClearEnv(t)
+	cmd := withStdin(plainDump + strings.Repeat("SELECT 1;\n", 1<<16) + plainTrailer)
+	cmd.SetArgs([]string{engineCNPG, "-H", "db"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.Execute()
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	if !ok || exitErr.ExitCode() != 3 {
+		t.Errorf("err = %v, want psql's own exit status 3", err)
 	}
 }

@@ -86,9 +86,12 @@ func runGuarded(e *exec.Cmd, complete func(tail []byte) bool) error {
 	_, copyErr := io.Copy(io.MultiWriter(pipe, tail), in)
 	if copyErr != nil || !complete(tail.buf) {
 		_ = e.Process.Kill()
-		_, _ = e.Process.Wait()
+		state, _ := e.Process.Wait()
 		_ = pipe.Close()
 		_ = e.Wait()
+		if state != nil && state.Exited() && !state.Success() {
+			return &exec.ExitError{ProcessState: state}
+		}
 		if copyErr != nil {
 			return fmt.Errorf("%w: %w", ErrIncomplete, copyErr)
 		}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/USA-RedDragon/b2-backup-operator/internal/dbtools/cobrax"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/dbtools/dumpdb"
@@ -18,13 +19,28 @@ var ErrEmptyDump = errors.New("no dump on stdin")
 
 var customMagic = []byte("PGDMP")
 
-var plainTrailer = []byte("-- PostgreSQL database dump complete")
-
-// PlainDumpComplete reports whether the end of a plain SQL dump holds the line
-// pg_dump writes when it finishes. A dump cut short by a failed download lacks
-// it.
+// PlainDumpComplete reports whether a plain SQL dump ends the way pg_dump ends
+// one: the "dump complete" comment block, then at most blank lines and the
+// \unrestrict line pg_dump 17.6 and later add. A dump cut short by a failed
+// download does not, even if the same text appears earlier in its data.
 func PlainDumpComplete(tail []byte) bool {
-	return bytes.Contains(tail, plainTrailer)
+	lines := strings.Split(string(tail), "\n")
+	last := func() string {
+		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		if len(lines) == 0 {
+			return ""
+		}
+		line := strings.TrimRight(lines[len(lines)-1], "\r")
+		lines = lines[:len(lines)-1]
+		return line
+	}
+	line := last()
+	if strings.HasPrefix(line, `\unrestrict `) {
+		line = last()
+	}
+	return line == "--" && last() == "-- PostgreSQL database dump complete"
 }
 
 // IsCustomFormat reports whether head starts with the pg_dump custom-format
