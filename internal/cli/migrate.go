@@ -755,6 +755,7 @@ type parsedScript struct {
 
 func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
 	var parsed parsedScript
+	forgets := 0
 
 	for _, line := range joinContinuations(scriptBody(script)) {
 		if shellSpecial(line) {
@@ -785,9 +786,15 @@ func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
 			parsed.dumpChanged = parsed.dumpChanged || changed
 			parsed.sources = append(parsed.sources, source)
 		case "forget":
+			if forgets++; forgets > 1 {
+				return parsed, notStructured("it runs restic forget more than once, and spec.retention is one policy")
+			}
 			r, err := parseRetention(args)
 			if err != nil {
 				return parsed, err
+			}
+			if r == nil {
+				return parsed, notStructured("%q keeps nothing by policy, which spec.retention cannot say", line)
 			}
 			parsed.retention = r
 		default:
