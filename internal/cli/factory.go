@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"sync"
 	"time"
@@ -37,6 +38,8 @@ type Factory struct {
 	stdin     *bufio.Reader
 
 	interactive *bool
+
+	attachHook func(context.Context, *b2backupv1.ScheduledBackup, runner.Options, func(restorePod, string) error) error
 
 	once struct {
 		scheme     sync.Once

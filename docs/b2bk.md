@@ -214,8 +214,25 @@ never restores somewhere it did not name.
 | --- | --- | --- |
 | `--to DIR` | `reads` | Streams the files to this machine. Nothing staged on disk at either end |
 | `--to-new-pvc NAME` | `writes` | A fresh claim, laid out like the source claim, taking its size, access modes and storage class, to inspect before committing. It is created only once the snapshot is found, outlives the restore and is never garbage collected |
-| `--in-place` | `DESTROYS` | Over the source claims. Refused while a backup of this ScheduledBackup is running. Suspends the schedule for the duration, and leaves it suspended if the restore fails, since the next backup would save a partial restore |
+| `--in-place` | `DESTROYS` | Over the source claims. Held like `--to-database`, below |
 | `--to-database` | `DESTROYS` | Streams the dump back through `restoredb` |
+
+Both overwriting targets are refused while a Job of this ScheduledBackup is
+running: a scheduled or triggered backup, or a b2bk restore, which b2bk labels
+`b2backup.mcswain.dev/b2bk-purpose`. A b2bk Job without that label, from an
+older b2bk, counts as a restore. The restore then takes the ScheduledBackup: it
+sets the `b2backup.mcswain.dev/restore-lock` annotation, so a second
+overwriting restore is refused until it is done, and suspends the schedule,
+recording in `b2backup.mcswain.dev/restore-resume` that it did. Just before the
+first write it checks, from the restore pod, that the operator has suspended
+the CronJob and that no backup started in the meantime, and stops without
+writing if not. A restore that succeeds, or stops before writing, resumes a
+schedule it suspended. One that fails after writing leaves it suspended, since
+the next backup would save a partial restore and retention could keep it over
+good snapshots; the next restore that succeeds resumes it, and so do `b2bk
+resume` and `b2bk suspend`, which clear the annotation. A restore killed before
+it lets go leaves the lock behind: remove it with `kubectl annotate
+scheduledbackup NAME b2backup.mcswain.dev/restore-lock-` once it is gone.
 
 **Which snapshot.** Every target restores one source. A files target takes the
 backup's files source, or the one `--tag` names when there are several. The
