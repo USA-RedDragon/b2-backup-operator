@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"slices"
@@ -110,7 +111,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 				Message: fmt.Sprintf("Repository %q does not exist", sb.Spec.RepositoryRef.Name),
 			})
 
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, r.suspendOwnCronJob(ctx, sb)
 		}
 		return ctrl.Result{}, err
 	}
@@ -122,7 +123,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 			Reason:  "RepositoryNotReady",
 			Message: fmt.Sprintf("Repository %q is not initialized yet", repo.Name),
 		})
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.suspendOwnCronJob(ctx, sb)
 	}
 
 	if other, tag, err := r.tagConflict(ctx, sb); err != nil {
@@ -146,7 +147,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 
 	desired, err := backup.BuildCronJob(sb, &repo, r.Config)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, errors.Join(err, r.suspendOwnCronJob(ctx, sb))
 	}
 	if err := controllerutil.SetControllerReference(sb, desired, r.Scheme); err != nil {
 		return ctrl.Result{}, err
@@ -271,6 +272,10 @@ func (r *ScheduledBackupReconciler) tagConflict(
 	return "", "", nil
 }
 
+// suspendOwnCronJob stops the CronJob this ScheduledBackup owns from firing. It
+// runs whenever the CronJob cannot be brought in line with the spec: left alone,
+// it would go on backing up and forgetting under a spec that no longer exists,
+// out of sight of the tag conflict check.
 func (r *ScheduledBackupReconciler) suspendOwnCronJob(ctx context.Context, sb *b2backupv1.ScheduledBackup) error {
 	var cj batchv1.CronJob
 	err := r.Get(ctx, types.NamespacedName{Namespace: sb.Namespace, Name: backup.CronJobName(sb)}, &cj)
