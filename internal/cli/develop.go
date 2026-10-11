@@ -277,19 +277,35 @@ type shellCommand struct {
 
 // shellCommands reads a script's commands in order, one per line or per ;,
 // tracking what its set commands turn on and off, and leaving out the
-// preamble and postamble around a backup script.
+// preamble and postamble around a backup script. A { or ( group piped
+// somewhere runs in a subshell, so what it sets ends with it; its closing line
+// is the command that runs the group, under the options outside it.
 func shellCommands(script string) []shellCommand {
 	on := map[string]bool{}
+	var saved []map[string]bool
 	var out []shellCommand
 	for _, line := range joinContinuations(script) {
 		for _, cmd := range splitCommands(line) {
+			if rest, opens := strings.CutPrefix(cmd, "{"); opens && (rest == "" || rest[0] == ' ') {
+				saved = append(saved, maps.Clone(on))
+				cmd = strings.TrimSpace(rest)
+			} else if rest, opens := strings.CutPrefix(cmd, "("); opens {
+				saved = append(saved, maps.Clone(on))
+				cmd = strings.TrimSpace(rest)
+			}
 			words := strings.Fields(cmd)
 			switch {
 			case len(words) == 0:
 			case words[0] == "set":
 				applySet(on, words[1:])
-			case cmd == "{" || cmd == "restic cache --cleanup" || groupClosing.MatchString(cmd) ||
-				slices.Contains(preambleLines, cmd):
+			case (cmd[0] == '}' || cmd[0] == ')') && len(saved) > 0:
+				outer := saved[len(saved)-1]
+				saved = saved[:len(saved)-1]
+				if cmd[0] == ')' || pipeline.MatchString(cmd) {
+					on = outer
+					out = append(out, shellCommand{text: cmd, on: maps.Clone(on)})
+				}
+			case cmd == "restic cache --cleanup" || slices.Contains(preambleLines, cmd):
 			default:
 				out = append(out, shellCommand{text: cmd, on: maps.Clone(on)})
 			}
