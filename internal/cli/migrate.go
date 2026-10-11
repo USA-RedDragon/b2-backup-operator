@@ -206,7 +206,11 @@ func (m *migration) validate() error {
 	if err != nil {
 		return err
 	}
-	if problem, _ := scriptSyntax(script); problem != "" {
+	switch problem, checked := scriptSyntax(script); {
+	case !checked:
+		m.notes = append(m.notes, "syntax: bash is not on PATH, so the script the operator would run was not\n"+
+			"parsed. Run b2bk parity where bash is, or check it with bash -n.")
+	case problem != "":
 		return fmt.Errorf("%w: bash -n rejects the script it would run: %s", ErrUnsupportedCommand, problem)
 	}
 	return nil

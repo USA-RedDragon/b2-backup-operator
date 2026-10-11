@@ -1466,3 +1466,14 @@ func TestMigrateNotesWhatTheOperatorAddsToBackupAndForget(t *testing.T) {
 		t.Errorf("want notes that forget now prunes and that the untagged backup is now tagged files:\n%s", out)
 	}
 }
+
+func TestMigrateNotesItCouldNotParseTheScriptWithoutBash(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	out, err := migrate(t, homeClusterRelease)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !strings.Contains(out, "# syntax: ") {
+		t.Errorf("no note that the script went unparsed:\n%s", out)
+	}
+}
