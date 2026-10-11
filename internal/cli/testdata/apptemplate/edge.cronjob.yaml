@@ -59,7 +59,7 @@ spec:
               - sh
               - -c
               - mkdir -p /backup/x
-              image: busybox:1.37
+              image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
               name: prepare
               volumeMounts:
               - mountPath: /backup
@@ -134,7 +134,7 @@ spec:
             - args:
               - sleep
               - "60"
-              image: busybox:1.37
+              image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
               name: sidecar
               volumeMounts:
               - mountPath: /backup
