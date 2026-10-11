@@ -352,11 +352,7 @@ func (r *RepositoryReconciler) reconcile(
 			})
 			return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
 		}
-		if exists && !repo.Status.Adopted {
-			repo.Status.Adopted = true
-			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryAdopted", "Adopt",
-				"Found an existing restic repository at %s/%s; adopting it", bucket.BucketName, displayPath(path))
-		}
+		r.noteAdoption(repo, bucket.BucketName, path, exists && !known)
 	}
 	repo.Status.AccountID = auth.AccountID
 	repo.Status.BucketName = bucket.BucketName
@@ -429,6 +425,18 @@ func (r *RepositoryReconciler) reconcile(
 		requeue = min(requeue, keyRecheck)
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// noteAdoption records that the path already held a restic repository. found
+// counts only before the Repository has provisioned anything: once it has, a
+// config at the path is the one its own init Job wrote.
+func (r *RepositoryReconciler) noteAdoption(repo *b2backupv1.Repository, bucket, path string, found bool) {
+	if !found || repo.Status.Adopted {
+		return
+	}
+	repo.Status.Adopted = true
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryAdopted", "Adopt",
+		"Found an existing restic repository at %s/%s; adopting it", bucket, displayPath(path))
 }
 
 func (r *RepositoryReconciler) reconcileReinit(ctx context.Context, repo *b2backupv1.Repository) error {

@@ -1333,3 +1333,19 @@ func TestLifecycleUpdatesAreBounded(t *testing.T) {
 		t.Errorf("updated %d times, want at most %d", n, maxLifecycleUpdates)
 	}
 }
+
+func TestTheRepositoryItsOwnInitCreatedIsNotAdopted(t *testing.T) {
+	f := newFakeB2(t)
+	r, c := newHarness(t, f, bucketRepo(nil))
+	reconcileN(t, r, 1)
+	f.PutFile(f.Bucket(ownBucket).BucketID, "config", 1)
+	succeedInitJob(t, c)
+	reconcileN(t, r, 2)
+	repo := getRepo(t, c)
+	if !repo.Status.Initialized {
+		t.Fatal("precondition: initialized")
+	}
+	if repo.Status.Adopted || hasEvent(recordedEvents(t, r), "RepositoryAdopted") {
+		t.Error("the config this Repository's own restic init wrote was taken for an existing repository")
+	}
+}
