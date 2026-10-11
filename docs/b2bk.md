@@ -576,20 +576,43 @@ Catches what the operator would reject at reconcile time — an unresolvable
 schedule, a source it cannot render, a missing database field — with no cluster.
 Does not run the CRD's CEL rules; the API server owns those.
 
-### `parity <generated.yaml> <helmrelease.yaml | directory>` — `reads`
+### `parity <generated.yaml> <helmrelease.yaml | directory | cronjob.yaml>` — `reads`
 
 Confirms that migrating an app does not change what gets backed up, or where.
-Needs nothing on PATH: both sides are parsed in-process, the HelmRelease with
-`sigs.k8s.io/yaml`. Only `--from-secret` shells out, to `sops`. The second
-argument takes the same directory `migrate` does.
+Needs nothing on PATH. Only `--from-secret` shells out, to `sops`. The second
+argument takes the same directory `migrate` does, or a manifest holding the
+original CronJob itself, such as `helm template` output or a CronJob read from
+the cluster.
 
-It compares the rendered script, the schedule, the time zone, the claims and
-scratch space mounted (name, path and read-only flag), whether every file on
-them can be read, the working directory, the snapshot host, the extra
-environment, the database Secret and, given the original `RESTIC_REPOSITORY`,
-the Repository's bucket and path. Both scripts are compared without the
-preamble and postamble around them, the hand-written `exec > >(ts ...)` and
-`set -eu` on one side and the operator's on the other.
+Both sides are compared as the CronJob each one runs. The generated side is the
+CronJob the operator builds, with `backup.BuildCronJob` and the CRD's defaults,
+so a ScheduledBackup the operator would refuse is an error here too. The
+original side is rendered from the HelmRelease's values the way app-template
+4.x renders them, by a renderer of its own that does not share `migrate`'s
+reading of the values, and is checked against CronJobs the real chart rendered.
+Anything that renderer does not model, such as a Helm template in a value, a
+chart-created claim, `dependsOn` or a key it does not know, is an error rather
+than a guess.
+
+It compares the rendered script and the command around it, the schedule, the
+time zone, suspend and the concurrency policy, the image, the claims and
+scratch space mounted (name, path, read-only flag, `subPath`), whether every
+file on them can be read, the working directory, the snapshot host, the
+environment, `envFrom`, the database Secret, resources, security contexts,
+affinity, node selector, tolerations, priority class, pod labels and
+annotations, every other container, and whatever else is left in the pod and
+container spec. Given the original `RESTIC_REPOSITORY` it also compares the
+Repository's bucket and path. Both scripts are compared without the preamble
+and postamble around them, the hand-written `exec > >(ts ...)` and `set -eu` on
+one side and the operator's on the other.
+
+Some differences are the operator's by design and are normalized away: its
+restic cache claim, and a cache volume on the original side mounted where restic
+keeps its cache (`--cache-dir`, then `RESTIC_CACHE_DIR`, then the image's
+`/cache`) when the script backs nothing up from there; the database Secret's
+mount path; the Repository's Secret in place of `restic-envs` and `restic-b2`;
+the pod's restart policy, service account token and service links; and, when
+the original sets none, the operator's own security contexts.
 
 | Flag | |
 | --- | --- |
@@ -624,8 +647,16 @@ printed with the time of day in the schedule's time zone, such as
 | Output | Exit | |
 | --- | --- | --- |
 | `IDENTICAL` | 0 | Nothing moved |
-| `RESCHEDULED` / `FORGET SCOPED` + `EQUIVALENT` | 0 | The time moved, or forget was scoped; nothing else did |
+| notes + `EQUIVALENT` | 0 | Only the notes below apply |
+| `RESCHEDULED` | note | The time moved; the cadence did not |
+| `FORGET SCOPED` | note | forget now expires only the backup's own tags |
+| `JOB SETTINGS CHANGE` | note | `backoffLimit`, `startingDeadlineSeconds`, the Job history limits or `ttlSecondsAfterFinished` changed. app-template retries a failed run 6 times and skips a run 30 seconds late; the operator does neither |
+| `IMAGE CHANGES` | note | `ghcr.io/gabe565/restic`, directly or through a mirror, becomes the operator's image, which is built on it |
+| `AFFINITY ADDED` | note | The original sets none and the operator adds only a preference |
+| `POD LABELS CHANGE` | note | app-template's own `app.kubernetes.io/controller`, `name` or `instance` label is gone |
+| `INIT JOB REPLACED` | note | The release's `restic init` Job; the Repository initializes or adopts the repository itself |
 | `SCRIPT DIFFERS` | 1 | Followed by both scripts |
+| `COMMAND DIFFERS` | 1 | The original does not run `sh -c <script>` |
 | `DUMP FORMAT CHANGES` | 1 | A cnpg dump moves from `backup-cnpg.sh` to `dumpdb cnpg` |
 | `CADENCE DIFFERS` | 1 | It no longer runs as often |
 | `TIMEZONE DIFFERS` | 1 | |
@@ -634,9 +665,19 @@ printed with the time of day in the schedule's time zone, such as
 | `WORKING DIR DIFFERS` | 1 | |
 | `RESTIC HOST DIFFERS` | 1 | Snapshots would start a new series under another host |
 | `ENV DIFFERS` | 1 | Another extra variable, or another `TZ` |
+| `ENVFROM DIFFERS` | 1 | The original reads a Secret or ConfigMap other than `restic-envs` and `restic-b2` |
 | `DATABASE SECRET DIFFERS` | 1 | |
 | `REPOSITORY DIFFERS` | 1 | The Repository is not at the original bucket and path |
-| `error: ...` | 1 | Either side could not be read or rendered |
+| `SUSPEND DIFFERS`, `CONCURRENCY DIFFERS` | 1 | |
+| `JOB SETTINGS DIFFER` | 1 | `activeDeadlineSeconds`, `parallelism` or `completions` |
+| `IMAGE DIFFERS` | 1 | Any other image change |
+| `RESOURCES DIFFER`, `SECURITY CONTEXT DIFFERS` | 1 | |
+| `AFFINITY DIFFERS`, `NODE SELECTOR DIFFERS`, `TOLERATIONS DIFFER`, `PRIORITY CLASS DIFFERS` | 1 | The pod would be scheduled elsewhere, or not at all |
+| `POD LABELS DIFFER`, `POD ANNOTATIONS DIFFER` | 1 | A label or annotation the original sets is gone |
+| `CONTAINERS DIFFER` | 1 | The original pod runs other containers or init containers |
+| `CONTAINER DIFFERS`, `POD SPEC DIFFERS` | 1 | Anything else in the container or pod spec |
+| `CONTROLLER DROPPED` | 1 | The HelmRelease runs another controller that is not a `restic init` Job |
+| `error: ...` | 1 | Either side could not be read or rendered, or the operator would refuse the generated backup |
 
 These are lines, not verdicts: a run prints every one that applies. The notes
 can precede a difference on a run that still exits 1. `IDENTICAL` and

@@ -213,11 +213,16 @@ operator can jitter it instead. Every claim becomes an entry in
 repository URL is only in the SOPS-encrypted `restic-envs`, so it comes from
 `--repository` or `--from-secret`.
 
-`b2bk parity` then compares the generated script, schedule, time zone, mounts,
-working directory, snapshot host, extra environment, database Secret and, given
-the URL, the Repository's location against the original. Migrating must not silently
-change what gets backed up or how often, so any change to
-`internal/backup/script.go` or `schedule.go` has to keep parity meaningful. It
+`b2bk parity` then compares two CronJobs: the one `backup.BuildCronJob` builds
+for the generated ScheduledBackup, and the one the HelmRelease renders.
+`internal/cli/apptemplate.go` renders the latter from the raw values the way
+app-template 4.x does, without `migrate`'s structs, so the two read the
+HelmRelease independently. It refuses whatever it does not model. Its testdata
+holds CronJobs the real chart rendered; re-check them with
+`B2BK_APP_TEMPLATE_CHART=<app-template-4.6.2.tgz> go test ./internal/cli -run TestAppTemplate`.
+Migrating must not silently change what gets backed up or how often, so any
+change to `internal/backup/script.go`, `schedule.go` or `cronjob.go` has to keep
+parity meaningful. It
 normalizes away only the quoting around `--exclude` patterns, the
 `--retry-lock` and `--secret-mount` flags -- the pattern is `ignoredFlags` in
 `internal/cli/develop.go` -- and the forget scoping `normalizeRendered` notes as
