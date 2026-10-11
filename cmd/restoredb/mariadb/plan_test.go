@@ -568,3 +568,40 @@ func TestFilterRefusesADatabaseNameLedByADigit(t *testing.T) {
 		t.Errorf("numbers: err = %v", err)
 	}
 }
+
+// A MERGE table, or one whose engine reaches another server or database,
+// writes past the staging database without naming a qualified table in the
+// statement that writes.
+func TestFilterRefusesEnginesThatReachOutside(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		"CREATE TABLE `m` (`id` INT) ENGINE=MRG_MyISAM UNION=(`other`.`t`) INSERT_METHOD=LAST",
+		"CREATE TABLE `m` (`id` INT) ENGINE = merge UNION = (`t1`)",
+		"CREATE TABLE `m` (`id` INT) UNION=(`t1`)",
+		"CREATE TABLE `f` (`id` INT) ENGINE=FEDERATED CONNECTION='mysql://u@h/other/t'",
+		"CREATE TABLE `c` (`id` INT) ENGINE=CONNECT TABLE_TYPE=MYSQL DBNAME='other' TABNAME='t'",
+		"CREATE TABLE `s` (`id` INT) ENGINE=SPIDER COMMENT='wrapper \"mysql\", table \"t\"'",
+		"CREATE TABLE `q` (`id` INT) ENGINE='MRG_MyISAM'",
+		"CREATE TABLE `q` (`id` INT) ENGINE=`MERGE`",
+		"ALTER TABLE `t` ENGINE=FEDERATED CONNECTION='mysql://u@h/other/t'",
+		"/*!40000 ALTER TABLE `t` ENGINE=MERGE */",
+	} {
+		got, _, err := filterString(t, createTable+stmt+";\n")
+		if !errors.Is(err, ErrOtherDatabase) || got != createTable {
+			t.Errorf("%q: err = %v, passed on %q", stmt, err, got)
+		}
+	}
+	for _, stmt := range []string{
+		"CREATE TABLE `t2` (\n  `id` int(11) DEFAULT nextval(`app`.`s`),\n" +
+			"  CONSTRAINT `fk` FOREIGN KEY (`id`) REFERENCES `other`.`p` (`id`)\n" +
+			") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci",
+		"CREATE TABLE `t3` (`id` int) ENGINE=MyISAM",
+		"CREATE TABLE `t4` (`union` int, `connection` int) ENGINE=Aria PAGE_CHECKSUM=1",
+		"CREATE SEQUENCE `s` start with 1 minvalue 1 maxvalue 9223372036854775806 increment by 1 cache 1000 " +
+			"nocycle ENGINE=InnoDB",
+	} {
+		if _, _, err := filterString(t, stmt+";\n"); err != nil {
+			t.Errorf("%q: err = %v", stmt, err)
+		}
+	}
+}

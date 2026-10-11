@@ -386,7 +386,9 @@ anywhere in a statement, such as ``INSERT INTO `other`.`t` ``, a multi-table
 ``UPDATE `t`, `other`.`u` `` or ``DO NEXTVAL(`other`.`s`)``, since it could write
 past the staging database or run code there. `CREATE TABLE` is the exception,
 since mariadb-dump qualifies a foreign key to another database there, but a
-`CREATE TABLE ... SELECT` is refused. Also refused: one that changes the server, replication or accounts, such as
+`CREATE TABLE ... SELECT` is refused, and so is a table whose engine or
+options reach other tables: `MERGE` (`MRG_MyISAM`) and its `UNION`,
+`FEDERATED`, `CONNECT`, `SPIDER`, `OQGRAPH` and `CONNECTION`. Also refused: one that changes the server, replication or accounts, such as
 `SET GLOBAL`, `CHANGE MASTER TO` (from `--master-data` or `--dump-slave`) or
 `GRANT`; one that builds SQL at run time, such as `PREPARE` or `EXECUTE`; one
 that writes a file on the server, such as `SELECT ... INTO OUTFILE`; one too long

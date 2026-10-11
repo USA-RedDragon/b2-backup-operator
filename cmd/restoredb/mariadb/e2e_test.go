@@ -654,6 +654,8 @@ func TestMariaDBKeepsCraftedDumpsInsideStaging(t *testing.T) {
 		"CREATE TABLE other.mt (id INT) ENGINE=MyISAM;"
 	for name, inject := range map[string]string{
 		"a database name led by a digit": "INSERT INTO 1db.t VALUES (1);\n",
+		"a MERGE table over another database": "CREATE TABLE `m` (`id` INT) ENGINE=MRG_MyISAM UNION=(`other`.`mt`) " +
+			"INSERT_METHOD=LAST;\nINSERT INTO `m` VALUES (42);\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			backup, _ := seed(t)

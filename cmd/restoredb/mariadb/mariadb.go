@@ -40,7 +40,8 @@ any name qualified with a database, anywhere in a statement, such as INSERT
 INTO ` + "`other`.`t`" + ` or a multi-table UPDATE, which could write past the staging
 database or run code there (CREATE TABLE, where mariadb-dump writes such names
 for a foreign key to another database, is the exception unless it has a
-SELECT); one that changes the
+SELECT); a table whose engine or options reach other tables, such as MERGE's
+UNION or FEDERATED's CONNECTION; one that changes the
 server, replication or accounts, such as SET GLOBAL, CHANGE MASTER or GRANT, or
 builds SQL at run time, such as PREPARE or EXECUTE, or writes a file on the
 server; and a client command other than the \- a mariadb-dump starts with.
