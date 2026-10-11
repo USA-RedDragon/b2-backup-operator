@@ -333,14 +333,18 @@ spec:
             + ''-credentials'')'
         - message: secretName must not be the passwordSecretRef Secret; the operator
             never writes to the seed
+          optionalOldSelf: true
           rule: '!has(self.spec.passwordSecretRef) || self.spec.passwordSecretRef.name
             != (has(self.spec.secretName) && size(self.spec.secretName) > 0 ? self.spec.secretName
-            : self.metadata.name + ''-credentials'')'
+            : self.metadata.name + ''-credentials'') || (oldSelf.hasValue() && has(oldSelf.value().spec.passwordSecretRef)
+            && oldSelf.value().spec.passwordSecretRef.name == self.spec.passwordSecretRef.name)'
         - message: secretName must not be the credentialsSecretRef Secret; the operator
             never writes to it
+          optionalOldSelf: true
           rule: '!has(self.spec.credentialsSecretRef) || self.spec.credentialsSecretRef.name
             != (has(self.spec.secretName) && size(self.spec.secretName) > 0 ? self.spec.secretName
-            : self.metadata.name + ''-credentials'')'
+            : self.metadata.name + ''-credentials'') || (oldSelf.hasValue() && has(oldSelf.value().spec.credentialsSecretRef)
+            && oldSelf.value().spec.credentialsSecretRef.name == self.spec.credentialsSecretRef.name)'
     served: true
     storage: true
     subresources:
