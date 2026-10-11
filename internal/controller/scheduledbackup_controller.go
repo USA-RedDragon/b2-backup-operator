@@ -99,7 +99,7 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 func (r *ScheduledBackupReconciler) reconcile(
 	ctx context.Context, sb *b2backupv1.ScheduledBackup,
-) (ctrl.Result, error) {
+) (_ ctrl.Result, err error) {
 	var repo b2backupv1.Repository
 	key := types.NamespacedName{Namespace: sb.Namespace, Name: sb.Spec.RepositoryRef.Name}
 	if err := r.Get(ctx, key, &repo); err != nil {
@@ -141,13 +141,20 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{RequeueAfter: backupRequeueInterval}, r.suspendOwnCronJob(ctx, sb)
 	}
 
+	synced := false
+	defer func() {
+		if err != nil && !synced {
+			err = errors.Join(err, r.suspendOwnCronJob(ctx, sb))
+		}
+	}()
+
 	if err := r.reconcileCache(ctx, sb); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	desired, err := backup.BuildCronJob(sb, &repo, r.Config)
 	if err != nil {
-		return ctrl.Result{}, errors.Join(err, r.suspendOwnCronJob(ctx, sb))
+		return ctrl.Result{}, err
 	}
 	if err := controllerutil.SetControllerReference(sb, desired, r.Scheme); err != nil {
 		return ctrl.Result{}, err
@@ -210,6 +217,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 		sb.Status.Active = int32(len(current.Status.Active))
 		cronJobUID = current.UID
 	}
+	synced = true
 
 	sb.Status.EffectiveSchedule = desired.Spec.Schedule
 
