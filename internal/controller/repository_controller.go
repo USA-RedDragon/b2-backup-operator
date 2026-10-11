@@ -1547,6 +1547,12 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 			dataDeleted = !retained
 		}
 
+	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.ApplicationKeyID != "":
+		if err := r.deleteKeysOnly(ctx, repo); err != nil && !r.forceFinalize(repo, err) {
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
+			return ctrl.Result{}, err
+		}
+
 	case repo.Status.BucketID != "":
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryRetained", "Retain",
 			"Retained %s/%s and application key %s; delete them manually if they are no longer needed",
@@ -1582,6 +1588,17 @@ func deletionScope(repo *b2backupv1.Repository) error {
 		return &scopeError{msg: "a Prefix mode repository has an empty path, which would be the whole shared bucket"}
 	}
 	return nil
+}
+
+// deleteKeysOnly deletes the Repository's own application keys when status
+// recorded a key but never the location: the pass that would have recorded it
+// failed. Without a recorded location no data is deleted.
+func (r *RepositoryReconciler) deleteKeysOnly(ctx context.Context, repo *b2backupv1.Repository) error {
+	api, err := r.apiFor(ctx, repo)
+	if err != nil {
+		return err
+	}
+	return deleteOwnKeys(ctx, repo, api)
 }
 
 // deletionProven refuses to delete a restic repository this Repository never
