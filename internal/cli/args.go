@@ -78,14 +78,38 @@ func plural(noun string, n int) string {
 	return noun + "s"
 }
 
-// execArgs wants one name, then --, then the command.
+// nameArg returns the name in args or, when there is none, the only resource
+// of kinds in the namespace, saying on stderr which it picked.
+func (f *Factory) nameArg(cmd *cobra.Command, args []string, kinds nameKinds) (string, error) {
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	c, err := f.Client()
+	if err != nil {
+		return "", err
+	}
+	ns, err := f.Namespace()
+	if err != nil {
+		return "", err
+	}
+	arg, err := onlyTarget(cmd.Context(), cmd, c, ns, kinds)
+	if err != nil {
+		return "", err
+	}
+	if _, err := fmt.Fprintf(f.Streams.ErrOut, "using %s\n", arg); err != nil {
+		return "", err
+	}
+	return arg, nil
+}
+
+// execArgs wants at most one name, then --, then the command.
 func execArgs(cmd *cobra.Command, args []string) error {
 	dash := cmd.ArgsLenAtDash()
 	switch {
 	case dash < 0:
 		return usageError(cmd, "needs -- before the command")
-	case dash != 1:
-		return usageError(cmd, "takes exactly one name before --, got "+strconv.Itoa(dash))
+	case dash > 1:
+		return usageError(cmd, "takes at most one name before --, got "+strconv.Itoa(dash))
 	case len(args) == dash:
 		return usageError(cmd, "needs a command after --")
 	}

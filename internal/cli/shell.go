@@ -19,7 +19,7 @@ func newShellCommand(f *Factory) *cobra.Command {
 	var shell string
 
 	cmd := &cobra.Command{
-		Use:     "shell <name>",
+		Use:     "shell [NAME]",
 		Aliases: []string{"sh"},
 		Short:   "Open a shell with restic configured",
 		GroupID: GroupEscape,
@@ -34,14 +34,21 @@ RESTIC_PASSWORD are already set, so restic works with no arguments:
 The pod is deleted when the shell exits. Nothing from the app is mounted unless
 --mount-data is passed, and the shared restic cache is replaced with scratch
 space unless --mount-cache is passed, so this cannot interfere with a running
-backup.`,
-		Args: argCount(1, 1, "name"),
+backup.
+
+With no NAME, it uses the namespace's only ScheduledBackup, or its only
+Repository when it has no ScheduledBackup.`,
+		Args: argCount(0, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
 				return err
 			}
-			sb, repo, err := resolveSubject(cmd.Context(), f, c, args[0], true, &opts)
+			arg, err := f.nameArg(cmd, args, anyKind)
+			if err != nil {
+				return err
+			}
+			sb, repo, err := resolveSubject(cmd.Context(), f, c, arg, true, &opts)
 			if err != nil {
 				return err
 			}
@@ -133,7 +140,7 @@ func newExecCommand(f *Factory) *cobra.Command {
 	var opts runner.Options
 
 	cmd := &cobra.Command{
-		Use:     "exec <name> -- <command>...",
+		Use:     "exec [NAME] -- <command>...",
 		Short:   "Run one restic command",
 		GroupID: GroupEscape,
 		Long: `Run a single command in the backup's environment and print its output.
@@ -142,12 +149,20 @@ Everything after -- is passed through, so this reaches restic subcommands the
 CLI does not wrap:
 
     b2bk exec web-files -- restic find --tag=files 'config.php'
-    b2bk exec web-files -- restic cat config`,
+    b2bk exec web-files -- restic cat config
+
+With no NAME before --, it uses the namespace's only ScheduledBackup, or its
+only Repository when it has no ScheduledBackup.`,
 		Args: execArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			command := args[1:]
+			dash := cmd.ArgsLenAtDash()
+			command := args[dash:]
+			arg, err := f.nameArg(cmd, args[:dash], anyKind)
+			if err != nil {
+				return err
+			}
 
-			return runRestic(cmd.Context(), f, args[0], "exec",
+			return runRestic(cmd.Context(), f, arg, "exec",
 				func(*b2backupv1.ScheduledBackup, *b2backupv1.Repository) ([]string, error) {
 					return command, nil
 				},

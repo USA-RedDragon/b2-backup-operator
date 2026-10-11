@@ -33,16 +33,21 @@ func newRenderCommand(f *Factory) *cobra.Command {
 	var asCronJob bool
 
 	cmd := &cobra.Command{
-		Use:     "render <file.yaml|name>",
+		Use:     "render [file.yaml|NAME]",
 		Short:   "Print the script a backup runs",
 		GroupID: GroupDevelopment,
 		Long: `Print the shell script a ScheduledBackup renders to.
 
 Takes either a local manifest or the name of one in the cluster, so it answers
-both "what would this change do" and "what is this actually running".`,
-		Args: argCount(1, 1, "argument"),
+both "what would this change do" and "what is this actually running".
+With neither, it renders the namespace's only ScheduledBackup.`,
+		Args: argCount(0, 1, "argument"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			sb, err := loadScheduledBackup(cmd.Context(), f, args[0])
+			arg, err := f.nameArg(cmd, args, backupsOnly)
+			if err != nil {
+				return err
+			}
+			sb, err := loadScheduledBackup(cmd.Context(), f, arg)
 			if err != nil {
 				return err
 			}
@@ -99,7 +104,7 @@ func readScheduledBackup(path string) (*b2backupv1.ScheduledBackup, error) {
 		if err := yaml.Unmarshal(doc, &sb); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", path, err)
 		}
-		if sb.Kind != "ScheduledBackup" {
+		if sb.Kind != kindScheduledBackupDoc {
 			continue
 		}
 		return &sb, nil

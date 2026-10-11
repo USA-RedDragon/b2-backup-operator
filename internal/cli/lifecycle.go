@@ -25,22 +25,28 @@ func newResumeCommand(f *Factory) *cobra.Command {
 }
 
 func newSuspendResumeCommand(f *Factory, suspend bool) *cobra.Command {
-	verb, past := "resume", "resumed"
-	long := `Clear spec.suspend so the operator reconciles the resource again.`
+	verb, past, use, argCheck := "resume", "resumed", "resume <name>", argCount(1, 1, "name")
+	long := `Clear spec.suspend so the operator reconciles the resource again.
+
+It also releases a ScheduledBackup held after a failed restore, so it needs a
+name even when the namespace has only one.`
 	if suspend {
-		verb, past = "suspend", "suspended"
+		verb, past, use, argCheck = "suspend", "suspended", "suspend [NAME]", argCount(0, 1, "name")
 		long = `Set spec.suspend.
 
 Suspending a ScheduledBackup keeps its CronJob but stops it firing. Suspending a
-Repository stops the operator reconciling it at all.`
+Repository stops the operator reconciling it at all.
+
+With no NAME, it suspends the namespace's only ScheduledBackup, or its only
+Repository when it has no ScheduledBackup.`
 	}
 
 	cmd := &cobra.Command{
-		Use:     verb + " <name>",
+		Use:     use,
 		Short:   capitalize(verb) + " a repository or scheduled backup",
 		Long:    long,
 		GroupID: GroupLifecycle,
-		Args:    argCount(1, 1, "name"),
+		Args:    argCheck,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -50,7 +56,11 @@ Repository stops the operator reconciling it at all.`
 			if err != nil {
 				return err
 			}
-			return runSetSuspend(cmd.Context(), c, f.Streams.Out, ns, args[0], suspend, past)
+			arg, err := f.nameArg(cmd, args, anyKind)
+			if err != nil {
+				return err
+			}
+			return runSetSuspend(cmd.Context(), c, f.Streams.Out, ns, arg, suspend, past)
 		},
 	}
 	return cmd

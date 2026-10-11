@@ -22,7 +22,7 @@ func newEnvCommand(f *Factory) *cobra.Command {
 	var showPassword bool
 
 	cmd := &cobra.Command{
-		Use:     "env <name>",
+		Use:     "env [NAME]",
 		Short:   "Print the restic environment for a repository",
 		GroupID: GroupEscape,
 		Long: `Print the restic credentials as shell export statements.
@@ -33,8 +33,11 @@ region, are not secret and are printed as they are.
 
 With --show-password the output is suitable for:
 
-    eval "$(b2bk env repo/store --show-password)"`,
-		Args: argCount(1, 1, "name"),
+    eval "$(b2bk env repo/store --show-password)"
+
+With no NAME, it uses the namespace's only ScheduledBackup, or its only
+Repository when it has no ScheduledBackup.`,
+		Args: argCount(0, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -44,7 +47,11 @@ With --show-password the output is suitable for:
 			if err != nil {
 				return err
 			}
-			return runEnv(cmd.Context(), c, f.Streams.Out, f.Streams.ErrOut, ns, args[0], showPassword)
+			arg, err := f.nameArg(cmd, args, anyKind)
+			if err != nil {
+				return err
+			}
+			return runEnv(cmd.Context(), c, f.Streams.Out, f.Streams.ErrOut, ns, arg, showPassword)
 		},
 	}
 

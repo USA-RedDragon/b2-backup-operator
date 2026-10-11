@@ -43,7 +43,7 @@ func newBackupCommand(f *Factory) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:     "backup <name>",
+		Use:     "backup [NAME]",
 		Aliases: []string{"run"},
 		Short:   "Run a backup now",
 		GroupID: GroupRun,
@@ -58,8 +58,10 @@ thing can be done with kubectl:
 
 A suspended ScheduledBackup still runs: suspending the schedule and then
 backing up by hand is the main reason to suspend one. A run is refused only
-when one is already in flight and concurrencyPolicy is Forbid.`,
-		Args: argCount(1, 1, "name"),
+when one is already in flight and concurrencyPolicy is Forbid.
+
+With no NAME, it runs the namespace's only ScheduledBackup.`,
+		Args: argCount(0, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -74,7 +76,11 @@ when one is already in flight and concurrencyPolicy is Forbid.`,
 				return err
 			}
 
-			target, err := Resolve(cmd.Context(), c, ns, args[0])
+			arg, err := f.nameArg(cmd, args, backupsOnly)
+			if err != nil {
+				return err
+			}
+			target, err := Resolve(cmd.Context(), c, ns, arg)
 			if err != nil {
 				return err
 			}

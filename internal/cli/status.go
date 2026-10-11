@@ -21,15 +21,18 @@ func newStatusCommand(f *Factory) *cobra.Command {
 	var limit int
 
 	cmd := &cobra.Command{
-		Use:     "status <name>",
+		Use:     "status [NAME]",
 		Short:   "Show a backup or repository in detail",
 		GroupID: GroupInspect,
 		Long: `Show one resource in detail, with its recent runs.
 
 Runs are read from the Jobs still present in the cluster. Jobs are removed an
 hour after they finish and pruned by the CronJob history limits, so this shows
-recent history rather than a complete record.`,
-		Args: argCount(1, 1, "name"),
+recent history rather than a complete record.
+
+With no NAME, it shows the namespace's only ScheduledBackup, or its only
+Repository when it has no ScheduledBackup.`,
+		Args: argCount(0, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -39,7 +42,11 @@ recent history rather than a complete record.`,
 			if err != nil {
 				return err
 			}
-			return runStatus(cmd.Context(), c, f.Streams.Out, ns, args[0], limit)
+			arg, err := f.nameArg(cmd, args, anyKind)
+			if err != nil {
+				return err
+			}
+			return runStatus(cmd.Context(), c, f.Streams.Out, ns, arg, limit)
 		},
 	}
 

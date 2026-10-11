@@ -85,13 +85,15 @@ func newWaitCommand(f *Factory) *cobra.Command {
 	var timeout time.Duration
 
 	cmd := &cobra.Command{
-		Use:     "wait <name>",
+		Use:     "wait [NAME]",
 		Short:   "Block until the running backup finishes",
 		GroupID: GroupRun,
 		Long: `Wait for the backup currently in flight to finish.
 
-Exits non-zero if it fails, so it can gate a deploy or a migration.`,
-		Args: argCount(1, 1, "name"),
+Exits non-zero if it fails, so it can gate a deploy or a migration.
+
+With no NAME, it waits on the namespace's only ScheduledBackup.`,
+		Args: argCount(0, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -102,7 +104,11 @@ Exits non-zero if it fails, so it can gate a deploy or a migration.`,
 				return err
 			}
 
-			target, err := Resolve(cmd.Context(), c, ns, args[0])
+			arg, err := f.nameArg(cmd, args, backupsOnly)
+			if err != nil {
+				return err
+			}
+			target, err := Resolve(cmd.Context(), c, ns, arg)
 			if err != nil {
 				return err
 			}

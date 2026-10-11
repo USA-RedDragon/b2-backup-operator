@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -162,4 +163,111 @@ func wrapNotFound(err error, kind, namespace, name string) error {
 
 func knownPrefixes() []string {
 	return slices.Sorted(maps.Keys(kindAliases))
+}
+
+var (
+	// ErrNothingToName means a command given no name found nothing it could act on.
+	ErrNothingToName = errors.New("nothing to act on")
+	// ErrNameNeeded means a command given no name found several things it could act on.
+	ErrNameNeeded = errors.New("a name is needed")
+)
+
+const maxListed = 10
+
+// nameKinds says which kinds a command accepts as its name argument.
+type nameKinds struct {
+	backups      bool
+	repositories bool
+}
+
+var (
+	anyKind     = nameKinds{backups: true, repositories: true}
+	backupsOnly = nameKinds{backups: true}
+)
+
+func (k nameKinds) noun() string {
+	switch {
+	case k.backups && k.repositories:
+		return kindScheduledBackupDoc + " or " + kindRepositoryDoc
+	case k.repositories:
+		return kindRepositoryDoc
+	}
+	return kindScheduledBackupDoc
+}
+
+// namesIn returns the sorted names of the ScheduledBackups and Repositories
+// of kinds in namespace.
+func namesIn(ctx context.Context, c client.Client, namespace string, kinds nameKinds) ([]string, []string, error) {
+	var backups, repos []string
+	if kinds.backups {
+		var list b2backupv1.ScheduledBackupList
+		if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+			return nil, nil, err
+		}
+		for i := range list.Items {
+			backups = append(backups, list.Items[i].Name)
+		}
+		slices.Sort(backups)
+	}
+	if kinds.repositories {
+		var list b2backupv1.RepositoryList
+		if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+			return nil, nil, err
+		}
+		for i := range list.Items {
+			repos = append(repos, list.Items[i].Name)
+		}
+		slices.Sort(repos)
+	}
+	return backups, repos, nil
+}
+
+// onlyTarget returns, qualified, the one ScheduledBackup of kinds in namespace,
+// or, when there are none and kinds takes Repositories, the one Repository.
+// The example names how to run cmd with a name.
+func onlyTarget(
+	ctx context.Context, cmd *cobra.Command, c client.Client, namespace string, kinds nameKinds,
+) (string, error) {
+	backups, repos, err := namesIn(ctx, c, namespace, kinds)
+	if err != nil {
+		return "", fmt.Errorf("listing what to act on in namespace %q: %w", namespace, err)
+	}
+
+	names, prefix, plural := backups, string(TargetScheduledBackup)+"/", "ScheduledBackups"
+	if len(backups) == 0 && kinds.repositories {
+		names, prefix, plural = repos, string(TargetRepository)+"/", "Repositories"
+	}
+
+	switch len(names) {
+	case 0:
+		return "", &sentinelError{ErrNothingToName, fmt.Sprintf(
+			"no %s in namespace %q; pick the namespace with -n NAMESPACE, or find them with %s get -A",
+			kinds.noun(), namespace, cmd.Root().CommandPath())}
+	case 1:
+		return prefix + names[0], nil
+	}
+
+	qualified := make([]string, len(names))
+	for i, name := range names {
+		qualified[i] = prefix + name
+	}
+	return "", &sentinelError{ErrNameNeeded, fmt.Sprintf("namespace %q has %d %s; pick one, e.g. %s\n%s",
+		namespace, len(names), plural, example(cmd, qualified[0]), listNames(qualified))}
+}
+
+func example(cmd *cobra.Command, name string) string {
+	ex := cmd.CommandPath() + " " + name
+	if _, after, ok := strings.Cut(cmd.Use, " -- "); ok {
+		ex += " -- " + after
+	}
+	return ex
+}
+
+func listNames(names []string) string {
+	shown := names[:min(len(names), maxListed)]
+	out := "  " + strings.Join(shown, "\n  ")
+	if more := len(names) - len(shown); more > 0 {
+		out += fmt.Sprintf("\n  and %d more", more)
+	}
+	return out
 }

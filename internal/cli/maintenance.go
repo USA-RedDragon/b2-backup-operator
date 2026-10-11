@@ -81,17 +81,24 @@ func newCheckCommand(f *Factory) *cobra.Command {
 	var readData string
 
 	cmd := &cobra.Command{
-		Use:     "check <name>",
+		Use:     "check [NAME]",
 		Short:   "Verify repository integrity",
 		GroupID: GroupMaintenance,
 		Long: `Check the repository's structure.
 
 By default only metadata is verified, which is fast. --read-data-subset also
 re-reads a share of the actual data, which is the only way to detect bit rot
-but costs a full download of that share.`,
-		Args: argCount(1, 1, "name"),
+but costs a full download of that share.
+
+With no NAME, it checks the namespace's only ScheduledBackup's repository, or
+its only Repository when it has no ScheduledBackup.`,
+		Args: argCount(0, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRestic(cmd.Context(), f, args[0], "check",
+			arg, err := f.nameArg(cmd, args, anyKind)
+			if err != nil {
+				return err
+			}
+			return runRestic(cmd.Context(), f, arg, "check",
 				func(*b2backupv1.ScheduledBackup, *b2backupv1.Repository) ([]string, error) {
 					argv := []string{"check"}
 					if readData != "" {
@@ -209,21 +216,28 @@ func newStatsCommand(f *Factory) *cobra.Command {
 	var mode string
 
 	cmd := &cobra.Command{
-		Use:     "stats <name>",
+		Use:     "stats [NAME]",
 		Short:   "Show repository size",
 		GroupID: GroupMaintenance,
-		Args:    argCount(1, 1, "name"),
+		Args:    argCount(0, 1, "name"),
 		Long: `Show restic's own view of the repository size.
 
 The operator's measurement in ` + "`b2bk status`" + ` is the size of the files
 in B2; this is what restic thinks, which differs because of deduplication,
-compression, and files restic has deleted that B2 has only hidden so far.`,
+compression, and files restic has deleted that B2 has only hidden so far.
+
+With no NAME, it uses the namespace's only ScheduledBackup, or its only
+Repository when it has no ScheduledBackup.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !slices.Contains(statsModes, mode) {
 				return fmt.Errorf("%w %q, expected one of: %s",
 					errUnknownStatsMode, mode, strings.Join(statsModes, "|"))
 			}
-			return runRestic(cmd.Context(), f, args[0], "stats",
+			arg, err := f.nameArg(cmd, args, anyKind)
+			if err != nil {
+				return err
+			}
+			return runRestic(cmd.Context(), f, arg, "stats",
 				func(*b2backupv1.ScheduledBackup, *b2backupv1.Repository) ([]string, error) {
 					return resticCommand("stats", "--mode="+mode), nil
 				},

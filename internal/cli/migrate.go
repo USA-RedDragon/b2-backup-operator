@@ -299,7 +299,7 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]s
 		name = migratedName
 	}
 	sb := &b2backupv1.ScheduledBackup{
-		APIVersion: b2backupv1.SchemeGroupVersion.String(), Kind: "ScheduledBackup",
+		APIVersion: b2backupv1.SchemeGroupVersion.String(), Kind: kindScheduledBackupDoc,
 		Namespace: namespace, Name: name,
 		Spec: b2backupv1.ScheduledBackupSpec{
 			RepositoryRef:            corev1.LocalObjectReference{Name: migratedName},

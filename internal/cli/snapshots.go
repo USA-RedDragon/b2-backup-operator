@@ -24,7 +24,7 @@ func newSnapshotsCommand(f *Factory) *cobra.Command {
 	var o snapshotsOptions
 
 	cmd := &cobra.Command{
-		Use:     "snapshots <name>",
+		Use:     "snapshots [NAME]",
 		Aliases: []string{"snaps"},
 		Short:   "List a backup's snapshots",
 		GroupID: GroupSnapshots,
@@ -41,12 +41,19 @@ A Repository no ScheduledBackup uses lists every snapshot in it, filtered only
 by --host when given.
 
 --json prints restic's JSON and nothing else on stdout: a plain list of
-snapshots, since it passes --group-by= over the image's RESTIC_GROUP_BY.`,
-		Args: argCount(1, 1, "name"),
+snapshots, since it passes --group-by= over the image's RESTIC_GROUP_BY.
+
+With no NAME, it lists the namespace's only ScheduledBackup, or its only
+Repository when it has no ScheduledBackup.`,
+		Args: argCount(0, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.hostSet = cmd.Flags().Changed("host")
 
-			return runRestic(cmd.Context(), f, args[0], "snapshots",
+			arg, err := f.nameArg(cmd, args, anyKind)
+			if err != nil {
+				return err
+			}
+			return runRestic(cmd.Context(), f, arg, "snapshots",
 				func(sb *b2backupv1.ScheduledBackup, _ *b2backupv1.Repository) ([]string, error) {
 					return snapshotsCommand(sb, &o)
 				},

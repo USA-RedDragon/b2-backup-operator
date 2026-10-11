@@ -82,7 +82,7 @@ func (r *report) write(p *printer) {
 
 func newDoctorCommand(f *Factory) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "doctor [name]",
+		Use:     "doctor [NAME]",
 		Short:   "Explain why a backup is not running",
 		GroupID: GroupInspect,
 		Long: `Diagnose repositories and scheduled backups.

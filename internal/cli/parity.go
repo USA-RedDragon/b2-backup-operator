@@ -48,6 +48,7 @@ const (
 	podHostname            = "(the pod's hostname)"
 	unsetSetting           = "unset"
 	kindRepositoryDoc      = "Repository"
+	kindScheduledBackupDoc = "ScheduledBackup"
 	kindCronJob            = "CronJob"
 )
 

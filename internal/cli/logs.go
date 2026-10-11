@@ -33,13 +33,15 @@ func newLogsCommand(f *Factory) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:     "logs <name>",
+		Use:     "logs [NAME]",
 		Short:   "Show logs from the most recent backup run",
 		GroupID: GroupInspect,
 		Long: `Stream the logs of the most recent backup Job.
 
-Jobs are removed an hour after they finish, so this reaches only recent runs.`,
-		Args: argCount(1, 1, "name"),
+Jobs are removed an hour after they finish, so this reaches only recent runs.
+
+With no NAME, it shows the namespace's only ScheduledBackup.`,
+		Args: argCount(0, 1, "name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -54,7 +56,11 @@ Jobs are removed an hour after they finish, so this reaches only recent runs.`,
 				return err
 			}
 
-			target, err := Resolve(cmd.Context(), c, ns, args[0])
+			arg, err := f.nameArg(cmd, args, backupsOnly)
+			if err != nil {
+				return err
+			}
+			target, err := Resolve(cmd.Context(), c, ns, arg)
 			if err != nil {
 				return err
 			}
