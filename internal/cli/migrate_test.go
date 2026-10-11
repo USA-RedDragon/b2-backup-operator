@@ -862,3 +862,44 @@ func TestMigrateRefusesACommandItCannotRead(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrateRefusesWhatItWouldDrop(t *testing.T) {
+	t.Parallel()
+	const restic = "      restic:\n        type: cronjob\n"
+	tests := []struct{ name, old, new string }{
+		{"an init container", restic, restic + "        initContainers:\n          prepare:\n" +
+			"            image: {repository: busybox, tag: '1'}\n            command: [sh, -c, 'true']\n"},
+		{"a second container", "        containers:\n", "        containers:\n          sidecar:\n" +
+			"            image: {repository: busybox, tag: '1'}\n            args: [sleep, '60']\n"},
+		{"another controller", "      init:\n", "      notify:\n        type: job\n        containers:\n" +
+			"          notify:\n            command: [sh, -c, 'curl https://example.com']\n      init:\n"},
+		{"an init Job that does more than restic init", `command: [sh, -c, "restic init || true"]`,
+			`command: [sh, -c, "restic init || true; restic unlock"]`},
+		{"a disabled backup", restic, restic + "        enabled: false\n"},
+		{"a restic controller that is not a CronJob", restic, "      restic:\n        type: deployment\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if !strings.Contains(homeClusterRelease, tt.old) {
+				t.Fatalf("fixture has no %q", tt.old)
+			}
+			body := strings.Replace(homeClusterRelease, tt.old, tt.new, 1)
+			out, err := migrate(t, body)
+			if !errors.Is(err, ErrUnsupportedController) {
+				t.Errorf("err = %v, want ErrUnsupportedController\n%s", err, out)
+			}
+		})
+	}
+}
+
+func TestMigrateNotesTheResticInitJobItReplaces(t *testing.T) {
+	t.Parallel()
+	out, err := migrate(t, homeClusterRelease)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !strings.Contains(out, "# init: ") {
+		t.Errorf("the dropped restic init Job was not called out:\n%s", out)
+	}
+}
