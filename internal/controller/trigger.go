@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
@@ -74,6 +75,7 @@ func (r *ScheduledBackupReconciler) reconcileTrigger(
 
 	switch err := r.Create(ctx, job); {
 	case err == nil:
+		log.FromContext(ctx).Info("Started triggered backup Job", "job", job.Name)
 		r.Recorder.Eventf(sb, nil, corev1.EventTypeNormal, "BackupTriggered", "Trigger",
 			"Started backup Job %s", job.Name)
 	case apierrors.IsAlreadyExists(err):

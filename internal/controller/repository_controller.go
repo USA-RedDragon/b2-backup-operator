@@ -352,7 +352,7 @@ func (r *RepositoryReconciler) reconcile(
 			})
 			return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
 		}
-		r.noteAdoption(repo, bucket.BucketName, path, exists && !known)
+		r.noteAdoption(ctx, repo, bucket.BucketName, path, exists && !known)
 	}
 	repo.Status.AccountID = auth.AccountID
 	repo.Status.BucketName = bucket.BucketName
@@ -430,11 +430,14 @@ func (r *RepositoryReconciler) reconcile(
 // noteAdoption records that the path already held a restic repository. found
 // counts only before the Repository has provisioned anything: once it has, a
 // config at the path is the one its own init Job wrote.
-func (r *RepositoryReconciler) noteAdoption(repo *b2backupv1.Repository, bucket, path string, found bool) {
+func (r *RepositoryReconciler) noteAdoption(
+	ctx context.Context, repo *b2backupv1.Repository, bucket, path string, found bool,
+) {
 	if !found || repo.Status.Adopted {
 		return
 	}
 	repo.Status.Adopted = true
+	log.FromContext(ctx).Info("Adopted existing restic repository", "bucket", bucket, "path", displayPath(path))
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryAdopted", "Adopt",
 		"Found an existing restic repository at %s/%s; adopting it", bucket, displayPath(path))
 }
@@ -469,6 +472,7 @@ func (r *RepositoryReconciler) reconcileReinit(ctx context.Context, repo *b2back
 	repo.Status.Initialized = false
 	repo.Status.InitJobUID = ""
 	repo.Status.LastReinitTime = &metav1.Time{Time: at}
+	log.FromContext(ctx).Info("Cleared Repository initialization for reinit", "job", key.Name, "reinitAt", raw)
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Reinitializing", "Reinit",
 		"Deleted init Job %s and cleared status.initialized as %s asked", key.Name, b2backupv1.AnnotationReinitAt)
 	return nil
@@ -517,6 +521,11 @@ func (r *RepositoryReconciler) resolveBucket(
 	if err != nil {
 		return nil, fmt.Errorf("creating bucket %s: %w", name, err)
 	}
+	logger := log.FromContext(ctx).WithValues("bucket", name, "bucketID", bucket.BucketID)
+	if len(rules) > 0 {
+		logger = logger.WithValues("daysFromHidingToDeleting", *rules[0].DaysFromHidingToDeleting)
+	}
+	logger.Info("Created bucket")
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "BucketCreated", "Create",
 		"Created private bucket %s (%s)", name, bucket.BucketID)
 	return bucket, nil
@@ -590,10 +599,14 @@ func (r *RepositoryReconciler) reconcileLifecycle(
 		}
 		*bucket = *updated
 		if outcome == b2.RuleRemoved {
+			log.FromContext(ctx).Info("Removed lifecycle rule covered by another", "bucket", bucket.BucketName,
+				"prefix", prefix, "coveredBy", decider.FileNamePrefix)
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "LifecycleRuleRemoved", "Lifecycle",
 				"Removed bucket %s's rule for %q, which the rule for %q covers",
 				bucket.BucketName, prefix, decider.FileNamePrefix)
 		} else {
+			log.FromContext(ctx).Info("Updated lifecycle rule", "bucket", bucket.BucketName, "prefix", prefix,
+				"daysFromHidingToDeleting", days)
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "LifecycleRuleUpdated", "Lifecycle",
 				"Set bucket %s to delete hidden files under %q after %d day(s)", bucket.BucketName, prefix, days)
 		}
@@ -800,6 +813,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 		return 0, err
 	}
 	if generated {
+		log.FromContext(ctx).Info("Generated restic password", "secret", name)
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "PasswordGenerated", "Generate",
 			"Generated a new restic password in Secret %s; back it up, it cannot be recovered", name)
 	}
@@ -812,6 +826,8 @@ func (r *RepositoryReconciler) reconcileSecret(
 		if err := r.recordKey(ctx, repo, created.ApplicationKeyID); err != nil {
 			return 0, err
 		}
+		log.FromContext(ctx).Info("Created application key", "keyID", created.ApplicationKeyID,
+			"bucket", bucket.BucketName, "path", displayPath(repo.EffectivePath()))
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "KeyCreated", "Create",
 			"Created application key %s restricted to %s/%s", created.ApplicationKeyID,
 			bucket.BucketName, displayPath(repo.EffectivePath()))
@@ -982,6 +998,7 @@ func (r *RepositoryReconciler) deleteStaleKeys(
 		if err := api.DeleteKey(ctx, k.ApplicationKeyID); err != nil && !errors.Is(err, b2.ErrNotFound) {
 			return 0, fmt.Errorf("deleting superseded application key %s: %w", k.ApplicationKeyID, err)
 		}
+		log.FromContext(ctx).Info("Deleted superseded application key", "keyID", k.ApplicationKeyID)
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "KeyDeleted", "Delete",
 			"Deleted superseded application key %s", k.ApplicationKeyID)
 	}
@@ -1354,6 +1371,7 @@ func (r *RepositoryReconciler) reconcileInitJob(
 			return 0, err
 		}
 		if !created {
+			log.FromContext(ctx).Info("Deleted init Job the operator did not create", "job", name)
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "InitJobReplaced", "Initialize",
 				"Deleting Job %s: it names this Repository as its owner, but the operator did not create it", name)
 			if err := r.deleteJob(ctx, &job); err != nil {
@@ -1370,6 +1388,7 @@ func (r *RepositoryReconciler) reconcileInitJob(
 			}
 			repo.Status.Initialized = true
 			if !recorded {
+				log.FromContext(ctx).Info("Initialized restic repository", "job", name)
 				r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initialized", "Initialize",
 					"restic init completed successfully")
 			}
@@ -1382,6 +1401,7 @@ func (r *RepositoryReconciler) reconcileInitJob(
 			if wait := initRetryDelay - time.Since(*failedAt); wait > 0 {
 				return wait, nil
 			}
+			log.FromContext(ctx).Info("Deleted failed init Job to retry", "job", name)
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "InitFailed", "Initialize",
 				"restic init failed in Job %s; if this repository was adopted, check that "+
 					"passwordSecretRef holds its original password. Retrying", name)
@@ -1413,6 +1433,7 @@ func (r *RepositoryReconciler) reconcileInitJob(
 		}
 		return 0, err
 	}
+	log.FromContext(ctx).Info("Started init Job", "job", name)
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initializing", "Initialize", "Started init job %s", name)
 	r.setInitializing(repo, "Initializing", fmt.Sprintf("started init Job %s", name))
 	return 15 * time.Second, nil
@@ -1569,24 +1590,24 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 	switch {
 	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.BucketID != "":
 		if err := deletionProven(repo); err != nil {
-			if keyErr := r.deleteKeysOnly(ctx, repo); keyErr != nil && !r.forceFinalize(repo, keyErr) {
+			if keyErr := r.deleteKeysOnly(ctx, repo); keyErr != nil && !r.forceFinalize(ctx, repo, keyErr) {
 				r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", keyErr.Error())
 				return ctrl.Result{}, keyErr
 			}
-			if !r.forceFinalize(repo, err) {
+			if !r.forceFinalize(ctx, repo, err) {
 				return r.refuseDeletion(ctx, repo, err)
 			}
 			break
 		}
 		if err := deletionScope(repo); err != nil {
-			if !r.forceFinalize(repo, err) {
+			if !r.forceFinalize(ctx, repo, err) {
 				return r.refuseDeletion(ctx, repo, err)
 			}
 			break
 		}
 		api, err := r.apiFor(ctx, repo)
 		if err != nil {
-			if r.forceFinalize(repo, err) {
+			if r.forceFinalize(ctx, repo, err) {
 				break
 			}
 			r.setCondition(repo, metav1.Condition{
@@ -1602,11 +1623,11 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 		var scope *scopeError
 		switch {
 		case errors.As(err, &scope):
-			if !r.forceFinalize(repo, err) {
+			if !r.forceFinalize(ctx, repo, err) {
 				return r.refuseDeletion(ctx, repo, err)
 			}
 		case err != nil:
-			if !r.forceFinalize(repo, err) {
+			if !r.forceFinalize(ctx, repo, err) {
 				r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
 				return ctrl.Result{}, err
 			}
@@ -1617,12 +1638,14 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 		}
 
 	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.ApplicationKeyID != "":
-		if err := r.deleteKeysOnly(ctx, repo); err != nil && !r.forceFinalize(repo, err) {
+		if err := r.deleteKeysOnly(ctx, repo); err != nil && !r.forceFinalize(ctx, repo, err) {
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
 			return ctrl.Result{}, err
 		}
 
 	case repo.Status.BucketID != "":
+		log.FromContext(ctx).Info("Retained repository data and application key", "bucket", repo.Status.BucketName,
+			"path", displayPath(repo.Status.Path), "keyID", repo.Status.ApplicationKeyID)
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryRetained", "Retain",
 			"Retained %s/%s and application key %s; delete them manually if they are no longer needed",
 			repo.Status.BucketName, displayPath(repo.Status.Path), repo.Status.ApplicationKeyID)
@@ -1711,10 +1734,12 @@ func (r *RepositoryReconciler) refuseDeletion(
 	return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
 }
 
-func (r *RepositoryReconciler) forceFinalize(repo *b2backupv1.Repository, err error) bool {
+func (r *RepositoryReconciler) forceFinalize(ctx context.Context, repo *b2backupv1.Repository, err error) bool {
 	if repo.Annotations[b2backupv1.AnnotationForceFinalize] != "true" {
 		return false
 	}
+	log.FromContext(ctx).Info("Left repository data behind under force-finalize", "bucket", repo.Status.BucketName,
+		"path", displayPath(repo.Status.Path), "keyID", repo.Status.ApplicationKeyID, "reason", err.Error())
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "RepositoryOrphaned", "Delete",
 		"Could not delete %s/%s or application key %s, and %s is set, so they are being left "+
 			"behind; delete them manually, they are still billed. Credentials Secret %s, if it still "+
@@ -1821,6 +1846,8 @@ func (r *RepositoryReconciler) deleteRemote(
 	if other, err := r.sharedWith(ctx, repo); err != nil {
 		return false, false, err
 	} else if other != "" {
+		log.FromContext(ctx).Info("Retained repository data another Repository uses", "bucket", repo.Status.BucketName,
+			"path", displayPath(repo.Status.Path), "repository", other)
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DataRetained", "Delete",
 			"Deleted application key %s but left %s/%s in place, because Repository %s still uses it",
 			repo.Status.ApplicationKeyID, repo.Status.BucketName, displayPath(repo.Status.Path), other)
@@ -1834,6 +1861,7 @@ func (r *RepositoryReconciler) deleteRemote(
 				"bucket %s is not in account %s, and no status.accountID records which account holds it, "+
 					"so it cannot be confirmed gone", repo.Spec.Bucket, auth.AccountID)}
 		}
+		log.FromContext(ctx).Info("Found bucket already deleted", "bucket", repo.Spec.Bucket)
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 			"Bucket %s is already gone", repo.Spec.Bucket)
 		return true, false, nil
@@ -1861,6 +1889,8 @@ func (r *RepositoryReconciler) deleteRemote(
 		return false, false, err
 	}
 	if others {
+		log.FromContext(ctx).Info("Retained files outside the restic layout", "bucket", bucket.BucketName,
+			"path", displayPath(path))
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "OtherFilesRetained", "Delete",
 			"Left files under %s/%s that are not part of restic's repository layout", bucket.BucketName, displayPath(path))
 	}
@@ -1869,12 +1899,15 @@ func (r *RepositoryReconciler) deleteRemote(
 		if !others && path == "" {
 			if err := api.DeleteBucket(ctx, bucket.BucketID); err != nil && !errors.Is(err, b2.ErrNotFound) {
 				if errors.Is(err, b2.ErrBucketNotEmpty) {
+					log.FromContext(ctx).Info("Retained non-empty bucket", "bucket", bucket.BucketName)
 					r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "BucketRetained", "Delete",
 						"Bucket %s is not empty, so it was left in place", bucket.BucketName)
 					return true, false, nil
 				}
 				return false, false, fmt.Errorf("deleting bucket %s: %w", bucket.BucketName, err)
 			}
+			log.FromContext(ctx).Info("Deleted restic repository and bucket", "bucket", bucket.BucketName,
+				"keyID", repo.Status.ApplicationKeyID)
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 				"Deleted application key %s, the restic repository and bucket %s",
 				repo.Status.ApplicationKeyID, bucket.BucketName)
@@ -1886,11 +1919,14 @@ func (r *RepositoryReconciler) deleteRemote(
 			if err := api.DeleteBucket(ctx, bucket.BucketID); err != nil && !errors.Is(err, b2.ErrNotFound) {
 				return false, false, fmt.Errorf("deleting bucket %s: %w", bucket.BucketName, err)
 			}
+			log.FromContext(ctx).Info("Deleted restic repository and bucket", "bucket", bucket.BucketName,
+				"path", displayPath(path), "keyID", repo.Status.ApplicationKeyID)
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 				"Deleted application key %s, the restic repository under %s and bucket %s",
 				repo.Status.ApplicationKeyID, displayPath(path), bucket.BucketName)
 			return true, false, nil
 		}
+		log.FromContext(ctx).Info("Retained bucket holding other files", "bucket", bucket.BucketName)
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "BucketRetained", "Delete",
 			"Bucket %s holds files outside restic's repository layout, so it was left in place", bucket.BucketName)
 	}
@@ -1901,6 +1937,8 @@ func (r *RepositoryReconciler) deleteRemote(
 			return false, false, fmt.Errorf("removing the lifecycle rule for %q: %w", prefix, err)
 		}
 	}
+	log.FromContext(ctx).Info("Deleted restic repository", "bucket", bucket.BucketName, "path", displayPath(path),
+		"keyID", repo.Status.ApplicationKeyID)
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 		"Deleted application key %s and the restic repository at %s/%s",
 		repo.Status.ApplicationKeyID, bucket.BucketName, displayPath(path))

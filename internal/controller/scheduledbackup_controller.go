@@ -194,6 +194,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 			}
 			return ctrl.Result{}, fmt.Errorf("creating cronjob: %w", err)
 		}
+		log.FromContext(ctx).Info("Created CronJob", "cronJob", desired.Name, "schedule", desired.Spec.Schedule)
 		r.Recorder.Eventf(sb, nil, corev1.EventTypeNormal, "CronJobCreated", "Create",
 			"Created CronJob %s on schedule %s", desired.Name, desired.Spec.Schedule)
 		cronJobUID = desired.UID
@@ -361,6 +362,7 @@ func (r *ScheduledBackupReconciler) suspendStrays(ctx context.Context, namespace
 			}
 			continue
 		}
+		log.FromContext(ctx).Info("Suspended CronJob no ScheduledBackup owns", "cronJob", cj.Name)
 		r.Recorder.Eventf(cj, nil, corev1.EventTypeWarning, "StrayCronJobSuspended", "Suspend",
 			"Suspended CronJob %s: no ScheduledBackup owns it", cj.Name)
 	}
