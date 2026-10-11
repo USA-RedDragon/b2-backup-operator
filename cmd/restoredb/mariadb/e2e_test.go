@@ -644,3 +644,28 @@ INSERT INTO app.d (pid) VALUES (5);`)
 		t.Error("app does not match the backup")
 	}
 }
+
+// More ways a crafted dump could reach past the staging database: a database
+// name led by a digit, a MERGE table over another database's table, and an
+// sql_mode that makes double quotes name things, set where the filter cannot
+// read it.
+func TestMariaDBKeepsCraftedDumpsInsideStaging(t *testing.T) {
+	const setup = "DROP DATABASE IF EXISTS `1db`; CREATE DATABASE `1db`; CREATE TABLE `1db`.t (i INT);\n" +
+		"CREATE TABLE other.mt (id INT) ENGINE=MyISAM;"
+	for name, inject := range map[string]string{
+		"a database name led by a digit": "INSERT INTO 1db.t VALUES (1);\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			backup, _ := seed(t)
+			sql(t, setup)
+			defer sql(t, "DROP DATABASE IF EXISTS `1db`")
+			at := strings.Index(backup, "UNLOCK TABLES;\n") + len("UNLOCK TABLES;\n")
+			otherBefore, digitBefore := fingerprint(t, "other"), fingerprint(t, "1db")
+			refused(t, backup[:at]+inject+backup[at:], nil)
+			if fingerprint(t, "other") != otherBefore || fingerprint(t, "1db") != digitBefore {
+				t.Error("a database outside staging was changed")
+			}
+			assertNoStaging(t)
+		})
+	}
+}
