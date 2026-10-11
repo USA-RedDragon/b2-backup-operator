@@ -393,7 +393,14 @@ options reach other tables: `MERGE` (`MRG_MyISAM`) and its `UNION`,
 `FEDERATED`, `CONNECT`, `SPIDER`, `OQGRAPH` and `CONNECTION`. A `SET` of the
 default engine (`default_storage_engine` and the like) is allowed only to the
 engines a dump of tables needs, since a `CREATE TABLE` without an `ENGINE` of
-its own would take it. Also refused: one that changes the server, replication or accounts, such as
+its own would take it. The charset decides how the server reads the bytes of
+the dump: in one where a character can end in a backslash, such as `gbk`,
+`big5`, `sjis`, `cp932`, `gb18030` or `euckr`, the server would end a quoted
+string where `restoredb` does not. So `SET NAMES`, `SET CHARACTER SET` and
+`character_set_client` are allowed only to `utf8mb4`, `utf8mb3`, `utf8`,
+`latin1`, `ascii`, `binary` or the value the dump saved at its start, and
+`restoredb` connects with `--default-character-set=utf8mb4`, so the server's
+own default cannot be a multibyte one before the dump's own `SET NAMES`. Also refused: one that changes the server, replication or accounts, such as
 `SET GLOBAL`, `CHANGE MASTER TO` (from `--master-data` or `--dump-slave`) or
 `GRANT`; one that builds SQL at run time, such as `PREPARE` or `EXECUTE`; one
 that writes a file on the server, such as `SELECT ... INTO OUTFILE`; one too long

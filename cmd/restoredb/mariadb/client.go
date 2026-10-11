@@ -45,6 +45,10 @@ func (c *client) args(more ...string) []string {
 		"--host=" + c.host,
 		"--port=" + c.port,
 		"--user=" + c.user,
+		// The charset decides how the server reads the bytes of the dump, and
+		// the restore's lexer follows only charsets in which no character ends
+		// in a backslash. utf8mb4 is one, whatever the server's own default is.
+		"--default-character-set=utf8mb4",
 	}, more, c.extra)
 }
 

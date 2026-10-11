@@ -423,7 +423,8 @@ func TestClientArgs(t *testing.T) {
 	t.Parallel()
 	c := &client{host: "db", port: "3306", user: testUser, extra: []string{"--skip-ssl"}}
 	got := strings.Join(c.args("--batch"), " ")
-	if want := "--host=db --port=3306 --user=root --batch --skip-ssl"; got != want {
+	want := "--host=db --port=3306 --user=root --default-character-set=utf8mb4 --batch --skip-ssl"
+	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
@@ -695,5 +696,54 @@ func TestFilterRefusesADefaultEngineItCannotCheck(t *testing.T) {
 		if _, _, err := filterString(t, stmt+";\n"); err != nil {
 			t.Errorf("%q: err = %v", stmt, err)
 		}
+	}
+}
+
+// The client charset decides how the server reads the bytes of the dump: in a
+// charset where 0x5c can end a character, such as gbk, the server ends a
+// string where the filter does not. Only charsets that cannot do that are
+// allowed.
+func TestFilterFollowsTheClientCharset(t *testing.T) {
+	t.Parallel()
+	const saveCS = "/*!40101 SET @saved_cs_client = @@character_set_client */;\n"
+	for _, stmt := range []string{
+		"SET NAMES gbk",
+		"SET names big5",
+		"SET NAMES sjis COLLATE sjis_bin",
+		"SET NAMES cp932",
+		"SET NAMES gb18030",
+		"SET NAMES euckr",
+		"SET CHARACTER SET gbk",
+		"SET CHARSET gbk",
+		"SET character_set_client = gbk",
+		"SET @@session.character_set_client = 'gbk'",
+		"SET NAMES @c",
+		"SET character_set_client = @never_saved",
+		"SET NAMES CONCAT('g', 'bk')",
+	} {
+		got, _, err := filterString(t, createTable+stmt+";\n")
+		if !errors.Is(err, ErrUnsupportedStatement) || got != createTable {
+			t.Errorf("%q: err = %v, passed on %q", stmt, err, got)
+		}
+	}
+	for _, dump := range []string{
+		"SET NAMES utf8mb4;\n",
+		"/*!40101 SET NAMES utf8mb4 */;\n",
+		"SET NAMES utf8mb3;\nSET NAMES utf8;\nSET NAMES latin1;\nSET NAMES ascii;\nSET NAMES binary;\n",
+		"SET NAMES 'utf8mb4' COLLATE 'utf8mb4_uca1400_ai_ci';\n",
+		"SET CHARACTER SET utf8mb4;\n",
+		"SET character_set_client = utf8mb4;\nSET character_set_results = gbk;\n",
+		saveCS + "/*!40101 SET character_set_client = utf8mb4 */;\n" +
+			"/*!40101 SET character_set_client = @saved_cs_client */;\n",
+		saveCS + "/*!40101 SET CHARACTER_SET_CLIENT=@saved_cs_client */;\n",
+	} {
+		if _, _, err := filterString(t, dump); err != nil {
+			t.Errorf("%q: err = %v", dump, err)
+		}
+	}
+	// A variable that held the saved charset but was then changed is refused.
+	dump := saveCS + "SET @saved_cs_client='gbk';\n" + "SET character_set_client = @saved_cs_client;\n"
+	if _, _, err := filterString(t, dump); !errors.Is(err, ErrUnsupportedStatement) {
+		t.Errorf("a re-assigned variable: err = %v", err)
 	}
 }

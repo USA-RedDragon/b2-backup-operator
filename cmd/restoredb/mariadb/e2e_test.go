@@ -668,6 +668,9 @@ func TestMariaDBKeepsCraftedDumpsInsideStaging(t *testing.T) {
 		"a default engine": {"SET default_storage_engine=MRG_MyISAM;\n" +
 			"CREATE TABLE `m2` (`id` INT) COMMENT='wrapper \"mysql\", database \"other\"';\n",
 			mariadb.ErrUnsupportedStatement},
+		"a multibyte client charset": {"SET NAMES gbk;\n" +
+			"INSERT INTO `keep` VALUES (47, '\xbf\\' ; INSERT INTO `other`.`mt` VALUES (48); -- ');\n",
+			mariadb.ErrUnsupportedStatement},
 	} {
 		t.Run(name, func(t *testing.T) {
 			backup, _ := seed(t)
