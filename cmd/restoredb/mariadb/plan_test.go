@@ -776,3 +776,20 @@ func TestFilterChecksEveryItemOfASet(t *testing.T) {
 		}
 	}
 }
+
+// DEFAULT is the server's configured client charset, which the filter cannot
+// see, so it is refused for the charset; mariadb-dump never writes it.
+func TestFilterRefusesTheDefaultCharset(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		"SET NAMES DEFAULT",
+		"SET CHARACTER SET DEFAULT",
+		"SET character_set_client = DEFAULT",
+		"SET @@SESSION.character_set_client = 'default'",
+	} {
+		got, _, err := filterString(t, createTable+stmt+";\n")
+		if !errors.Is(err, ErrUnsupportedStatement) || got != createTable {
+			t.Errorf("%q: err = %v, passed on %q", stmt, err, got)
+		}
+	}
+}
