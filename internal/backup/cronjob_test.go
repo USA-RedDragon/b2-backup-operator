@@ -746,3 +746,9 @@ func TestTheCronJobReadsTheSecretTheRepositoryRecorded(t *testing.T) {
 		t.Errorf("envFrom secret = %q, want the one status records", got)
 	}
 }
+
+func TestDefaultImageIsInDefaultImageRepository(t *testing.T) {
+	if !strings.HasPrefix(DefaultImage, DefaultImageRepository+":") && !strings.HasPrefix(DefaultImage, DefaultImageRepository+"@") {
+		t.Errorf("DefaultImage %q is not in DefaultImageRepository %q", DefaultImage, DefaultImageRepository)
+	}
+}

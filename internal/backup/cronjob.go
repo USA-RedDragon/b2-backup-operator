@@ -71,29 +71,16 @@ type Config struct {
 	CacheStorageClass string
 }
 
-const (
-	// DefaultImageRepository is the backup image the operator runs by default.
-	DefaultImageRepository = "ghcr.io/usa-reddragon/b2-backup-operator-restic"
+// DefaultImageRepository is the repository of the backup image the operator runs by default.
+const DefaultImageRepository = "ghcr.io/usa-reddragon/restic"
 
-	fallbackImageTag = "v0.1.0"
-)
-
-var imageTag string
-
-// DefaultImage returns the backup image matching this operator build. The tag is
-// set at build time with -ldflags -X and falls back to a pinned release.
-func DefaultImage() string {
-	tag := imageTag
-	if tag == "" {
-		tag = fallbackImageTag
-	}
-	return DefaultImageRepository + ":" + tag
-}
+// DefaultImage is the backup image the operator runs by default.
+const DefaultImage = "ghcr.io/usa-reddragon/restic:0.19.1"
 
 // DefaultConfig returns the configuration the operator runs with when no flags are set.
 func DefaultConfig() Config {
 	return Config{
-		Image: DefaultImage(),
+		Image: DefaultImage,
 	}
 }
 

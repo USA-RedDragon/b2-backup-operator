@@ -27,7 +27,6 @@ jobs:
       image-name: usa-reddragon/b2-backup-operator
       dockerfile: Dockerfile
       version: ${{ github.ref_name == 'main' && 'beta' || '' }}
-      build-args: VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'beta' }}
 
   release:
     name: Release
