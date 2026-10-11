@@ -33,6 +33,9 @@ const (
 	// ManagedByValue marks the Jobs this package creates.
 	ManagedByValue = "b2bk"
 
+	// LabelPurpose records on a Job what it was started for, such as restore.
+	LabelPurpose = "b2backup.mcswain.dev/b2bk-purpose"
+
 	labelManagedBy = "app.kubernetes.io/managed-by"
 	containerName  = "restic"
 	cacheVolume    = "cache"
@@ -170,6 +173,9 @@ func (r *Runner) Build(
 	container.VolumeMounts = append(container.VolumeMounts, opts.ExtraMounts...)
 
 	labels := map[string]string{labelManagedBy: ManagedByValue}
+	if opts.Purpose != "" {
+		labels[LabelPurpose] = opts.Purpose
+	}
 
 	if v, ok := spec.Template.Labels["mariadb-client"]; ok {
 		labels["mariadb-client"] = v

@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,9 +14,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -28,8 +25,9 @@ import (
 )
 
 const (
-	purposeRestore  = "restore"
-	purposeDownload = "download"
+	purposeRestore   = "restore"
+	purposeRestoreDB = "restoredb"
+	purposeDownload  = "download"
 )
 
 type runnerPod struct {
@@ -405,107 +403,59 @@ func restoreInPlace(
 	if err := confirm(f, o.yes || o.dryRun, what, sb.Name); err != nil {
 		return err
 	}
-	if job, err := activeBackup(ctx, c, sb); err != nil {
+	lock, err := lockForRestore(ctx, c, sb, o.dryRun)
+	if err != nil {
 		return err
-	} else if job != "" && !o.dryRun {
-		return fmt.Errorf("%w: job/%s is backing up scheduledbackup/%s; wait for it with b2bk wait %s, "+
-			"or stop it with b2bk cancel %s", ErrBackupRunning, job, sb.Name, sb.Name, sb.Name)
 	}
 
+	wrote := false
+	opts := runner.Options{Purpose: purposeRestore, MountData: true, Restore: true}
+	err = f.attachRestorePod(ctx, sb, opts, func(pod restorePod, job string) error {
+		plan, err := o.planVolumes(ctx, pod, src, inPlaceTarget(sb))
+		if err != nil {
+			return err
+		}
+		if lock != nil {
+			if err := readyToWrite(ctx, c, sb, job); err != nil {
+				return err
+			}
+		}
+		wrote = true
+		return o.runVolumes(ctx, pod, src, plan, f.Streams.Out)
+	})
+	return lock.finish(f, sb, err, wrote, "the claims")
+}
+
+// lockForRestore refuses an overwriting restore while a backup or another
+// restore runs, then takes the ScheduledBackup for this one. A dry run takes
+// nothing.
+func lockForRestore(
+	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, dryRun bool,
+) (*restoreLock, error) {
+	if dryRun {
+		return nil, nil
+	}
+	if err := refuseActive(ctx, c, sb, ""); err != nil {
+		return nil, err
+	}
+	return acquireRestoreLock(ctx, c, sb)
+}
+
+// attachRestorePod runs fn against a pod started for sb, with the name of its Job.
+func (f *Factory) attachRestorePod(
+	ctx context.Context, sb *b2backupv1.ScheduledBackup, opts runner.Options,
+	fn func(pod restorePod, job string) error,
+) error {
+	if f.attachHook != nil {
+		return f.attachHook(ctx, sb, opts, fn)
+	}
 	run, err := f.Runner()
 	if err != nil {
 		return err
 	}
-	wasSuspended := sb.Spec.Suspend
-	resume, err := suspendForRestore(ctx, c, sb, o.dryRun)
-	if err != nil {
-		return err
-	}
-	err = run.Attach(ctx, sb, runner.Options{Purpose: purposeRestore, MountData: true, Restore: true},
-		defaultResticTimeout, func(pod *corev1.Pod) error {
-			return o.restoreVolumes(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, src,
-				inPlaceTarget(sb), f.Streams.Out)
-		})
-	p := newPrinter(f.Streams.ErrOut)
-	if err != nil {
-		if !o.dryRun && !wasSuspended {
-			p.printf("! scheduledbackup/%s stays suspended: the claims may hold a partial restore, which the\n", sb.Name)
-			p.printf("! next backup would save and retention could then keep over good snapshots.\n")
-			p.printf("! Check them, then: b2bk resume %s\n", sb.Name)
-		}
-		return errors.Join(err, p.Err())
-	}
-	if err := resume(); err != nil {
-		p.printf("! could not restore spec.suspend on scheduledbackup/%s: %v\n", sb.Name, err)
-		p.printf("! check it with: b2bk status %s\n", sb.Name)
-	}
-	return p.Err()
-}
-
-// activeBackup returns a backup Job of this ScheduledBackup that has not finished:
-// one the CronJob started, or a triggered one.
-func activeBackup(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup) (string, error) {
-	owners := []types.UID{sb.UID}
-	var cj batchv1.CronJob
-	switch err := c.Get(ctx, types.NamespacedName{Namespace: sb.Namespace, Name: backup.CronJobName(sb)}, &cj); {
-	case err == nil:
-		owners = append(owners, cj.UID)
-	case !apierrors.IsNotFound(err):
-		return "", err
-	}
-	var jobs batchv1.JobList
-	if err := c.List(ctx, &jobs, client.InNamespace(sb.Namespace)); err != nil {
-		return "", err
-	}
-	for i := range jobs.Items {
-		job := &jobs.Items[i]
-		owner := metav1.GetControllerOf(job)
-		if owner == nil || !slices.Contains(owners, owner.UID) || jobDone(job) {
-			continue
-		}
-		return job.Name, nil
-	}
-	return "", nil
-}
-
-func jobDone(job *batchv1.Job) bool {
-	if job.Status.CompletionTime != nil {
-		return true
-	}
-	for _, cond := range job.Status.Conditions {
-		if (cond.Type == batchv1.JobComplete || cond.Type == batchv1.JobFailed) && cond.Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
-}
-
-func suspendForRestore(
-	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, dryRun bool,
-) (func() error, error) {
-	if dryRun || sb.Spec.Suspend {
-		return func() error { return nil }, nil
-	}
-
-	patch := client.MergeFrom(sb.DeepCopy())
-	sb.Spec.Suspend = true
-	if err := c.Patch(ctx, sb, patch); err != nil {
-		return nil, fmt.Errorf("suspending scheduledbackup/%s: %w", sb.Name, err)
-	}
-
-	return func() error {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), cleanupTimeout)
-		defer cancel()
-
-		var latest b2backupv1.ScheduledBackup
-		key := types.NamespacedName{Namespace: sb.Namespace, Name: sb.Name}
-		if err := c.Get(ctx, key, &latest); err != nil {
-			return err
-		}
-		patch := client.MergeFrom(latest.DeepCopy())
-		latest.Spec.Suspend = false
-		return c.Patch(ctx, &latest, patch)
-	}, nil
+	return run.Attach(ctx, sb, opts, defaultResticTimeout, func(pod *corev1.Pod) error {
+		return fn(runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, pod.Labels[batchv1.JobNameLabel])
+	})
 }
 
 func restoreToDatabase(
@@ -522,20 +472,30 @@ func restoreToDatabase(
 	if err := requireCurrentBackup(ctx, c, sb); err != nil {
 		return err
 	}
-
 	target := databaseTarget(db, src.database)
-
-	run, err := f.Runner()
+	lock, err := lockForRestore(ctx, c, sb, o.dryRun)
 	if err != nil {
 		return err
 	}
-	return run.Attach(ctx, sb, runner.Options{Purpose: "restoredb", MountDatabase: true}, defaultResticTimeout,
-		func(pod *corev1.Pod) error {
-			return o.restoreDatabase(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, sb, src, target,
-				f.Streams.Out, f.Streams.ErrOut, func(snap resticSnapshot) error {
-					return confirm(f, o.yes || o.dryRun, dumpConfirmation(target, src, snap), sb.Name)
-				})
-		})
+
+	wrote := false
+	opts := runner.Options{Purpose: purposeRestoreDB, MountDatabase: true}
+	err = f.attachRestorePod(ctx, sb, opts, func(pod restorePod, job string) error {
+		return o.restoreDatabase(ctx, pod, sb, src, target, f.Streams.Out, f.Streams.ErrOut,
+			func(snap resticSnapshot) error {
+				if err := confirm(f, o.yes || o.dryRun, dumpConfirmation(target, src, snap), sb.Name); err != nil {
+					return err
+				}
+				if lock != nil {
+					if err := readyToWrite(ctx, c, sb, job); err != nil {
+						return err
+					}
+				}
+				wrote = true
+				return nil
+			})
+	})
+	return lock.finish(f, sb, err, wrote, target)
 }
 
 // dumpConfirmation names what a database restore overwrites and with which dump.

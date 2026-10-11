@@ -15,9 +15,6 @@ import (
 	"testing"
 	"time"
 
-	batchv1 "k8s.io/api/batch/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -26,7 +23,6 @@ import (
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/runner"
@@ -334,70 +330,6 @@ func TestRestoreClaimCopiesTheSourceClaim(t *testing.T) {
 	if len(pvc.OwnerReferences) != 0 {
 		t.Errorf("the claim outlives the restore and should own nothing: %v", pvc.OwnerReferences)
 	}
-}
-
-func TestSuspendForRestore(t *testing.T) {
-	ctx := context.Background()
-	suspended := func(t *testing.T, c client.Client, name string) bool {
-		t.Helper()
-		var got b2backupv1.ScheduledBackup
-		if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: name}, &got); err != nil {
-			t.Fatal(err)
-		}
-		return got.Spec.Suspend
-	}
-
-	t.Run("suspends and restores", func(t *testing.T) {
-		sb := newBackup(testBackupName, testRepoName)
-		c := newClient(t, sb)
-
-		restore, err := suspendForRestore(ctx, c, sb, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !suspended(t, c, sb.Name) {
-			t.Fatal("the schedule was not suspended for the restore")
-		}
-		if err := restore(); err != nil {
-			t.Fatal(err)
-		}
-		if suspended(t, c, sb.Name) {
-			t.Error("the schedule was left suspended")
-		}
-	})
-
-	t.Run("dry run touches nothing", func(t *testing.T) {
-		sb := newBackup(testBackupName, testRepoName)
-		c := newClient(t, sb)
-
-		restore, err := suspendForRestore(ctx, c, sb, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if suspended(t, c, sb.Name) {
-			t.Error("--dry-run suspended the schedule")
-		}
-		if err := restore(); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	t.Run("an already suspended backup stays suspended", func(t *testing.T) {
-		sb := newBackup(testBackupName, testRepoName)
-		sb.Spec.Suspend = true
-		c := newClient(t, sb)
-
-		restore, err := suspendForRestore(ctx, c, sb, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := restore(); err != nil {
-			t.Fatal(err)
-		}
-		if !suspended(t, c, sb.Name) {
-			t.Error("a backup suspended before the restore was un-suspended by it")
-		}
-	})
 }
 
 func TestUntar(t *testing.T) {
@@ -725,51 +657,4 @@ func TestChooseTargetMapsTheMenuToTheRightTarget(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestInPlaceRestoreWaitsForARunningBackupAndStaysSuspendedOnFailure(t *testing.T) {
-	ctx := context.Background()
-	suspended := func(t *testing.T, c client.Client) bool {
-		t.Helper()
-		var got b2backupv1.ScheduledBackup
-		if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: testBackupName}, &got); err != nil {
-			t.Fatal(err)
-		}
-		return got.Spec.Suspend
-	}
-	running := func(cj *batchv1.CronJob) client.Object {
-		return &batchv1.Job{Namespace: testNS, Name: testBackupName + "-backup-123", OwnerReferences: []metav1.OwnerReference{{
-			APIVersion: "batch/v1", Kind: "CronJob", Name: cj.Name, UID: cj.UID, Controller: ptr.To(true),
-		}}}
-	}
-
-	t.Run("a backup in flight", func(t *testing.T) {
-		fx := currentBackup(t, withVolume)
-		c := newClient(t, fx.objects(running(fx.cj))...)
-		err := restoreInPlace(ctx, offlineFactory(t, testStreams()), c, fx.sb, &restoreOptions{snapshot: latest, yes: true})
-		if !errors.Is(err, ErrBackupRunning) {
-			t.Fatalf("err = %v, want ErrBackupRunning", err)
-		}
-		if suspended(t, c) {
-			t.Error("a refused restore suspended the schedule")
-		}
-	})
-
-	t.Run("a restore that fails", func(t *testing.T) {
-		fx := currentBackup(t, withVolume)
-		c := newClient(t, fx.objects()...)
-		var errOut bytes.Buffer
-		streams := testStreams()
-		streams.ErrOut = &errOut
-		err := restoreInPlace(ctx, offlineFactory(t, streams), c, fx.sb, &restoreOptions{snapshot: latest, yes: true})
-		if err == nil {
-			t.Fatal("expected the offline factory to fail")
-		}
-		if !suspended(t, c) {
-			t.Error("the schedule was resumed over a claim that may hold a partial restore")
-		}
-		if !strings.Contains(errOut.String(), "b2bk resume") {
-			t.Errorf("no hint to resume: %s", errOut.String())
-		}
-	})
 }

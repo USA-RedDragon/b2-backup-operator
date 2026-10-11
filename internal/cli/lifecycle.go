@@ -8,6 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 )
 
 func newSuspendCommand(f *Factory) *cobra.Command {
@@ -75,13 +77,17 @@ func runSetSuspend(
 
 	p := newPrinter(out)
 	label := fmt.Sprintf("%s/%s", target.Kind, target.Name())
-	if *current == suspend {
+	_, resumeAfterRestore := obj.GetAnnotations()[b2backupv1.AnnotationRestoreResume]
+	if *current == suspend && !resumeAfterRestore {
 		p.printf("%s is already %s\n", label, past)
 		return p.Err()
 	}
 
 	patch := client.MergeFrom(obj.DeepCopyObject().(client.Object))
 	*current = suspend
+	if target.Kind == TargetScheduledBackup {
+		delete(target.ScheduledBackup.Annotations, b2backupv1.AnnotationRestoreResume)
+	}
 	if err := c.Patch(ctx, obj, patch); err != nil {
 		return err
 	}
