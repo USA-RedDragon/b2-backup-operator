@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/runner"
@@ -206,14 +207,8 @@ func runRotatePassword(
 		return fmt.Errorf("adding the new key: %w", err)
 	}
 
-	patch := client.MergeFrom(current.DeepCopy())
-	if current.Data == nil {
-		current.Data = make(map[string][]byte, 1)
-	}
-	current.Data[controller.KeyResticPassword] = []byte(password)
-	if err := c.Patch(ctx, current, patch); err != nil {
-		return fmt.Errorf("updating %s in secret/%s: %w",
-			controller.KeyResticPassword, current.Name, err)
+	if err := pointSecretAtPassword(ctx, c, repo, current, password); err != nil {
+		return err
 	}
 
 	done := newPrinter(f.Streams.Out)
@@ -225,6 +220,29 @@ func runRotatePassword(
 	done.printf("  the old key still works; remove it with:\n")
 	done.printf("    b2bk exec %s -- restic key list\n", sb.Name)
 	return done.Err()
+}
+
+// pointSecretAtPassword writes the new password into the credentials Secret,
+// with the operator's protect-password finalizer in the same write: until the
+// seed holds it, the Secret is the only copy, and the operator only adds the
+// finalizer on its next pass.
+func pointSecretAtPassword(
+	ctx context.Context, c client.Client, repo *b2backupv1.Repository, secret *corev1.Secret, password string,
+) error {
+	patch := client.MergeFromWithOptions(secret.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	if secret.Data == nil {
+		secret.Data = make(map[string][]byte, 1)
+	}
+	secret.Data[controller.KeyResticPassword] = []byte(password)
+	controllerutil.AddFinalizer(secret, controller.SecretFinalizer)
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
+	}
+	secret.Annotations[b2backupv1.AnnotationProtectedBy] = string(repo.UID)
+	if err := c.Patch(ctx, secret, patch); err != nil {
+		return fmt.Errorf("updating %s in secret/%s: %w", controller.KeyResticPassword, secret.Name, err)
+	}
+	return nil
 }
 
 // staleSeedNotice says where the old password still lives after a rotation.
