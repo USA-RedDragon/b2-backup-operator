@@ -994,3 +994,36 @@ func TestMigrateRefusesSubPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrateAMariaDBBackupTheOperatorAccepts(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "restic backup --tag=db --stdin-from-command -- backup-cnpg.sh",
+		"restic backup --tag=db --stdin-from-command -- dumpdb mariadb", 1)
+	body = strings.Replace(body, "              TZ: America/Chicago\n", "              TZ: America/Chicago\n"+
+		"              DB_HOST: mariadb.db.svc\n              DB_DATABASE: app\n              DB_USERNAME: app\n", 1)
+	body = strings.Replace(body, "      postgresql-app:\n        type: secret\n        name: postgresql-app\n",
+		"      mariadb:\n        type: secret\n        name: mariadb\n", 1)
+	dir := writeHomeClusterRelease(t, body)
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, buf.String())
+	if db := sb.Spec.Database; db == nil || db.Host != "mariadb.db.svc" || db.Name != "app" || db.User != "app" {
+		t.Errorf("database = %+v, want the connection from DB_HOST, DB_DATABASE and DB_USERNAME", db)
+	}
+	for _, name := range []string{"DB_HOST", "DB_DATABASE", "DB_USERNAME"} {
+		if _, ok := sb.Spec.Env[name]; ok {
+			t.Errorf("spec.env sets %s, which the operator sets from spec.database and refuses in spec.env", name)
+		}
+	}
+
+	generated := filepath.Join(t.TempDir(), "generated.yaml")
+	if err := os.WriteFile(generated, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runParity(&out, generated, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Errorf("parity: %v\n%s", err, out.String())
+	}
+}
