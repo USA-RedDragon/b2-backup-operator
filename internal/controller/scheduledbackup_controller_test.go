@@ -13,12 +13,15 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
@@ -716,37 +719,71 @@ func TestEditingTheOlderBackupIntoAConflictStopsIt(t *testing.T) {
 
 func TestACronJobThatCannotBeRebuiltIsSuspended(t *testing.T) {
 	t.Parallel()
+	rejectMars := interceptor.Funcs{Update: func(
+		ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption,
+	) error {
+		if cj, ok := obj.(*batchv1.CronJob); ok && cj.Spec.TimeZone != nil && *cj.Spec.TimeZone == "Mars/Olympus" {
+			return apierrors.NewInvalid(schema.GroupKind{Group: "batch", Kind: "CronJob"}, cj.Name,
+				field.ErrorList{field.Invalid(field.NewPath("spec", "timeZone"), *cj.Spec.TimeZone, "unknown time zone")})
+		}
+		return cl.Update(ctx, obj, opts...)
+	}}
 	tests := []struct {
-		name string
-		edit func(*b2backupv1.ScheduledBackup)
+		name  string
+		edit  func(*b2backupv1.ScheduledBackup)
+		funcs interceptor.Funcs
 	}{
 		{"moved to a Repository that does not exist", func(sb *b2backupv1.ScheduledBackup) {
 			sb.Spec.RepositoryRef.Name = "not-yet"
-		}},
+		}, interceptor.Funcs{}},
 		{"a spec the operator rejects", func(sb *b2backupv1.ScheduledBackup) {
 			sb.Spec.Env = map[string]string{"RESTIC_HOST": "elsewhere"}
-		}},
+		}, interceptor.Funcs{}},
+		{"a cache size that does not parse", func(sb *b2backupv1.ScheduledBackup) {
+			sb.Spec.Cache = &b2backupv1.CacheSpec{Size: "lots"}
+		}, interceptor.Funcs{}},
+		{"a CronJob update the API server rejects", func(sb *b2backupv1.ScheduledBackup) {
+			sb.Spec.TimeZone = "Mars/Olympus"
+		}, rejectMars},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			ctx := context.Background()
 			r, c := backupHarness(t, initializedRepo(), scheduledBackup())
+			r.Client = interceptor.NewClient(c.(client.WithWatch), tt.funcs)
 			reconcileBackup(t, r)
 			var sb b2backupv1.ScheduledBackup
-			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: resticName}, &sb); err != nil {
+			if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: resticName}, &sb); err != nil {
 				t.Fatal(err)
 			}
+			original := sb.Spec.DeepCopy()
 			tt.edit(&sb)
-			if err := c.Update(context.Background(), &sb); err != nil {
+			if err := c.Update(ctx, &sb); err != nil {
 				t.Fatal(err)
 			}
-			_, _ = r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: resticName})
+			_, _ = r.Reconcile(ctx, ctrl.Request{Namespace: testNS, Name: resticName})
 			var cj batchv1.CronJob
-			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+			if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
 				t.Fatal(err)
 			}
 			if cj.Spec.Suspend == nil || !*cj.Spec.Suspend {
-				t.Error("a CronJob from a spec that no longer exists kept firing")
+				t.Fatal("a CronJob from a spec that no longer exists kept firing")
+			}
+
+			if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: resticName}, &sb); err != nil {
+				t.Fatal(err)
+			}
+			sb.Spec = *original
+			if err := c.Update(ctx, &sb); err != nil {
+				t.Fatal(err)
+			}
+			reconcileBackup(t, r)
+			if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+				t.Fatal(err)
+			}
+			if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
+				t.Error("the CronJob stayed suspended after the spec was fixed")
 			}
 		})
 	}
