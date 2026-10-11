@@ -21,6 +21,7 @@ const (
 	engineCNPG    = "cnpg"
 	customDump    = "PGDMP\x01\x10\x00\x04\x08\x01\x01\x01"
 	plainDump     = "--\n-- PostgreSQL database dump\n--\n\\restrict abc\nSET statement_timeout = 0;\n"
+	plainTrailer  = "--\n-- PostgreSQL database dump complete\n--\n\n\\unrestrict abc\n\n"
 )
 
 func withStdin(s string) *cobra.Command {
@@ -111,7 +112,7 @@ func TestPostgresStreamsWholeDumpToRestoreTool(t *testing.T) {
 		tool  string
 	}{
 		{name: "custom", stdin: customDump + strings.Repeat("x", 1<<16), tool: "pg_restore"},
-		{name: "plain", stdin: plainDump + strings.Repeat("SELECT 1;\n", 1<<13), tool: "psql"},
+		{name: "plain", stdin: plainDump + strings.Repeat("SELECT 1;\n", 1<<13) + plainTrailer, tool: "psql"},
 	}
 
 	for _, tt := range tests {
@@ -258,5 +259,42 @@ func TestSqliteRestoresToMissingFile(t *testing.T) {
 	}
 	if want := "+ sqlite3 -bail " + path + "\n"; got != want {
 		t.Errorf("argv mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestPostgresNeverLetsPsqlCommitATruncatedPlainDump(t *testing.T) {
+	bin := t.TempDir()
+	status := filepath.Join(bin, "status")
+	script := "#!/bin/sh\ncat >/dev/null\necho committed >" + status + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "psql"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name      string
+		stdin     string
+		committed bool
+	}{
+		{"cut short", plainDump + strings.Repeat("INSERT INTO t VALUES (1);\n", 1<<12), false},
+		{"complete", plainDump + strings.Repeat("INSERT INTO t VALUES (1);\n", 1<<12) + plainTrailer, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.ClearEnv(t)
+			_ = os.Remove(status)
+			cmd := withStdin(tt.stdin)
+			cmd.SetArgs([]string{engineCNPG, "-H", "db"})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			err := cmd.Execute()
+			_, statErr := os.Stat(status)
+			if committed := statErr == nil; committed != tt.committed {
+				t.Errorf("psql reached the end of its input = %t, want %t (err %v)", committed, tt.committed, err)
+			}
+			if tt.committed != (err == nil) {
+				t.Errorf("err = %v", err)
+			}
+		})
 	}
 }
