@@ -82,6 +82,32 @@ Standard kubectl connection flags work everywhere: `-n/--namespace`,
 `--context`, `--kubeconfig`. `-A` appears only on `get`, a bare `b2bk` and
 `tui`, and `-o` only on `get`, where they mean something.
 
+### Leaving the name out
+
+A command that cannot destroy data takes its name as optional: `status`,
+`logs`, `snapshots`, `check`, `stats`, `env`, `render`, `backup`, `wait`,
+`suspend`, `shell` and `exec`. Without one it acts on the only
+ScheduledBackup in the namespace and says so on stderr:
+
+```
+$ b2bk status -n myapp
+using scheduledbackup/myapp
+```
+
+`status`, `snapshots`, `check`, `stats`, `env`, `suspend`, `shell` and `exec`
+also take a Repository, and use the only Repository when the namespace has no
+ScheduledBackup. When the namespace has none, or several, the command stops
+and says so; with several it lists them, sorted, with an example. `doctor`
+with no name still checks everything in the namespace.
+
+A command that can destroy data or release a hold always needs the name, even
+when the namespace has only one: `restore`, `prune`, `unlock`,
+`rotate-password`, `reinit`, `cancel` and `resume`. Without it, it lists what
+the namespace holds, when it can read that, and stops.
+
+Names complete in the shell for every command that takes one. A name that both
+a ScheduledBackup and a Repository use completes in its qualified form.
+
 ## Commands that start a pod
 
 Nine commands do their work inside a throwaway pod built from the backup image:
@@ -219,7 +245,7 @@ select text in the terminal.
 
 ## Inspect
 
-### `doctor [name]` — `reads`
+### `doctor [NAME]` — `reads`
 
 **Start here when something is wrong.** Checks the whole chain in one pass:
 credentials Secret, CronJob ownership, repository initialization, cache claim,
@@ -249,7 +275,7 @@ The argument takes any of the prefixes above without the slash, so `get sb` and
 | `-o wide` | Repositories add mode, key ID, secret, adopted, suspended; backups add timezone and concurrency policy |
 | `-o json\|yaml\|name` | Machine-readable. `json` and `yaml` wrap both kinds at once in a `v1.List` |
 
-### `status <name>` — `reads`
+### `status [NAME]` — `reads`
 
 One resource in detail: mode, bucket, path, endpoint, application key ID and
 usage with when it was measured, the **effective** schedule with its timezone,
@@ -263,7 +289,7 @@ initialized anything, so the snapshots predate this resource and
 | --- | --- |
 | `--limit` | Runs to show (default 10) |
 
-### `logs <name>` — `reads`
+### `logs [NAME]` — `reads`
 
 The most recent run's output. Finds runs by ownership, so triggered and
 scheduled runs both appear. Jobs are deleted an hour after they finish; past
@@ -287,7 +313,7 @@ module version; anything else reports `unknown`.
 
 ## Run
 
-### `backup <name>` — `writes` — alias `run`
+### `backup [NAME]` — `writes` — alias `run`
 
 **Runs even when the schedule is suspended** — suspending and then backing up by
 hand is the main reason to suspend. Refused if a run is already in flight and
@@ -308,12 +334,12 @@ kubectl annotate scheduledbackup/web-files \
   b2backup.mcswain.dev/trigger-at="$(date -Is)" --overwrite
 ```
 
-### `cancel <name>` — `writes`
+### `cancel NAME` — `writes`
 
 Deletes the Job of a run in flight, leaving completed ones for history. A killed
 restic leaves a lock behind; `unlock` clears it.
 
-### `wait <name>` — `reads`
+### `wait [NAME]` — `reads`
 
 Blocks until the current run finishes. Exits non-zero on failure, so it can gate
 a deploy or a migration.
@@ -324,7 +350,7 @@ a deploy or a migration.
 
 ## Snapshots and restore
 
-### `snapshots <name>` — `reads` — alias `snaps`
+### `snapshots [NAME]` — `reads` — alias `snaps`
 
 The backup's own snapshots. One repository can serve several backups, so the
 listing is filtered to this backup's source tags. A `spec.script` backup has no
@@ -348,7 +374,7 @@ and only restic's stdout reaches yours. It also passes `--group-by=`, so the
 image's `RESTIC_GROUP_BY` does not group the list: the output is restic's plain
 array of snapshots.
 
-### `restore <name>` — `DESTROYS`
+### `restore NAME` — `DESTROYS`
 
 Four destinations. **With a terminal and no target, b2bk asks**, offering only
 what this backup can do. Without a terminal it lists them and exits, so a script
@@ -654,7 +680,7 @@ then ignored; do not read a successful run as having honored them.
 
 ## Maintenance
 
-### `unlock <name>` — `writes`
+### `unlock NAME` — `writes`
 
 **The usual 3am fix.** A backup killed mid-run leaves a lock, and every later run
 fails waiting on it. Removes only what restic considers stale.
@@ -664,7 +690,7 @@ fails waiting on it. Removes only what restic considers stale.
 | `--remove-all` | **`DESTROYS`** Every lock, stale or not. Only safe when nothing is running, so it is refused while any Job of a ScheduledBackup on the repository, its b2bk Jobs or the Repository's own is running, and while the Repository's Secret or location may not be its own. Confirms first |
 | `--yes` | Skip the confirmation |
 
-### `check <name>` — `reads`
+### `check [NAME]` — `reads`
 
 Verifies repository structure. Metadata only by default, which is fast.
 
@@ -672,7 +698,7 @@ Verifies repository structure. Metadata only by default, which is fast.
 | --- | --- |
 | `--read-data-subset` | Also re-read a share of the data (`10%`, `1/5`). The only way to catch bit rot, at the cost of downloading that share |
 
-### `prune <name>` — `DESTROYS`
+### `prune NAME` — `DESTROYS`
 
 Applies the ScheduledBackup's own retention policy, so a manual prune does what
 the scheduled one does: it forgets only snapshots carrying one of the backup's
@@ -691,7 +717,7 @@ The retention policy comes from the ScheduledBackup, so a backup with no
 `spec.retention` has nothing to forget and is refused, and so is a `spec.script`
 backup, which has no source tags to scope forget to.
 
-### `stats <name>` — `reads`
+### `stats [NAME]` — `reads`
 
 restic's own view of repository size. The usage in `status` is the size of the
 files in B2, which differs because of deduplication, compression, and packs
@@ -703,13 +729,17 @@ restic has pruned that B2 has only hidden so far.
 
 ## Lifecycle
 
-### `suspend <name>` / `resume <name>` — `writes`
+### `suspend [NAME]` / `resume NAME` — `writes`
 
 Sets or clears `spec.suspend`. On a ScheduledBackup the CronJob is kept but stops
 firing; on a Repository the operator stops reconciling it entirely.
 Re-suspending is a no-op, not a pointless write.
 
-### `reinit <repository>` — `writes`
+`resume` needs a name even when the namespace has only one ScheduledBackup: it
+also releases a ScheduledBackup held after a failed restore (see `restore`),
+and that hold is what keeps a backup from snapshotting a half-restored volume.
+
+### `reinit REPOSITORY` — `writes`
 
 A failed init Job is retried **indefinitely**, on a five-minute delay: the
 operator waits out the delay, deletes the failed Job, and builds a fresh one on
@@ -732,7 +762,7 @@ Does not touch repository contents: the init Job probes with `restic cat config`
 first, and `restic init` refuses a repository that already holds a config rather
 than re-keying it.
 
-### `rotate-password <repository>` — `DESTROYS`
+### `rotate-password REPOSITORY` — `DESTROYS`
 
 **Adds** a key rather than replacing one, so snapshots from before the rotation
 stay readable and the change is undoable by restoring the old Secret. Remove the
@@ -777,7 +807,7 @@ The pod is deleted when you exit. The app's data is not mounted unless you ask,
 and the shared restic cache is replaced with scratch space, so none of this can
 interfere with a running backup.
 
-### `shell <name>` — `writes` — alias `sh`
+### `shell [NAME]` — `writes` — alias `sh`
 
 A pod from the backup image with `restic`, `ts` and `dumpdb` on PATH
 and the credentials already in the environment, so `restic snapshots` just
@@ -794,7 +824,7 @@ status as usual; a value from `spec.env` is kept.
 | `--shell` | Default `sh` |
 | `--pod-start-timeout` | How long to wait for the pod to start. Default 10m |
 
-### `exec <name> -- <command>...` — `writes`
+### `exec [NAME] -- <command>...` — `writes`
 
 One command in the same environment, output printed. Reaches restic subcommands
 the CLI does not wrap.
@@ -804,7 +834,8 @@ b2bk exec web-files -- restic find --tag=files 'config.php'
 b2bk exec web-files -- restic cat config
 ```
 
-Everything after `--` is passed through verbatim; the separator is required.
+Everything after `--` is passed through verbatim; the separator is required,
+and the name goes before it.
 A `restic` command with `--json` runs through exec, like `snapshots --json`, so
 stdout holds only restic's JSON. The wrapper still groups `restic snapshots` by
 `RESTIC_GROUP_BY` unless the command passes `--group-by` itself.
@@ -816,7 +847,7 @@ stdout holds only restic's JSON. The wrapper still groups `restic snapshots` by
 | `--image` | Override the image |
 | `--pod-start-timeout` | How long to wait for the pod to start. Default 10m |
 
-### `env <name>` — `reads`
+### `env [NAME]` — `reads`
 
 The credentials as shell exports. Takes a Repository, or a ScheduledBackup,
 which resolves to the Repository it writes into.
@@ -834,7 +865,7 @@ eval "$(b2bk env repo/prod --show-password)"
 
 ## Development
 
-### `render <file.yaml|name>` — `reads`
+### `render [file.yaml|NAME]` — `reads`
 
 The exact shell script a backup runs. Takes a local manifest or a resource in
 the cluster, so it answers both "what would this change do" and "what is this
