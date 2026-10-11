@@ -247,7 +247,9 @@ entry is recorded the hold stays: the next backup would save the partial
 restore, and retention could then keep it over good snapshots. A later restore
 that succeeds removes the entries of the claims its source's paths are on, and
 only when it restored the whole source: a snapshot holding exactly the source's
-paths, with no `--path`, `--include` or `--exclude`. It never removes the entry
+paths, with no `--path`, `--include` or `--exclude`, of a source with no
+excludes of its own, since a failed restore may have written where an exclude
+keeps the next one from going. It never removes the entry
 of a claim mounted under them, which the source may exclude; restore that claim's
 own source, or check it and run `b2bk resume`. One narrowed by any of these, one of another target,
 and one that stops before writing remove nothing. `b2bk resume` removes the
@@ -452,7 +454,7 @@ fails waiting on it. Removes only what restic considers stale.
 
 | Flag | |
 | --- | --- |
-| `--remove-all` | **`DESTROYS`** Every lock, stale or not. Only safe when nothing is running, so it is refused while any Job of a ScheduledBackup on the repository, its b2bk Jobs or the Repository's own is running. Confirms first |
+| `--remove-all` | **`DESTROYS`** Every lock, stale or not. Only safe when nothing is running, so it is refused while any Job of a ScheduledBackup on the repository, its b2bk Jobs or the Repository's own is running, and while the Repository's Secret or location may not be its own. Confirms first |
 | `--yes` | Skip the confirmation |
 
 ### `check <name>` — `reads`

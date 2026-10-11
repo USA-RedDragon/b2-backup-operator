@@ -16,6 +16,7 @@ import (
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/runner"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/controller"
 )
 
 var errUnknownStatsMode = errors.New("unsupported stats mode")
@@ -46,7 +47,15 @@ a ScheduledBackup on the repository, or of the Repository itself, is running.`,
 			}
 			var guard func(context.Context, client.Client, *b2backupv1.ScheduledBackup, *b2backupv1.Repository) error
 			if removeAll {
-				guard = refuseRepositoryInUse
+				guard = func(
+					ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository,
+				) error {
+					if why := controller.RepositoryNotOwn(repo); why != "" {
+						return fmt.Errorf("%w: repository/%s %s, so its locks may be another repository's",
+							ErrRepositoryNotUsable, repo.Name, why)
+					}
+					return refuseRepositoryInUse(ctx, c, sb, repo)
+				}
 			}
 			return runResticGuarded(cmd.Context(), f, args[0], "unlock", guard,
 				func(*b2backupv1.ScheduledBackup, *b2backupv1.Repository) ([]string, error) {
