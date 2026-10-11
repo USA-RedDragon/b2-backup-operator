@@ -224,7 +224,7 @@ func TestSnapshotsCommandHostFlagAndTagFiltering(t *testing.T) {
 		{"--all-tags drops the tags, not the host", snapshotsOptions{allTags: true},
 			"restic snapshots --host=" + testResticHost},
 		{"--json and --latest are appended last", snapshotsOptions{asJSON: true, latest: 3},
-			"restic snapshots --tag=files --host=" + testResticHost + " --json --latest=3"},
+			"restic snapshots --tag=files --host=" + testResticHost + " --json --group-by= --latest=3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

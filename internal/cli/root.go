@@ -35,8 +35,11 @@ func DisplayName(argv0 string) string {
 
 // New returns the root command.
 func New(streams genericiooptions.IOStreams, argv0 string) *cobra.Command {
-	f := NewFactory(streams)
+	return newRoot(NewFactory(streams), argv0)
+}
 
+func newRoot(f *Factory, argv0 string) *cobra.Command {
+	streams := f.Streams
 	display := DisplayName(argv0)
 	name := display
 	if after, ok := strings.CutPrefix(display, "kubectl "); ok {

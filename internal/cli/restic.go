@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
@@ -104,8 +105,10 @@ func sourceTags(sb *b2backupv1.ScheduledBackup) []string {
 	return tags
 }
 
+const resticBinary = "restic"
+
 func resticCommand(args ...string) []string {
-	return append([]string{"restic"}, args...)
+	return append([]string{resticBinary}, args...)
 }
 
 type resticBuild func(sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository) ([]string, error)
@@ -148,12 +151,36 @@ func runResticGuarded(
 		return err
 	}
 
+	opts.Purpose = purpose
+	if printsJSON(command) {
+		return f.attachRestorePod(ctx, sb, opts, func(pod restorePod, _ string) error {
+			return pod.exec(ctx, command, f.Streams.Out)
+		})
+	}
+
 	run, err := f.Runner()
 	if err != nil {
 		return err
 	}
-
 	opts.Command = command
-	opts.Purpose = purpose
 	return run.Run(ctx, sb, opts, f.Streams.Out, defaultResticTimeout)
+}
+
+// printsJSON reports whether command is restic asked for JSON. A Job's log
+// interleaves stderr, where the image's wrapper traces the command it runs and
+// restic reports progress, with stdout, so such a command runs through exec,
+// which keeps them apart.
+func printsJSON(command []string) bool {
+	if len(command) == 0 || path.Base(command[0]) != resticBinary {
+		return false
+	}
+	for _, arg := range command[1:] {
+		if arg == "--" {
+			return false
+		}
+		if arg == jsonFlag || arg == jsonFlag+"=true" {
+			return true
+		}
+	}
+	return false
 }

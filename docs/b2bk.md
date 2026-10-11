@@ -203,11 +203,18 @@ sources to filter by and needs `--all-tags`.
 | `--all-tags` | The whole repository |
 | `--host` | Override; empty string lifts the filter |
 | `--latest` | Newest N only |
-| `--json` | restic's JSON output |
+| `--json` | restic's JSON output, alone on stdout, as a plain list |
 
 `--host` defaults to the host the backup records its snapshots under:
 `spec.resticHost`, or the **namespace** when that is unset. Pass `--host=""` to
 lift the filter.
+
+`--json` output is valid JSON. A one-off Job's log mixes stderr, where the
+image's `restic` wrapper writes `+ /usr/bin/restic ...` and restic reports
+progress, into stdout, so a JSON command runs in the pod through exec instead,
+and only restic's stdout reaches yours. It also passes `--group-by=`, so the
+image's `RESTIC_GROUP_BY` does not group the list: the output is restic's plain
+array of snapshots.
 
 ### `restore <name>` — `DESTROYS`
 
@@ -664,6 +671,9 @@ b2bk exec web-files -- restic cat config
 ```
 
 Everything after `--` is passed through verbatim; the separator is required.
+A `restic` command with `--json` runs through exec, like `snapshots --json`, so
+stdout holds only restic's JSON. The wrapper still groups `restic snapshots` by
+`RESTIC_GROUP_BY` unless the command passes `--group-by` itself.
 
 | Flag | |
 | --- | --- |

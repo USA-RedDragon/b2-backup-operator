@@ -119,7 +119,7 @@ func TestRestoreToNewPVCCleansUpAfterItself(t *testing.T) {
 func fakeRestic(failRestore bool) cli.RestoreExec {
 	return func(_ context.Context, argv []string, stdout io.Writer) error {
 		switch {
-		case len(argv) > 1 && argv[1] == "snapshots":
+		case len(argv) > 1 && argv[1] == cmdSnapshots:
 			_, err := fmt.Fprintf(stdout,
 				`[{"id":%q,"time":"2026-10-01T02:17:00Z","paths":[%q],"hostname":%q,"tags":["files"]}]`,
 				pvcSnapshot, pvcMount, pvcNS)

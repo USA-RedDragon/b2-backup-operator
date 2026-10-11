@@ -23,9 +23,19 @@ func (e RestoreExec) exec(ctx context.Context, argv []string, stdout io.Writer) 
 // NewTestFactory returns a Factory reading through c, whose one-off pods are
 // whatever attach returns for their options instead of real Jobs.
 func NewTestFactory(c client.Client, errOut io.Writer, attach func(runner.Options) (RestoreExec, error)) *Factory {
+	return NewTestFactoryIn("", c, io.Discard, errOut, attach)
+}
+
+// NewTestFactoryIn is NewTestFactory acting on namespace ns and writing to out.
+func NewTestFactoryIn(
+	ns string, c client.Client, out, errOut io.Writer, attach func(runner.Options) (RestoreExec, error),
+) *Factory {
 	f := &Factory{
 		ConfigFlags: genericclioptions.NewConfigFlags(true),
-		Streams:     genericiooptions.IOStreams{In: &bytes.Buffer{}, Out: io.Discard, ErrOut: errOut},
+		Streams:     genericiooptions.IOStreams{In: &bytes.Buffer{}, Out: out, ErrOut: errOut},
+	}
+	if ns != "" {
+		*f.ConfigFlags.Namespace = ns
 	}
 	f.client = c
 	f.once.client.Do(func() {})
@@ -86,4 +96,11 @@ func RestoreArgs(snapPath, sub, target string, include []string, del, dryRun boo
 	o := &restoreOptions{include: include, delete: del, dryRun: dryRun}
 	return o.restoreArgs(resticSnapshot{ID: "snap", Paths: []string{snapPath}},
 		restoreStep{snapPath: snapPath, sub: sub}, restoreSource{paths: []string{snapPath}}, target)
+}
+
+// Execute runs b2bk with args against f.
+func Execute(f *Factory, args ...string) error {
+	cmd := newRoot(f, "b2bk")
+	cmd.SetArgs(args)
+	return cmd.Execute()
 }

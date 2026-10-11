@@ -35,7 +35,10 @@ backup's own source tags. A spec.script backup has no sources to filter by, so
 it needs --all-tags.
 
 The host filter defaults to the host this backup records its snapshots under:
-spec.resticHost, or the namespace when that is unset; --host="" lifts it.`,
+spec.resticHost, or the namespace when that is unset; --host="" lifts it.
+
+--json prints restic's JSON and nothing else on stdout: a plain list of
+snapshots, since it passes --group-by= over the image's RESTIC_GROUP_BY.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.hostSet = cmd.Flags().Changed("host")
@@ -50,7 +53,7 @@ spec.resticHost, or the namespace when that is unset; --host="" lifts it.`,
 
 	cmd.Flags().BoolVar(&o.allTags, "all-tags", false, "Show every snapshot in the repository")
 	cmd.Flags().StringVar(&o.host, "host", "", "Filter by snapshot host (defaults to spec.resticHost, or the namespace)")
-	cmd.Flags().BoolVar(&o.asJSON, "json", false, "Emit restic's JSON output")
+	cmd.Flags().BoolVar(&o.asJSON, "json", false, "Emit restic's JSON output, a plain list, on stdout alone")
 	cmd.Flags().IntVar(&o.latest, "latest", 0, "Show only the newest N snapshots")
 	f.AddPodStartTimeoutFlag(cmd)
 	return cmd
@@ -74,7 +77,7 @@ func snapshotsCommand(sb *b2backupv1.ScheduledBackup, o *snapshotsOptions) ([]st
 		argv = append(argv, "--host="+host)
 	}
 	if o.asJSON {
-		argv = append(argv, "--json")
+		argv = append(argv, jsonFlag, "--group-by=")
 	}
 	if o.latest > 0 {
 		argv = append(argv, fmt.Sprintf("--latest=%d", o.latest))
