@@ -666,7 +666,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 		return 0, err
 	}
 
-	password, generated, err := r.resolvePassword(ctx, repo, &existing, mustExist || repo.Status.Adopted)
+	password, generated, err := r.resolvePassword(ctx, repo, &existing, creds.url, mustExist || repo.Status.Adopted)
 	if err != nil {
 		return 0, err
 	}
@@ -783,10 +783,19 @@ func (r *RepositoryReconciler) passwordPreserved(
 	return true, true, ""
 }
 
+// resolvePassword returns the restic password for the repository at url, and
+// whether it was generated. The password in the existing credentials Secret
+// wins only when that Secret is this Repository's own: it names url, carries
+// this Repository's UID, or status records it. A Secret another Repository
+// left behind holds another repository's password, so the seed, or a new
+// password for an empty path, is used instead.
 func (r *RepositoryReconciler) resolvePassword(
-	ctx context.Context, repo *b2backupv1.Repository, existing *corev1.Secret, mustExist bool,
+	ctx context.Context, repo *b2backupv1.Repository, existing *corev1.Secret, url string, mustExist bool,
 ) (string, bool, error) {
-	password := string(existing.Data[KeyResticPassword])
+	var password string
+	if secretBelongsTo(existing, repo, url) {
+		password = string(existing.Data[KeyResticPassword])
+	}
 	if password == "" && repo.Spec.PasswordSecretRef != nil {
 		var err error
 		if password, err = r.readSecretKey(ctx, repo.Namespace, repo.Spec.PasswordSecretRef); err != nil {
@@ -808,6 +817,15 @@ func (r *RepositoryReconciler) resolvePassword(
 		return "", false, err
 	}
 	return password, true, nil
+}
+
+func secretBelongsTo(secret *corev1.Secret, repo *b2backupv1.Repository, url string) bool {
+	if secret.Name == "" {
+		return false
+	}
+	return string(secret.Data[KeyResticRepository]) == url ||
+		secret.Annotations[b2backupv1.AnnotationProtectedBy] == string(repo.UID) ||
+		metav1.IsControlledBy(secret, repo) || repo.Status.SecretName == secret.Name
 }
 
 func (r *RepositoryReconciler) recordKey(ctx context.Context, repo *b2backupv1.Repository, keyID string) error {
