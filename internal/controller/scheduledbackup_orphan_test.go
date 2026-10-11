@@ -13,11 +13,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 )
 
 const (
 	forgetScopeAnnotation = "b2backup.mcswain.dev/forget-scope"
 	goneCronJob           = "gone-backup"
+	goneBackup            = "gone-sb"
 )
 
 func readyReason(t *testing.T, c client.Client) *metav1.Condition {
@@ -135,5 +137,34 @@ func TestAnOrphanedCronJobNoBackupCanAdoptIsSuspended(t *testing.T) {
 	}
 	if !cronJobSuspended(t, c, goneCronJob) {
 		t.Error("a CronJob whose ScheduledBackup is gone kept backing up and forgetting under a spec that no longer exists")
+	}
+}
+
+func TestAStrayIsSuspendedWhenItsScheduledBackupIsGone(t *testing.T) {
+	t.Parallel()
+	stray := orphanCronJob("")
+	stray.Name = goneBackup + backup.CronJobSuffix
+	r, c := backupHarness(t, stray)
+	if got := r.cronJobRequests(context.Background(), stray); len(got) != 1 || got[0].Name != goneBackup {
+		t.Fatalf("requests = %v, want one for the ScheduledBackup the CronJob is named for", got)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: goneBackup}); err != nil {
+		t.Fatal(err)
+	}
+	if !cronJobSuspended(t, c, stray.Name) {
+		t.Error("the CronJob of the only ScheduledBackup, orphaned, kept running")
+	}
+}
+
+func TestAStrayIsSuspendedWhileTheOtherBackupWaitsForItsRepository(t *testing.T) {
+	t.Parallel()
+	repo := initializedRepo()
+	repo.Status.Initialized = false
+	r, c := backupHarness(t, repo, scheduledBackup(), orphanCronJob(""))
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: resticName}); err != nil {
+		t.Fatal(err)
+	}
+	if !cronJobSuspended(t, c, goneCronJob) {
+		t.Error("a stray kept running because the other ScheduledBackup stopped before the conflict check")
 	}
 }
