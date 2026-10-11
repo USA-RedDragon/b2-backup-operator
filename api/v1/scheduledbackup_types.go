@@ -231,7 +231,7 @@ type CacheSpec struct {
 }
 
 // ScheduledBackupSpec defines the desired state of a ScheduledBackup.
-// +kubebuilder:validation:XValidation:rule="!has(self.env) || self.env.all(k, k != 'RESTIC_REPOSITORY' && k != 'RESTIC_PASSWORD')",message="spec.env must not set RESTIC_REPOSITORY or RESTIC_PASSWORD: they come from the Repository's Secret, and a container's env overrides envFrom"
+// +kubebuilder:validation:XValidation:rule="!has(self.env) || self.env.all(k, !(k in ['RESTIC_REPOSITORY', 'RESTIC_PASSWORD', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_DEFAULT_REGION']))",message="spec.env must not set RESTIC_REPOSITORY, RESTIC_PASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY or AWS_DEFAULT_REGION: they come from the Repository's Secret, and a container's env overrides envFrom"
 type ScheduledBackupSpec struct {
 	// RepositoryRef is the Repository in this namespace to back up into.
 	// +required

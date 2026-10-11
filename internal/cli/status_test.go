@@ -42,7 +42,7 @@ func TestStatusBackup(t *testing.T) {
 
 	for _, want := range []string{
 		subjectBackup,
-		"Repository", testRepoName, testUsage + " / " + testQuota,
+		"Repository", testRepoName, testUsage,
 		"Schedule", testSchedule, testTimeZone,
 		"CONDITION", "Ready", statusTrue,
 		"RESULT", "STARTED", "DURATION", "JOB",
@@ -62,8 +62,8 @@ func TestStatusBackup(t *testing.T) {
 func TestStatusRepository(t *testing.T) {
 	out := status(t, newClient(t, readyRepo(testNS)), "repo/"+testRepoName)
 	for _, want := range []string{
-		subjectRepo, "BorgBase ID", testRepoID,
-		testServer, testUsage + " / " + testQuota, "Initialized", statusTrue,
+		subjectRepo, "Mode", "Prefix", "Bucket", testBucket, "Path", testPath,
+		"Endpoint", testEndpoint, "Key ID", testKeyID, testUsage, "Initialized", statusTrue,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in output:\n%s", want, out)
@@ -123,11 +123,12 @@ func TestUsageOf(t *testing.T) {
 	}
 	r.Status.CurrentUsage = testUsage
 	if got := usageOf(r); got != testUsage {
-		t.Errorf("usageOf(no quota) = %q", got)
+		t.Errorf("usageOf(no time) = %q", got)
 	}
-	r.Status.Quota = testQuota
-	if got := usageOf(r); got != testUsage+" / "+testQuota {
-		t.Errorf("usageOf(both) = %q", got)
+	measured := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+	r.Status.UsageTime = &measured
+	if got := usageOf(r); !strings.HasPrefix(got, testUsage+" (measured ") {
+		t.Errorf("usageOf(measured) = %q, want it to say when", got)
 	}
 }
 

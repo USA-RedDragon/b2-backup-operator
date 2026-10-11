@@ -4,7 +4,9 @@ metadata:
   name: restic
   namespace: myapp-prod
 spec:
-  existingRepositoryID: a1b2c3d4
+  mode: Prefix
+  bucket: acme-restic
+  path: restic/myapp-prod
   passwordSecretRef:
     name: restic-envs
     key: RESTIC_PASSWORD
@@ -15,6 +17,8 @@ metadata:
   name: restic
   namespace: otherapp-prod
 spec:
-  region: us
-  quotaGiB: 100
-  alertDays: 3
+  mode: Bucket
+  bucket: acme-otherapp-prod-restic
+  deletionPolicy: Delete
+  lifecycle:
+    daysFromHidingToDeleting: 7

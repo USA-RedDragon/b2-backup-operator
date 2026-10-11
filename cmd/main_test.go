@@ -9,17 +9,17 @@ func TestParseNamespacedName(t *testing.T) {
 	}{
 		{
 			name:      "bare name resolves in the operator namespace",
-			in:        "borgbase-api",
+			in:        "b2-credentials",
 			defaultNS: "b2-backup-operator-system",
 			wantNS:    "b2-backup-operator-system",
-			wantName:  "borgbase-api",
+			wantName:  "b2-credentials",
 		},
 		{
 			name:      "explicit namespace wins over the default",
-			in:        "other-ns/other-token",
+			in:        "other-ns/other-credentials",
 			defaultNS: "should-be-ignored",
 			wantNS:    "other-ns",
-			wantName:  "other-token",
+			wantName:  "other-credentials",
 		},
 		{
 			name:      "bare name with no default is an error",

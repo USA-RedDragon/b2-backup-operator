@@ -4,9 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -20,88 +18,123 @@ import (
 
 // Errors returned by the migrate command.
 var (
-	ErrNoRepositoryID = errors.New("could not recover the BorgBase repository ID")
 	ErrExcludeCount   = errors.New("refusing to emit a partial exclude list")
+	ErrUnsupportedEnv = errors.New("the restic container sets an environment variable a ScheduledBackup cannot")
 )
 
-const migratedName = "restic"
+type notStructuredError struct{ reason string }
 
-var repositoryIDPattern = regexp.MustCompile(`^[a-z0-9]{4,32}$`)
+func (e *notStructuredError) Error() string { return "not expressible as sources: " + e.reason }
+
+func notStructured(format string, args ...any) error {
+	return &notStructuredError{reason: fmt.Sprintf(format, args...)}
+}
+
+const (
+	migratedName       = "restic"
+	passwordSecretName = "restic-envs"
+	backupCNPGScript   = "backup-cnpg.sh"
+	cnpgSecretPathEnv  = "CNPG_SECRET_PATH"
+	cnpgAppSuffix      = "-app"
+	cnpgSuperSuffix    = "-superuser"
+	defaultCNPGCluster = "postgresql"
+)
+
+var (
+	preambleLines  = []string{"exec > >(ts '%H:%M:%S') 2>&1", "set -eu"}
+	postambleLine  = "restic cache --cleanup"
+	handledEnvVars = []string{"TZ", "RESTIC_HOST", cnpgSecretPathEnv}
+)
+
+type migrateOptions struct {
+	repository string
+	fromSecret string
+}
 
 func newMigrateCommand(f *Factory) *cobra.Command {
-	var repositoryID string
+	var opts migrateOptions
 
 	cmd := &cobra.Command{
-		Use:     "migrate <resources/restic directory>",
+		Use:     "migrate <resources/restic directory | helmrelease.yaml>",
 		Short:   "Generate resources from a hand-written backup",
 		GroupID: GroupDevelopment,
 		Long: `Convert an app's hand-written restic backup into operator resources.
 
-Reads the HelmRelease and emits a Repository and a ScheduledBackup on stdout.
-Nothing is applied and nothing in fleet-infra is modified; diff the output
+Reads the app-template HelmRelease (helmrelease.yaml or helm.yaml in the
+directory, or the file given) and emits a Repository and a ScheduledBackup on
+stdout. A kustomization.yaml beside it that sets a namespace wins over the
+HelmRelease's own. Nothing is applied and nothing is modified; diff the output
 against the HelmRelease, then check it with b2bk parity.
 
-The BorgBase repository ID is recorded only inside the encrypted
-RESTIC_REPOSITORY value. By default b2bk decrypts secret.yaml by running sops,
-which is where the cloud credentials for that live. Pass --repository-id to
-skip decryption entirely.
+The Repository is in Prefix mode and adopts the existing restic repository in
+place: same bucket, same path, password read from restic-envs. Its location
+lives only in the encrypted RESTIC_REPOSITORY, so pass it with --repository,
+or let b2bk decrypt the app's restic-envs Secret with sops via --from-secret.
 
-Before applying, reduce the app's secret.yaml to just RESTIC_PASSWORD:
-RESTIC_REPOSITORY is synthesized by the operator and CHECK_UUID is no longer
-used. Do not remove RESTIC_PASSWORD -- it is the only
-off-cluster copy of the key that decrypts these backups.`,
+A script whose every line maps onto sources becomes sources. Anything else, such
+as extra shell commands, several tags on one backup or a custom
+--stdin-filename, is kept verbatim as spec.script.
+
+Once the operator reports the Repository ready, restic-envs only needs
+RESTIC_PASSWORD; it is the only off-cluster copy of the key that decrypts
+these backups, so keep it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMigrate(f.Streams.Out, args[0], repositoryID)
+			return runMigrate(f.Streams.Out, args[0], opts)
 		},
 	}
 
-	cmd.Flags().StringVar(&repositoryID, "repository-id", "",
-		"Use this BorgBase repository ID instead of decrypting secret.yaml")
+	cmd.Flags().StringVar(&opts.repository, "repository", "",
+		"The existing repository, as the s3: URL in RESTIC_REPOSITORY")
+	cmd.Flags().StringVar(&opts.fromSecret, "from-secret", "",
+		"A SOPS-encrypted Secret to read RESTIC_REPOSITORY from, such as <app>-restic.yaml in the secrets repository")
+	cmd.MarkFlagsMutuallyExclusive("repository", "from-secret")
 	return cmd
 }
 
-func runMigrate(out io.Writer, dir, repositoryID string) error {
-	helmReleasePath := filepath.Join(dir, "helmrelease.yaml")
-	if _, err := os.Stat(helmReleasePath); err != nil {
-		return fmt.Errorf("no helmrelease.yaml in %s", dir)
+func runMigrate(out io.Writer, arg string, opts migrateOptions) error {
+	helmReleasePath, err := resolveHelmRelease(arg)
+	if err != nil {
+		return err
 	}
-
 	hr, err := readHelmRelease(helmReleasePath)
 	if err != nil {
 		return err
 	}
 
-	if repositoryID == "" {
-		if repositoryID, err = repositoryIDFromSecret(filepath.Join(dir, "secret.yaml")); err != nil {
+	repoURL := opts.repository
+	switch {
+	case repoURL != "":
+	case opts.fromSecret != "":
+		if repoURL, err = repositoryURLFromSecret(opts.fromSecret); err != nil {
 			return err
 		}
+	default:
+		return fmt.Errorf("%w: pass --repository or --from-secret", ErrNoRepositoryURL)
 	}
-	if !repositoryIDPattern.MatchString(repositoryID) {
-		return fmt.Errorf("%w: %q is not a BorgBase repository ID", ErrNoRepositoryID, repositoryID)
-	}
-
-	repo, sb, err := migrateHelmRelease(hr, repositoryID)
+	loc, err := parseS3Repository(repoURL)
 	if err != nil {
 		return err
+	}
+
+	m, err := migrateHelmRelease(hr, loc)
+	if err != nil {
+		return fmt.Errorf("%s: %w", helmReleasePath, err)
 	}
 
 	p := newPrinter(out)
 	p.printf("# Generated by b2bk migrate from %s\n", helmReleasePath)
 	p.println("# Review against the HelmRelease, then check it with b2bk parity.")
-
-	if original := hr.scheduleOf(); original != sb.Spec.Schedule {
+	for _, note := range m.notes {
 		p.println("#")
-		p.printf("# schedule: was %q, hand-jittered. Handed back to the operator as %q,\n",
-			original, sb.Spec.Schedule)
-		p.println("# which derives its own minute from a hash of this resource, so the")
-		p.println("# spread is kept without anyone maintaining it. Check")
-		p.println("# status.effectiveSchedule for the expression it settles on.")
+		for line := range strings.SplitSeq(note, "\n") {
+			p.printf("# %s\n", line)
+		}
 	}
 	if err := p.Err(); err != nil {
 		return err
 	}
-	return writeDocuments(out, repo, sb)
+	return writeDocuments(out, m.repo, m.backup)
 }
 
 func writeDocuments(out io.Writer, objects ...any) error {
@@ -119,154 +152,363 @@ func writeDocuments(out io.Writer, objects ...any) error {
 	return p.Err()
 }
 
-func migrateHelmRelease(
-	hr *helmRelease, repositoryID string,
-) (*b2backupv1.Repository, *b2backupv1.ScheduledBackup, error) {
-	namespace := hr.Metadata.Namespace
+type migration struct {
+	repo   *b2backupv1.Repository
+	backup *b2backupv1.ScheduledBackup
+	notes  []string
+}
 
+func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
+	namespace := hr.Metadata.Namespace
 	controller, container, err := hr.backupController()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	script, err := container.script()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	sources, retention, engine, err := parseBackupScript(script)
-	if err != nil {
-		return nil, nil, err
+	m := &migration{repo: migratedRepository(namespace, loc)}
+	if !strings.HasPrefix(loc.Endpoint, "https://s3.") || !strings.HasSuffix(loc.Endpoint, ".backblazeb2.com") {
+		m.notes = append(m.notes, fmt.Sprintf(
+			"%s does not look like a B2 S3 endpoint. The operator builds the endpoint from\n"+
+				"the account it is given, so check this repository really lives in B2.", loc.Endpoint))
 	}
 
-	repo := &b2backupv1.Repository{
-		APIVersion: b2backupv1.SchemeGroupVersion.String(), Kind: "Repository",
-		Namespace: namespace, Name: migratedName,
-		Spec: b2backupv1.RepositorySpec{
-			ExistingRepositoryID: repositoryID,
-			PasswordSecretRef: &corev1.SecretKeySelector{
-				Name: "restic-envs",
-				Key:  "RESTIC_PASSWORD",
-			},
-		},
+	name := hr.Metadata.Name
+	if name == "" {
+		name = migratedName
 	}
-
 	sb := &b2backupv1.ScheduledBackup{
 		APIVersion: b2backupv1.SchemeGroupVersion.String(), Kind: "ScheduledBackup",
-		Namespace: namespace, Name: migratedName,
+		Namespace: namespace, Name: name,
 		Spec: b2backupv1.ScheduledBackupSpec{
 			RepositoryRef: corev1.LocalObjectReference{Name: migratedName},
 			Schedule:      shorthandSchedule(controller.CronJob.Schedule),
-			Sources:       sources,
-			Retention:     retention,
+			TimeZone:      controller.CronJob.TimeZone,
+			Resources:     container.Resources,
+			Affinity:      hr.affinity(),
 		},
 	}
-
+	m.backup = sb
 	if p := controller.CronJob.ConcurrencyPolicy; p != "" {
 		sb.Spec.ConcurrencyPolicy = batchv1.ConcurrencyPolicy(p)
 	}
-
-	if tz := controller.CronJob.TimeZone; tz != "" {
-		sb.Spec.TimeZone = tz
+	if original := controller.CronJob.Schedule; original != sb.Spec.Schedule {
+		m.notes = append(m.notes, fmt.Sprintf(
+			"schedule: was %q, hand-jittered. Handed back to the operator as %q,\n"+
+				"which derives its own minute from a hash of this resource, so the\n"+
+				"spread is kept without anyone maintaining it. Check\n"+
+				"status.effectiveSchedule for the expression it settles on.",
+			original, sb.Spec.Schedule))
 	}
 
-	if engine != "" {
-		db := &b2backupv1.DatabaseSpec{Engine: engine}
-		if db.SecretName, err = hr.databaseSecret(); err != nil {
-			return nil, nil, err
+	claim, dbSecret, err := mountedVolumes(hr, sb)
+	if err != nil {
+		return nil, err
+	}
+	if err := migrateEnv(container, sb); err != nil {
+		return nil, err
+	}
+
+	parsed, err := parseBackupScript(script, claim)
+	var unstructured *notStructuredError
+	switch {
+	case errors.As(err, &unstructured):
+		m.notes = append(m.notes, fmt.Sprintf(
+			"script: kept verbatim as spec.script, because %s.\n"+
+				"b2bk snapshots and restore cannot map tags to sources for a script backup.",
+			unstructured.reason))
+		parsed = parsedScript{}
+		sb.Spec.Script = scriptBody(script)
+		if strings.Contains(script, backupCNPGScript) || strings.Contains(script, "dumpdb cnpg") {
+			parsed.engine = b2backupv1.DatabaseEngineCNPG
 		}
-		db.Host = container.env("DB_HOST")
-		db.Name = container.env("DB_DATABASE")
-		db.User = container.env("DB_USERNAME")
+		if strings.Contains(script, backupCNPGScript) {
+			setEnv(sb, cnpgSecretPathEnv, b2backupv1.DBSecretMountPath)
+		}
+	case err != nil:
+		return nil, err
+	default:
+		sb.Spec.Sources = parsed.sources
+		sb.Spec.Retention = parsed.retention
+		if parsed.dumpChanged {
+			m.notes = append(m.notes,
+				"database: "+backupCNPGScript+" becomes dumpdb cnpg. The dump changes from plain SQL\n"+
+					"stored as <host> to pg_dump's custom format stored as <host>.dmp, which is\n"+
+					"what b2bk restore --to-database reads. Snapshots taken before the migration\n"+
+					"keep the old format and name.")
+		}
+	}
+
+	if parsed.engine != "" {
+		db := &b2backupv1.DatabaseSpec{Engine: parsed.engine}
+		if dbSecret != nil {
+			db.SecretName = dbSecret.name
+			if cluster := cnpgClusterOf(dbSecret.name); parsed.engine == b2backupv1.DatabaseEngineCNPG &&
+				cluster != "" && cluster != defaultCNPGCluster {
+				db.CNPGCluster = cluster
+			}
+		}
+		if parsed.engine == b2backupv1.DatabaseEngineMariaDB {
+			db.Host = container.env("DB_HOST")
+			db.Name = container.env("DB_DATABASE")
+			db.User = container.env("DB_USERNAME")
+		}
 		sb.Spec.Database = db
 	}
 
-	claim, err := hr.existingClaim()
-	if err != nil {
-		return nil, nil, err
+	if sb.Spec.Affinity == nil && sb.Spec.Volume != nil {
+		m.notes = append(m.notes, fmt.Sprintf(
+			"affinity: the HelmRelease sets none. The operator requires the backup pod on the\n"+
+				"node of a pod labelled app.kubernetes.io/name=%s, so the claim can attach;\n"+
+				"set spec.affinity: {} if nothing in this namespace carries that label.", namespace))
 	}
-	if claim != "" {
-		volume := &b2backupv1.VolumeSpec{ExistingClaim: claim}
+	return m, nil
+}
 
-		if wd := container.WorkingDir; wd != "" && wd != "/"+claim {
-			volume.MountPath = wd
+func migratedRepository(namespace string, loc s3Location) *b2backupv1.Repository {
+	mode := b2backupv1.StorageModePrefix
+	if loc.Path == "" {
+		mode = b2backupv1.StorageModeBucket
+	}
+	return &b2backupv1.Repository{
+		APIVersion: b2backupv1.SchemeGroupVersion.String(), Kind: "Repository",
+		Namespace: namespace, Name: migratedName,
+		Spec: b2backupv1.RepositorySpec{
+			Mode:              mode,
+			Bucket:            loc.Bucket,
+			Path:              loc.Path,
+			PasswordSecretRef: &corev1.SecretKeySelector{Name: passwordSecretName, Key: "RESTIC_PASSWORD"},
+		},
+	}
+}
+
+func mountedVolumes(hr *helmRelease, sb *b2backupv1.ScheduledBackup) (*hrVolume, *hrVolume, error) {
+	volumes := hr.volumes()
+
+	var claims, secretVolumes, others []hrVolume
+	for _, v := range volumes {
+		switch {
+		case v.key == "cache" && v.kind != volumeSecret:
+			p := hr.Spec.Values.Persistence[v.key]
+			sb.Spec.Cache = &b2backupv1.CacheSpec{StorageClass: p.StorageClass}
+		case v.kind == volumeClaim && v.name != "":
+			claims = append(claims, v)
+		case v.kind == volumeSecret:
+			secretVolumes = append(secretVolumes, v)
+		default:
+			others = append(others, v)
+		}
+	}
+
+	switch {
+	case len(others) > 0:
+		parts := make([]string, 0, len(others))
+		for _, v := range others {
+			kind := v.kind
+			if kind == "" {
+				kind = "a chart-created claim"
+			}
+			parts = append(parts, fmt.Sprintf("%s (%s at %s)", v.key, kind, v.path))
+		}
+		return nil, nil, fmt.Errorf("%w: %s; a ScheduledBackup mounts one existing claim, "+
+			"one database Secret and its cache", ErrUnsupportedMount, strings.Join(parts, ", "))
+	case len(claims) > 1:
+		return nil, nil, fmt.Errorf("%w (%s); a ScheduledBackup mounts one volume, so migrate cannot "+
+			"choose between them", ErrMultipleClaims, volumeKeys(claims))
+	case len(secretVolumes) > 1:
+		return nil, nil, fmt.Errorf("%w (%s); a ScheduledBackup mounts one database secret, so migrate "+
+			"cannot choose between them", ErrMultipleDBSecrets, volumeKeys(secretVolumes))
+	}
+
+	var claim, secret *hrVolume
+	if len(claims) == 1 {
+		claim = &claims[0]
+		if claim.subPath != "" {
+			return nil, nil, fmt.Errorf("%w: %s mounts subPath %s", ErrUnsupportedMount, claim.key, claim.subPath)
+		}
+		volume := &b2backupv1.VolumeSpec{ExistingClaim: claim.name, ReadOnly: claim.readOnly}
+		if claim.path != "/"+claim.name {
+			volume.MountPath = claim.path
 		}
 		sb.Spec.Volume = volume
 	}
-
-	if class := hr.cacheStorageClass(); class != "" {
-		sb.Spec.Cache = &b2backupv1.CacheSpec{StorageClass: class}
+	if len(secretVolumes) == 1 {
+		secret = &secretVolumes[0]
 	}
-
-	return repo, sb, nil
+	return claim, secret, nil
 }
 
-func parseBackupScript(script string) (
-	[]b2backupv1.BackupSource, *b2backupv1.Retention, b2backupv1.DatabaseEngine, error,
-) {
-	var sources []b2backupv1.BackupSource
-	var retention *b2backupv1.Retention
-	var engine b2backupv1.DatabaseEngine
+func migrateEnv(container hrContainer, sb *b2backupv1.ScheduledBackup) error {
+	for _, name := range sortedKeys(container.Env) {
+		value := container.Env[name]
+		if name == "RESTIC_HOST" {
+			if host, ok := value.(string); ok {
+				sb.Spec.ResticHost = host
+				continue
+			}
+			if !isNamespaceFieldRef(value) {
+				return fmt.Errorf("%w: RESTIC_HOST is neither a string nor the namespace", ErrUnsupportedEnv)
+			}
+			continue
+		}
+		if slices.Contains(handledEnvVars, name) {
+			continue
+		}
+		s := container.env(name)
+		if s == "" {
+			return fmt.Errorf("%w: %s is not a plain value", ErrUnsupportedEnv, name)
+		}
+		setEnv(sb, name, s)
+	}
+	return nil
+}
 
-	for _, line := range joinContinuations(script) {
+func isNamespaceFieldRef(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	ref, ok := m["fieldRef"].(map[string]any)
+	if !ok {
+		return false
+	}
+	return ref["fieldPath"] == "metadata.namespace"
+}
+
+func setEnv(sb *b2backupv1.ScheduledBackup, name, value string) {
+	if sb.Spec.Env == nil {
+		sb.Spec.Env = map[string]string{}
+	}
+	sb.Spec.Env[name] = value
+}
+
+func cnpgClusterOf(secret string) string {
+	for _, suffix := range []string{cnpgAppSuffix, cnpgSuperSuffix} {
+		if cluster, ok := strings.CutSuffix(secret, suffix); ok && cluster != "" {
+			return cluster
+		}
+	}
+	return ""
+}
+
+type parsedScript struct {
+	sources     []b2backupv1.BackupSource
+	retention   *b2backupv1.Retention
+	engine      b2backupv1.DatabaseEngine
+	dumpChanged bool
+}
+
+func parseBackupScript(script string, claim *hrVolume) (parsedScript, error) {
+	var parsed parsedScript
+
+	for _, line := range joinContinuations(scriptBody(script)) {
 		args := splitArgs(line)
 		if len(args) < 2 || args[0] != "restic" {
-			continue
+			return parsed, notStructured("it runs %q", line)
 		}
 
 		switch args[1] {
 		case "backup":
-			source, sourceEngine, err := parseBackupLine(args)
+			source, engine, changed, err := parseBackupLine(args)
 			if err != nil {
-				return nil, nil, "", err
+				return parsed, err
 			}
-			if sourceEngine != "" {
-				engine = sourceEngine
+			if source.Type == b2backupv1.SourceTypeFiles && !underClaim(source.Path, claim) {
+				return parsed, notStructured("%q backs up a path outside the mounted claim", line)
 			}
-			sources = append(sources, source)
+			if engine != "" {
+				parsed.engine = engine
+			}
+			parsed.dumpChanged = parsed.dumpChanged || changed
+			parsed.sources = append(parsed.sources, source)
 		case "forget":
 			r, err := parseRetention(args)
 			if err != nil {
-				return nil, nil, "", err
+				return parsed, err
 			}
-			retention = r
+			parsed.retention = r
+		default:
+			return parsed, notStructured("it runs %q", line)
 		}
 	}
 
-	return sources, retention, engine, nil
+	return parsed, nil
 }
 
-func parseBackupLine(args []string) (b2backupv1.BackupSource, b2backupv1.DatabaseEngine, error) {
+func underClaim(path string, claim *hrVolume) bool {
+	if claim == nil {
+		return false
+	}
+	if !strings.HasPrefix(path, "/") {
+		return true
+	}
+	return path == claim.path || strings.HasPrefix(path, strings.TrimSuffix(claim.path, "/")+"/")
+}
+
+func scriptBody(script string) string {
+	lines := strings.Split(strings.TrimRight(script, "\n"), "\n")
+	for _, want := range preambleLines {
+		if len(lines) > 0 && strings.TrimSpace(lines[0]) == want {
+			lines = lines[1:]
+		}
+	}
+	if n := len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == postambleLine {
+		lines = lines[:n-1]
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+var backupFlags = []string{"--tag=", "--exclude=", "--exclude", "--stdin-from-command"}
+
+func parseBackupLine(args []string) (b2backupv1.BackupSource, b2backupv1.DatabaseEngine, bool, error) {
 	var source b2backupv1.BackupSource
-	if tag, ok := flagValue(args, "tag"); ok {
-		source.Tag = tag
+	line := strings.Join(args, " ")
+
+	if tags := flagValues(args, "tag"); len(tags) > 1 {
+		return source, "", false, notStructured("%q sets %d tags and a source has one", line, len(tags))
+	} else if len(tags) == 1 {
+		source.Tag = tags[0]
 	}
 
 	if i := indexOf(args, "--stdin-from-command"); i >= 0 {
-		engine, rest, err := parseDumpdb(args[i:])
+		if extra := unknownFlags(args[2:i]); len(extra) > 0 {
+			return source, "", false, notStructured("%q passes restic %s", line, strings.Join(extra, " "))
+		}
+		engine, database, changed, err := parseDumpCommand(args[i+1:])
 		if err != nil {
-			return source, "", err
+			return source, "", false, notStructured("%s", err.Error())
 		}
 		source.Type = b2backupv1.SourceType(engine)
-		if database, ok := flagValue(rest, "database"); ok {
-			source.Database = database
-		}
-
-		if extra := passthrough(rest); len(extra) > 0 {
-			source.ExtraArgs = extra
-		}
-		return source, engine, nil
+		source.Database = database
+		return source, engine, changed, nil
 	}
 
 	source.Type = b2backupv1.SourceTypeFiles
-
 	path, excludes, err := parseFileArgs(args[2:])
 	if err != nil {
-		return source, "", err
+		return source, "", false, err
 	}
 	source.Path = path
 	source.Exclude = excludes
+	return source, "", false, nil
+}
 
-	return source, "", nil
+func unknownFlags(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		if !slices.ContainsFunc(backupFlags, func(f string) bool {
+			return a == f || (strings.HasSuffix(f, "=") && strings.HasPrefix(a, f))
+		}) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 func parseFileArgs(args []string) (string, []string, error) {
@@ -286,34 +528,62 @@ func parseFileArgs(args []string) (string, []string, error) {
 			excludes = append(excludes, args[i])
 			continue
 		}
-		if path == "" && !strings.HasPrefix(args[i], "-") {
-			path = args[i]
+		if strings.HasPrefix(args[i], "-") {
+			if strings.HasPrefix(args[i], "--tag=") {
+				continue
+			}
+			return "", nil, notStructured("restic backup is passed %s", args[i])
 		}
+		if path != "" {
+			return "", nil, notStructured("restic backup is given %s and %s", path, args[i])
+		}
+		path = args[i]
 	}
 
 	return path, excludes, nil
 }
 
-func parseDumpdb(args []string) (b2backupv1.DatabaseEngine, []string, error) {
-	for i := range args {
-		if args[i] != "dumpdb" || i+1 >= len(args) {
-			continue
-		}
-		switch engine := args[i+1]; engine {
-		case string(b2backupv1.DatabaseEngineCNPG), string(b2backupv1.DatabaseEngineMariaDB):
-			return b2backupv1.DatabaseEngine(engine), args[i+2:], nil
-		default:
-			return "", nil, fmt.Errorf("unrecognised dumpdb engine %q", engine)
-		}
+func parseDumpCommand(args []string) (b2backupv1.DatabaseEngine, string, bool, error) {
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
 	}
-	return "", nil, errors.New("a --stdin-from-command backup with no dumpdb invocation")
-}
+	if len(args) == 0 {
+		return "", "", false, errors.New("a --stdin-from-command backup with no command")
+	}
 
-func passthrough(args []string) []string {
-	if i := indexOf(args, "--"); i >= 0 && i+1 < len(args) {
-		return args[i+1:]
+	switch args[0] {
+	case "dumpdb":
+		if len(args) < 2 {
+			return "", "", false, errors.New("dumpdb without an engine")
+		}
+		engine := b2backupv1.DatabaseEngine(args[1])
+		if engine != b2backupv1.DatabaseEngineCNPG && engine != b2backupv1.DatabaseEngineMariaDB {
+			return "", "", false, fmt.Errorf("unrecognised dumpdb engine %q", args[1])
+		}
+		database := ""
+		for _, a := range args[2:] {
+			switch v, ok := strings.CutPrefix(a, "--database="); {
+			case ok:
+				database = v
+			case strings.HasPrefix(a, "--secret-mount="):
+			default:
+				return "", "", false, fmt.Errorf("dumpdb is passed %s", a)
+			}
+		}
+		return engine, database, false, nil
+
+	case backupCNPGScript:
+		database := ""
+		for _, a := range args[1:] {
+			v, ok := strings.CutPrefix(a, "--dbname=")
+			if !ok {
+				return "", "", false, fmt.Errorf("%s is passed %s", backupCNPGScript, a)
+			}
+			database = v
+		}
+		return b2backupv1.DatabaseEngineCNPG, database, true, nil
 	}
-	return nil
+	return "", "", false, fmt.Errorf("it dumps with %s", args[0])
 }
 
 func parseRetention(args []string) (*b2backupv1.Retention, error) {
@@ -323,20 +593,22 @@ func parseRetention(args []string) (*b2backupv1.Retention, error) {
 		"weekly": &r.Weekly, "monthly": &r.Monthly, "yearly": &r.Yearly,
 	}
 
-	found := false
-	for unit, target := range fields {
-		value, ok := flagValue(args, "keep-"+unit)
-		if !ok {
+	for _, a := range args[2:] {
+		if a == "--prune" {
 			continue
+		}
+		name, value, ok := strings.Cut(strings.TrimPrefix(a, "--keep-"), "=")
+		target, known := fields[name]
+		if !ok || !known || !strings.HasPrefix(a, "--keep-") {
+			return nil, notStructured("restic forget is passed %s", a)
 		}
 		n, err := parseInt32(value)
 		if err != nil {
-			return nil, fmt.Errorf("--keep-%s=%s: %w", unit, value, err)
+			return nil, fmt.Errorf("%s: %w", a, err)
 		}
 		*target = n
-		found = true
 	}
-	if !found {
+	if *r == (b2backupv1.Retention{}) {
 		return nil, nil
 	}
 	return r, nil

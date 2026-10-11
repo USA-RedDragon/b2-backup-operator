@@ -27,8 +27,6 @@ import (
 
 const (
 	existingClaimName = "data"
-	seedNamespace     = "seed"
-	seedSecretName    = "seed"
 )
 
 // envClient is a single control plane shared by every test in this file. A
@@ -107,92 +105,6 @@ func TestCRDRejectsUnparseableDurations(t *testing.T) {
 	}
 }
 
-func TestCRDExistingRepositoryIDIsImmutable(t *testing.T) {
-	c := startEnv(t)
-	ctx := context.Background()
-	mustCreateNamespace(t, c, "immutable")
-
-	adopted := &b2backupv1.Repository{
-		Name: adoptedName, Namespace: "immutable",
-		Spec: b2backupv1.RepositorySpec{
-			ExistingRepositoryID: adoptedRepoID,
-			PasswordSecretRef:    &corev1.SecretKeySelector{Name: seedSecretName, Key: KeyResticPassword},
-		},
-	}
-	if err := c.Create(ctx, adopted); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("cannot be changed", func(t *testing.T) {
-		var got b2backupv1.Repository
-		if err := c.Get(ctx, client.ObjectKeyFromObject(adopted), &got); err != nil {
-			t.Fatal(err)
-		}
-		got.Spec.ExistingRepositoryID = "e5f6a7b8"
-		if err := c.Update(ctx, &got); err == nil {
-			t.Error("existingRepositoryID was changed")
-		}
-	})
-
-	t.Run("cannot be removed", func(t *testing.T) {
-		var got b2backupv1.Repository
-		if err := c.Get(ctx, client.ObjectKeyFromObject(adopted), &got); err != nil {
-			t.Fatal(err)
-		}
-		got.Spec.ExistingRepositoryID = ""
-		if err := c.Update(ctx, &got); err == nil {
-			t.Error("existingRepositoryID was removed, which the old field-level rule allowed")
-		}
-	})
-
-	t.Run("cannot be added after a repository was created", func(t *testing.T) {
-		created := &b2backupv1.Repository{
-			Name: "created", Namespace: "immutable",
-			Spec: b2backupv1.RepositorySpec{Region: "us"},
-		}
-		if err := c.Create(ctx, created); err != nil {
-			t.Fatal(err)
-		}
-		created.Status.RepositoryID = otherRepoID
-		if err := c.Status().Update(ctx, created); err != nil {
-			t.Fatal(err)
-		}
-
-		var got b2backupv1.Repository
-		if err := c.Get(ctx, client.ObjectKeyFromObject(created), &got); err != nil {
-			t.Fatal(err)
-		}
-		got.Spec.ExistingRepositoryID = adoptedRepoID
-		got.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: seedSecretName, Key: KeyResticPassword}
-		if err := c.Update(ctx, &got); err == nil {
-			t.Error("adopted a different repository after one had already been created")
-		}
-	})
-}
-
-func TestCRDRejectsSecretNameEqualToSeed(t *testing.T) {
-	c := startEnv(t)
-	mustCreateNamespace(t, c, seedNamespace)
-
-	repo := &b2backupv1.Repository{
-		Name: "clash", Namespace: seedNamespace,
-		Spec: b2backupv1.RepositorySpec{
-			ExistingRepositoryID: adoptedRepoID,
-			PasswordSecretRef:    &corev1.SecretKeySelector{Name: "restic-envs", Key: KeyResticPassword},
-			SecretName:           "restic-envs",
-		},
-	}
-	if err := c.Create(context.Background(), repo); err == nil {
-		t.Error("secretName was allowed to name the seed Secret")
-	}
-
-	repo.Name = "fine"
-	repo.Spec.SecretName = "restic-b2"
-	if err := c.Create(context.Background(), repo); err != nil {
-		t.Errorf("a distinct secretName was rejected: %v", err)
-	}
-}
-
 func TestCRDScheduledBackupValidation(t *testing.T) {
 	c := startEnv(t)
 	ctx := context.Background()
@@ -202,7 +114,7 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 		return &b2backupv1.ScheduledBackup{
 			Namespace: "backups",
 			Spec: b2backupv1.ScheduledBackupSpec{
-				RepositoryRef: corev1.LocalObjectReference{Name: "restic"},
+				RepositoryRef: corev1.LocalObjectReference{Name: resticName},
 				Schedule:      hourlySchedule,
 				Sources:       []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}},
 			},
@@ -347,6 +259,20 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "env swapping the S3 credentials",
+			mutate: func(s *b2backupv1.ScheduledBackup) {
+				s.Spec.Env = map[string]string{"AWS_ACCESS_KEY_ID": "id-of-another-key", "AWS_SECRET_ACCESS_KEY": "another-key"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "env changing the region",
+			mutate: func(s *b2backupv1.ScheduledBackup) {
+				s.Spec.Env = map[string]string{"AWS_DEFAULT_REGION": "us-west-004"}
+			},
+			wantErr: true,
+		},
+		{
 			name: "env the operator does not set",
 			mutate: func(s *b2backupv1.ScheduledBackup) {
 				s.Spec.Env = map[string]string{"RESTIC_GROUP_BY": "tags", "APP_ENV": "production"}
@@ -399,7 +325,9 @@ func rawObject(kind, name, namespace string, spec map[string]any) client.Object 
 }
 
 func repositoryWithRawInterval(name, namespace, interval string) client.Object {
-	return rawObject("Repository", name, namespace, map[string]any{"interval": interval})
+	return rawObject("Repository", name, namespace, map[string]any{
+		fieldMode: "Bucket", fieldBucket: "acme-" + name, "interval": interval,
+	})
 }
 
 func TestCRDSamplesAreValid(t *testing.T) {
@@ -443,7 +371,7 @@ func TestCRDSamplesAreValid(t *testing.T) {
 // omitempty drops, or a retryLock that is not a Go duration at all.
 func scheduledBackupRaw(name, namespace string, spec map[string]any) client.Object {
 	full := map[string]any{
-		"repositoryRef": map[string]any{"name": "restic"},
+		"repositoryRef": map[string]any{"name": resticName},
 		"schedule":      hourlySchedule,
 		"sources":       []any{map[string]any{"type": "cnpg"}},
 	}
@@ -496,85 +424,140 @@ func TestCRDRejectsUnparseableRetryLock(t *testing.T) {
 	}
 }
 
-func TestCRDAdoptionRequiresAPasswordSecretRef(t *testing.T) {
-	c := startEnv(t)
-	ctx := context.Background()
-	mustCreateNamespace(t, c, "adoption")
+const (
+	fieldMode   = "mode"
+	fieldBucket = "bucket"
+	fieldPath   = "path"
+)
 
-	repo := &b2backupv1.Repository{
-		Name: "no-password", Namespace: "adoption",
-		Spec: b2backupv1.RepositorySpec{ExistingRepositoryID: adoptedRepoID},
-	}
-	err := c.Create(ctx, repo)
-	if err == nil {
-		t.Fatal("adopted a repository with no passwordSecretRef; its snapshots would be unreadable")
-	}
-	if !strings.Contains(err.Error(), "passwordSecretRef is required when adopting") {
-		t.Errorf("rejected for the wrong reason: %v", err)
-	}
-
-	repo.Spec.PasswordSecretRef = &corev1.SecretKeySelector{
-		Name: seedSecretName, Key: KeyResticPassword,
-	}
-	if err := c.Create(ctx, repo); err != nil {
-		t.Errorf("adoption with a passwordSecretRef was rejected: %v", err)
-	}
-
-	byName := &b2backupv1.Repository{
-		Name: "by-name", Namespace: "adoption",
-		Spec: b2backupv1.RepositorySpec{RepositoryName: legacyName},
-	}
-	if err := c.Create(ctx, byName); err != nil {
-		t.Errorf("a Repository without existingRepositoryID was rejected: %v; a name that "+
-			"turns out to match an existing repository is adoption too, but CEL cannot see "+
-			"the BorgBase side, and requiring passwordSecretRef here would break every new "+
-			"Repository. reconcileSecret refuses at reconcile time instead", err)
+func validRepository(name, namespace string) *b2backupv1.Repository {
+	return &b2backupv1.Repository{
+		Name: name, Namespace: namespace,
+		Spec: b2backupv1.RepositorySpec{
+			Mode:   b2backupv1.StorageModePrefix,
+			Bucket: "acme-shared",
+			Path:   "restic/" + name,
+		},
 	}
 }
 
-func TestCRDImmutabilityAllowsUnchangedUpdates(t *testing.T) {
+func TestCRDRepositoryValidation(t *testing.T) {
+	c := startEnv(t)
+	mustCreateNamespace(t, c, "repos")
+
+	tests := []struct {
+		name    string
+		mutate  func(*b2backupv1.Repository)
+		wantErr string
+	}{
+		{name: "a valid Prefix repository", mutate: func(*b2backupv1.Repository) {}},
+		{name: "a valid Bucket repository", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.Mode = b2backupv1.StorageModeBucket
+			r.Spec.Path = ""
+		}},
+		{name: "a default path", mutate: func(r *b2backupv1.Repository) { r.Spec.Path = "" }},
+		{name: "no mode", mutate: func(r *b2backupv1.Repository) { r.Spec.Mode = "" }, wantErr: fieldMode},
+		{name: "an unknown mode", mutate: func(r *b2backupv1.Repository) { r.Spec.Mode = "Folder" }, wantErr: fieldMode},
+		{name: "no bucket", mutate: func(r *b2backupv1.Repository) { r.Spec.Bucket = "" }, wantErr: fieldBucket},
+		{name: "a short bucket name", mutate: func(r *b2backupv1.Repository) { r.Spec.Bucket = "abcde" }, wantErr: fieldBucket},
+		{name: "the longest bucket name", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.Bucket = strings.Repeat("a", 63)
+		}},
+		{name: "a long bucket name", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.Bucket = strings.Repeat("a", 64)
+		}, wantErr: fieldBucket},
+		{name: "an uppercase bucket name", mutate: func(r *b2backupv1.Repository) { r.Spec.Bucket = "Acme-Shared" }, wantErr: fieldBucket},
+		{name: "a bucket name with a dot", mutate: func(r *b2backupv1.Repository) { r.Spec.Bucket = "acme.shared" }, wantErr: fieldBucket},
+		{name: "a bucket name starting with a dash", mutate: func(r *b2backupv1.Repository) { r.Spec.Bucket = "-acme-shared" }, wantErr: fieldBucket},
+		{name: "a reserved bucket name", mutate: func(r *b2backupv1.Repository) { r.Spec.Bucket = "b2-backups" }, wantErr: "reserved"},
+		{name: "a path with a leading slash", mutate: func(r *b2backupv1.Repository) { r.Spec.Path = "/restic/app" }, wantErr: fieldPath},
+		{name: "a path with a trailing slash", mutate: func(r *b2backupv1.Repository) { r.Spec.Path = "restic/app/" }, wantErr: fieldPath},
+		{name: "a path with an empty segment", mutate: func(r *b2backupv1.Repository) { r.Spec.Path = "restic//app" }, wantErr: fieldPath},
+		{name: "a path climbing out", mutate: func(r *b2backupv1.Repository) { r.Spec.Path = "restic/../app" }, wantErr: ". or .."},
+		{name: "a path with a dot segment", mutate: func(r *b2backupv1.Repository) { r.Spec.Path = "./app" }, wantErr: ". or .."},
+		{name: "a path with dots inside a name", mutate: func(r *b2backupv1.Repository) { r.Spec.Path = "restic/my.app..v2" }},
+		{name: "zero lifecycle days", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.Lifecycle = &b2backupv1.LifecycleSpec{DaysFromHidingToDeleting: ptr.To(int32(0))}
+		}, wantErr: "daysFromHidingToDeleting"},
+		{name: "secretName naming the seed", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: seedSecret, Key: KeyResticPassword}
+			r.Spec.SecretName = seedSecret
+		}, wantErr: "the operator never writes to the seed"},
+		{name: "secretName naming the credentials", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.CredentialsSecretRef = &corev1.LocalObjectReference{Name: teamSecret}
+			r.Spec.SecretName = teamSecret
+		}, wantErr: "credentialsSecretRef"},
+		{name: "distinct Secrets", mutate: func(r *b2backupv1.Repository) {
+			r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: seedSecret, Key: KeyResticPassword}
+			r.Spec.CredentialsSecretRef = &corev1.LocalObjectReference{Name: teamSecret}
+			r.Spec.SecretName = "restic-credentials"
+		}},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := validRepository(fmt.Sprintf("repo-%d", i), "repos")
+			tt.mutate(repo)
+			err := c.Create(context.Background(), repo)
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Errorf("rejected: %v", err)
+			case tt.wantErr != "" && err == nil:
+				t.Error("accepted, want rejection")
+			case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
+				t.Errorf("rejected for the wrong reason: %v, want it to mention %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCRDRepositoryLocationIsImmutable(t *testing.T) {
 	c := startEnv(t)
 	ctx := context.Background()
-	mustCreateNamespace(t, c, "unchanged")
+	mustCreateNamespace(t, c, "immutable")
 
-	adopted := &b2backupv1.Repository{
-		Name: adoptedName, Namespace: "unchanged",
-		Spec: b2backupv1.RepositorySpec{
-			ExistingRepositoryID: adoptedRepoID,
-			PasswordSecretRef:    &corev1.SecretKeySelector{Name: seedSecretName, Key: KeyResticPassword},
-		},
-	}
-	if err := c.Create(ctx, adopted); err != nil {
-		t.Fatal(err)
-	}
-
-	created := &b2backupv1.Repository{
-		Name: "created", Namespace: "unchanged",
-		Spec: b2backupv1.RepositorySpec{Region: "us"},
-	}
-	if err := c.Create(ctx, created); err != nil {
-		t.Fatal(err)
-	}
-	created.Status.RepositoryID = otherRepoID
-	if err := c.Status().Update(ctx, created); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, tt := range []struct {
-		name string
-		obj  client.Object
+	tests := []struct {
+		name    string
+		create  func(*b2backupv1.Repository)
+		update  func(*b2backupv1.Repository)
+		wantErr bool
 	}{
-		{"an adopted repository", adopted},
-		{"a created repository", created},
-	} {
+		{name: fieldMode, update: func(r *b2backupv1.Repository) { r.Spec.Mode = b2backupv1.StorageModeBucket }, wantErr: true},
+		{name: fieldBucket, update: func(r *b2backupv1.Repository) { r.Spec.Bucket = "acme-other" }, wantErr: true},
+		{name: "changing the path", update: func(r *b2backupv1.Repository) { r.Spec.Path = "restic/moved" }, wantErr: true},
+		{name: "removing the path", update: func(r *b2backupv1.Repository) { r.Spec.Path = "" }, wantErr: true},
+		{
+			name:    "adding a path to a defaulted one",
+			create:  func(r *b2backupv1.Repository) { r.Spec.Path = "" },
+			update:  func(r *b2backupv1.Repository) { r.Spec.Path = "immutable/added" },
+			wantErr: true,
+		},
+		{name: "an unrelated field", update: func(r *b2backupv1.Repository) { r.Spec.Suspend = true }},
+		{name: "the lifecycle rule", update: func(r *b2backupv1.Repository) {
+			r.Spec.Lifecycle = &b2backupv1.LifecycleSpec{DaysFromHidingToDeleting: ptr.To(int32(30))}
+		}},
+	}
+
+	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var got b2backupv1.Repository
-			if err := c.Get(ctx, client.ObjectKeyFromObject(tt.obj), &got); err != nil {
+			repo := validRepository(fmt.Sprintf("loc-%d", i), "immutable")
+			if tt.create != nil {
+				tt.create(repo)
+			}
+			if err := c.Create(ctx, repo); err != nil {
 				t.Fatal(err)
 			}
-			got.Spec.Suspend = true
-			if err := c.Update(ctx, &got); err != nil {
-				t.Errorf("an update leaving existingRepositoryID alone was rejected: %v", err)
+			var got b2backupv1.Repository
+			if err := c.Get(ctx, client.ObjectKeyFromObject(repo), &got); err != nil {
+				t.Fatal(err)
+			}
+			tt.update(&got)
+			err := c.Update(ctx, &got)
+			if tt.wantErr && err == nil {
+				t.Error("the update was accepted, want rejection")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("the update was rejected: %v", err)
 			}
 		})
 	}

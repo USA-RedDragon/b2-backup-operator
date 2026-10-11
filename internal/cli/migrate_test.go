@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 )
@@ -62,8 +64,25 @@ const oneClaim = `      data:
 func migrate(t *testing.T, body string) (string, error) {
 	t.Helper()
 	var buf bytes.Buffer
-	err := runMigrate(&buf, writeMigrationDir(t, body), "ab12cd34")
+	err := runMigrate(&buf, writeMigrationDir(t, body), migrateOptions{repository: sopsRepoURL})
 	return buf.String(), err
+}
+
+func migrated(t *testing.T, out string) (*b2backupv1.Repository, *b2backupv1.ScheduledBackup) {
+	t.Helper()
+	docs := strings.Split(out, "\n---\n")
+	if len(docs) != 2 {
+		t.Fatalf("expected two documents:\n%s", out)
+	}
+	var repo b2backupv1.Repository
+	if err := yaml.Unmarshal([]byte(docs[0]), &repo); err != nil {
+		t.Fatal(err)
+	}
+	var sb b2backupv1.ScheduledBackup
+	if err := yaml.Unmarshal([]byte(docs[1]), &sb); err != nil {
+		t.Fatal(err)
+	}
+	return &repo, &sb
 }
 
 func TestShorthandScheduleOnlyEmitsSchedulesTheOperatorAccepts(t *testing.T) {
@@ -205,7 +224,7 @@ func TestParseBackupLineReadsSpaceSeparatedExcludes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			source, _, err := parseBackupLine(splitArgs(tt.line))
+			source, _, _, err := parseBackupLine(splitArgs(tt.line))
 			if err != nil {
 				t.Fatalf("parseBackupLine(%q) error = %v", tt.line, err)
 			}
@@ -220,7 +239,7 @@ func TestParseBackupLineReadsSpaceSeparatedExcludes(t *testing.T) {
 }
 
 func TestParseBackupLineRefusesADanglingExclude(t *testing.T) {
-	_, _, err := parseBackupLine(splitArgs("restic backup /data --exclude"))
+	_, _, _, err := parseBackupLine(splitArgs("restic backup /data --exclude"))
 	if !errors.Is(err, ErrExcludeCount) {
 		t.Errorf("expected ErrExcludeCount, got %v", err)
 	}
@@ -249,5 +268,259 @@ func TestMigrateMountsTheClaimTheScriptBacksUp(t *testing.T) {
 	}
 	if len(sb.Spec.Sources) != 1 || sb.Spec.Sources[0].Type != b2backupv1.SourceTypeFiles {
 		t.Fatalf("unexpected sources %+v", sb.Spec.Sources)
+	}
+}
+
+const (
+	kustomizedNS = "myapp"
+	mirrorPath   = "/mirror"
+)
+
+const homeClusterRelease = `apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: restic
+  namespace: copied-from-elsewhere
+spec:
+  values:
+    controllers:
+      restic:
+        type: cronjob
+        cronjob:
+          schedule: 32 0 * * *
+          timeZone: America/Chicago
+          concurrencyPolicy: Forbid
+        containers:
+          restic:
+            workingDir: /
+            env:
+              TZ: America/Chicago
+              RESTIC_HOST:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            command:
+              - sh
+              - -c
+              - |
+                exec > >(ts '%H:%M:%S') 2>&1
+                set -eu
+                restic backup --tag=db --stdin-from-command -- backup-cnpg.sh
+                restic backup --tag=mirror /mirror
+                restic forget --prune --keep-daily=90 --keep-weekly=24 --keep-monthly=24 --keep-yearly=20
+                restic cache --cleanup
+            resources:
+              requests:
+                cpu: 10m
+                memory: 256Mi
+      init:
+        type: job
+        containers:
+          init:
+            command: [sh, -c, "restic init || true"]
+    persistence:
+      postgresql-app:
+        type: secret
+        name: postgresql-app
+      mirror:
+        existingClaim: app-mirror
+        advancedMounts:
+          restic:
+            restic:
+              - path: /mirror
+                readOnly: true
+      unrelated:
+        existingClaim: app-other
+        advancedMounts:
+          init:
+            init:
+              - path: /other
+`
+
+func writeHomeClusterRelease(t *testing.T, body string) string {
+	t.Helper()
+	dir := writeMigrationDir(t, body)
+	kustomization := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nnamespace: " + kustomizedNS + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "kustomization.yaml"), []byte(kustomization), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestMigrateAdoptsTheExistingRepositoryInPrefixMode(t *testing.T) {
+	var buf bytes.Buffer
+	dir := writeHomeClusterRelease(t, homeClusterRelease)
+	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v\n%s", err, buf.String())
+	}
+	repo, sb := migrated(t, buf.String())
+
+	if repo.Spec.Mode != b2backupv1.StorageModePrefix || repo.Spec.Bucket != testBucket ||
+		repo.Spec.Path != sopsAppPath {
+		t.Errorf("repository spec = %+v, want Prefix mode at acme-backups/restic/app", repo.Spec)
+	}
+	if ref := repo.Spec.PasswordSecretRef; ref == nil || ref.Name != "restic-envs" || ref.Key != "RESTIC_PASSWORD" {
+		t.Errorf("passwordSecretRef = %+v, want restic-envs/RESTIC_PASSWORD", ref)
+	}
+	if repo.Namespace != kustomizedNS || sb.Namespace != kustomizedNS {
+		t.Errorf("namespaces %q and %q, want the kustomization's myapp", repo.Namespace, sb.Namespace)
+	}
+
+	if v := sb.Spec.Volume; v == nil || v.ExistingClaim != "app-mirror" || v.MountPath != mirrorPath || !v.ReadOnly {
+		t.Errorf("volume = %+v, want app-mirror read-only at /mirror", v)
+	}
+	if db := sb.Spec.Database; db == nil || db.Engine != b2backupv1.DatabaseEngineCNPG || db.SecretName != "postgresql-app" {
+		t.Errorf("database = %+v, want cnpg from postgresql-app", db)
+	}
+	if len(sb.Spec.Sources) != 2 || sb.Spec.Sources[0].Type != b2backupv1.SourceTypeCNPG ||
+		sb.Spec.Sources[1].Path != mirrorPath {
+		t.Errorf("sources = %+v", sb.Spec.Sources)
+	}
+	if r := sb.Spec.Retention; r == nil || *r.Daily != 90 || *r.Yearly != 20 {
+		t.Errorf("retention = %+v", r)
+	}
+	if sb.Spec.Resources == nil || sb.Spec.Resources.Requests.Memory().String() != "256Mi" {
+		t.Errorf("resources = %+v, want the HelmRelease's", sb.Spec.Resources)
+	}
+	if len(sb.Spec.Env) != 0 || sb.Spec.ResticHost != "" {
+		t.Errorf("env = %v, resticHost = %q; TZ and the namespace host are the operator's defaults",
+			sb.Spec.Env, sb.Spec.ResticHost)
+	}
+	if !strings.Contains(buf.String(), "backup-cnpg.sh becomes dumpdb cnpg") {
+		t.Errorf("the dump format change was not called out:\n%s", buf.String())
+	}
+}
+
+func TestMigrateMountPathMatchesAppTemplate(t *testing.T) {
+	var buf bytes.Buffer
+	dir := writeHomeClusterRelease(t, strings.Replace(homeClusterRelease,
+		"              - path: /mirror\n                readOnly: true\n", "              - readOnly: true\n", 1))
+	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v\n%s", err, buf.String())
+	}
+	_, sb := migrated(t, buf.String())
+	if got := sb.Spec.Volume.EffectiveMountPath(); got != mirrorPath {
+		t.Errorf("mount path = %q, want /mirror, after the persistence key", got)
+	}
+}
+
+func TestMigrateNeedsTheRepositoryURL(t *testing.T) {
+	err := runMigrate(&bytes.Buffer{}, writeHomeClusterRelease(t, homeClusterRelease), migrateOptions{})
+	if !errors.Is(err, ErrNoRepositoryURL) {
+		t.Fatalf("err = %v, want ErrNoRepositoryURL", err)
+	}
+
+	err = runMigrate(&bytes.Buffer{}, writeHomeClusterRelease(t, homeClusterRelease),
+		migrateOptions{repository: "b2:" + testBucket + ":" + sopsAppPath})
+	if !errors.Is(err, ErrNoRepositoryURL) {
+		t.Fatalf("err = %v, want the native b2: URL refused", err)
+	}
+}
+
+func TestMigrateReadsTheURLFromTheEncryptedSecret(t *testing.T) {
+	secret := fakeSops(t, sopsEmitting("stringData:\n  RESTIC_REPOSITORY: "+sopsRepoURL+"\n"))
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, writeHomeClusterRelease(t, homeClusterRelease),
+		migrateOptions{fromSecret: secret}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo, _ := migrated(t, buf.String())
+	if repo.Spec.Path != sopsAppPath {
+		t.Errorf("path = %q, want restic/app from the decrypted Secret", repo.Spec.Path)
+	}
+}
+
+func TestMigrateABucketRootRepositoryAdoptsTheBucket(t *testing.T) {
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, writeHomeClusterRelease(t, homeClusterRelease),
+		migrateOptions{repository: "s3:https://s3.us-east-005.backblazeb2.com/acme-app"}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo, _ := migrated(t, buf.String())
+	if repo.Spec.Mode != b2backupv1.StorageModeBucket || repo.Spec.Bucket != "acme-app" || repo.Spec.Path != "" {
+		t.Errorf("spec = %+v, want Bucket mode on acme-app at the root", repo.Spec)
+	}
+}
+
+func TestMigrateKeepsAnInexpressibleScriptVerbatim(t *testing.T) {
+	body := strings.Replace(homeClusterRelease,
+		"restic backup --tag=db --stdin-from-command -- backup-cnpg.sh\n",
+		"restic backup --tag=db --tag=app --stdin-filename=app.sql --stdin-from-command -- backup-cnpg.sh --dbname=app\n", 1)
+	body = strings.Replace(body, "              TZ: America/Chicago\n",
+		"              TZ: America/Chicago\n              CNPG_SECRET_PATH: /postgresql-app\n", 1)
+
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, writeHomeClusterRelease(t, body), migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, buf.String())
+
+	if sb.Spec.Sources != nil || sb.Spec.Retention != nil {
+		t.Errorf("sources %+v and retention %+v emitted beside a script", sb.Spec.Sources, sb.Spec.Retention)
+	}
+	if !strings.Contains(sb.Spec.Script, "--stdin-filename=app.sql") || strings.Contains(sb.Spec.Script, "set -eu") ||
+		strings.Contains(sb.Spec.Script, "cache --cleanup") {
+		t.Errorf("script = %q, want the body without the operator's own preamble and postamble", sb.Spec.Script)
+	}
+	if got := sb.Spec.Env["CNPG_SECRET_PATH"]; got != b2backupv1.DBSecretMountPath {
+		t.Errorf("CNPG_SECRET_PATH = %q, want it pointed at the operator's mount", got)
+	}
+	if sb.Spec.Database == nil || sb.Spec.Database.SecretName != "postgresql-app" {
+		t.Errorf("database = %+v, want the secret still mounted", sb.Spec.Database)
+	}
+}
+
+func TestMigrateRefusesAnEmptyDir(t *testing.T) {
+	body := homeClusterRelease + `      scratch:
+        type: emptyDir
+        globalMounts:
+          - path: /backup
+`
+	err := runMigrate(&bytes.Buffer{}, writeHomeClusterRelease(t, body), migrateOptions{repository: sopsRepoURL})
+	if !errors.Is(err, ErrUnsupportedMount) || !strings.Contains(err.Error(), "/backup") {
+		t.Fatalf("err = %v, want ErrUnsupportedMount naming /backup", err)
+	}
+}
+
+func TestMigrateCopiesAffinityAndDerivesTheCNPGCluster(t *testing.T) {
+	body := strings.Replace(homeClusterRelease, "spec:\n  values:\n", `spec:
+  values:
+    defaultPodOptions:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: grafana
+`, 1)
+	body = strings.Replace(body, "name: postgresql-app\n", "name: obsidibot-app\n", 1)
+
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, writeHomeClusterRelease(t, body), migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, buf.String())
+	if a := sb.Spec.Affinity; a == nil || a.PodAffinity == nil ||
+		a.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector.MatchLabels["app.kubernetes.io/name"] != "grafana" {
+		t.Errorf("affinity = %+v, want the HelmRelease's", a)
+	}
+	if db := sb.Spec.Database; db.SecretName != "obsidibot-app" || db.CNPGCluster != "obsidibot" {
+		t.Errorf("database = %+v, want obsidibot-app in cluster obsidibot", db)
+	}
+}
+
+func TestMigrateAcceptsAFileAndNamesTheBackupAfterTheRelease(t *testing.T) {
+	dir := writeHomeClusterRelease(t, strings.Replace(homeClusterRelease, "name: restic\n", "name: obsidibot-restic\n", 1))
+	file := filepath.Join(dir, "restic.yaml")
+	if err := os.Rename(filepath.Join(dir, "helmrelease.yaml"), file); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, file, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo, sb := migrated(t, buf.String())
+	if sb.Name != "obsidibot-restic" || repo.Name != "restic" || sb.Spec.RepositoryRef.Name != "restic" {
+		t.Errorf("names %s and %s, want obsidibot-restic backing up into restic", sb.Name, repo.Name)
 	}
 }

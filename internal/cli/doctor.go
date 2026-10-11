@@ -200,10 +200,19 @@ func checkRepository(ctx context.Context, c client.Client, repo *b2backupv1.Repo
 		describeInitJobs(ctx, c, repo, r)
 	}
 
-	if repo.Status.RepositoryID == "" {
-		r.add(levelWarn, "no BorgBase repository ID recorded yet")
-	} else if repo.Status.Adopted {
-		r.add(levelInfo, fmt.Sprintf("adopted existing BorgBase repository %s", repo.Status.RepositoryID))
+	switch {
+	case repo.Status.BucketID == "":
+		r.add(levelWarn, "no B2 bucket recorded yet")
+	case repo.Status.Adopted:
+		r.add(levelInfo, fmt.Sprintf("adopted the existing restic repository at %s/%s",
+			repo.Status.BucketName, repositoryPath(repo)))
+	default:
+		r.add(levelInfo, fmt.Sprintf("stored at %s/%s", repo.Status.BucketName, repositoryPath(repo)))
+	}
+
+	if cond := FindCondition(repo.Status.Conditions, b2backupv1.RepositoryConditionLifecycleRule); cond != nil &&
+		cond.Status != metav1.ConditionTrue {
+		r.add(levelWarn, fmt.Sprintf("lifecycle rule: %s", cond.Reason), cond.Message)
 	}
 
 	checkCredentialsSecret(ctx, c, repo, r)
@@ -275,16 +284,26 @@ func checkCredentialsSecret(ctx context.Context, c client.Client, repo *b2backup
 	}
 
 	var missing []string
-	for _, key := range []string{controller.KeyResticRepository, controller.KeyResticPassword} {
+	for _, key := range controller.SecretKeys {
 		if len(secret.Data[key]) == 0 {
 			missing = append(missing, key)
 		}
 	}
 	if len(missing) > 0 {
-		r.add(levelFail, fmt.Sprintf("Secret %q is missing %v", name, missing))
+		r.add(levelFail, fmt.Sprintf("Secret %q is missing %v", name, missing),
+			"The operator rewrites it on its next reconcile; restic cannot reach B2 until then.")
 		return
 	}
-	r.add(levelOK, fmt.Sprintf("credentials Secret %q has both keys", name))
+
+	keyID := string(secret.Data[controller.KeyAccessKeyID])
+	if recorded := repo.Status.ApplicationKeyID; recorded != "" && keyID != recorded {
+		r.add(levelFail, fmt.Sprintf("Secret %q holds application key %s, but the operator recorded %s",
+			name, keyID, recorded),
+			"The key in the Secret may have been deleted. The operator replaces it on its next reconcile.")
+		return
+	}
+	r.add(levelOK, fmt.Sprintf("credentials Secret %q has all %d keys, application key %s",
+		name, len(controller.SecretKeys), keyID))
 }
 
 func checkCronJob(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, r *report) {

@@ -77,8 +77,11 @@ func writeRepositoryStatus(p *printer, repo *b2backupv1.Repository) {
 
 	tw := NewTabWriter(p)
 	w := newPrinter(tw)
-	field(w, "BorgBase ID", orNone(repo.Status.RepositoryID))
-	field(w, "Server", orNone(repo.Status.Server))
+	field(w, "Mode", orNone(string(repo.Spec.Mode)))
+	field(w, "Bucket", orNone(repo.Status.BucketName))
+	field(w, "Path", repositoryPath(repo))
+	field(w, "Endpoint", orNone(repo.Status.Endpoint))
+	field(w, "Key ID", orNone(repo.Status.ApplicationKeyID))
 	field(w, "Usage", usageOf(repo))
 	field(w, "Initialized", yesNo(repo.Status.Initialized))
 	field(w, "Adopted", yesNo(repo.Status.Adopted))
@@ -113,17 +116,13 @@ func writeBackupStatus(p *printer, sb *b2backupv1.ScheduledBackup, repo *b2backu
 }
 
 func usageOf(repo *b2backupv1.Repository) string {
-	usage, quota := repo.Status.CurrentUsage, repo.Status.Quota
-	switch {
-	case usage == "" && quota == "":
+	if repo.Status.CurrentUsage == "" {
 		return "<unknown>"
-	case quota == "":
-		return usage
-	case usage == "":
-		return "? / " + quota
-	default:
-		return usage + " / " + quota
 	}
+	if repo.Status.UsageTime == nil {
+		return repo.Status.CurrentUsage
+	}
+	return repo.Status.CurrentUsage + " (measured " + Since(repo.Status.UsageTime) + ")"
 }
 
 func writeConditions(p *printer, conds []metav1.Condition) {

@@ -3,10 +3,14 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -28,18 +32,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
-	"github.com/USA-RedDragon/b2-backup-operator/internal/borgbase"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/b2"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/secrets"
 )
 
 const (
-	// FinalizerName guards the BorgBase repository against deletion of the Repository.
+	// FinalizerName guards the B2 data against deletion of the Repository.
 	FinalizerName = "b2backup.mcswain.dev/finalizer"
 
 	// KeyResticRepository is the Secret key holding the restic URL.
 	KeyResticRepository = "RESTIC_REPOSITORY"
 	// KeyResticPassword is the Secret key holding the restic password.
 	KeyResticPassword = "RESTIC_PASSWORD"
+	// KeyAccessKeyID is the Secret key holding the B2 application key ID restic uses over S3.
+	KeyAccessKeyID = "AWS_ACCESS_KEY_ID"
+	// KeySecretAccessKey is the Secret key holding the B2 application key restic uses over S3.
+	KeySecretAccessKey = "AWS_SECRET_ACCESS_KEY"
+	// KeyDefaultRegion is the Secret key holding the S3 region of the bucket.
+	KeyDefaultRegion = "AWS_DEFAULT_REGION"
 
 	initJobSuffix = "-init"
 
@@ -48,24 +58,47 @@ const (
 	initRetryDelay = 5 * time.Minute
 
 	maxConcurrentReconciles = 4
+
+	usageInterval = 6 * time.Hour
+	usageMaxPages = 20
+
+	deleteBudget       = 5000
+	deleteRequeueDelay = time.Second
+
+	keyNameMaxLength = 100
 )
 
-// RepositoryReconciler reconciles Repository objects against the BorgBase API.
+// SecretKeys are the keys the operator writes to every credentials Secret.
+var SecretKeys = []string{
+	KeyResticRepository, KeyResticPassword, KeyAccessKeyID, KeySecretAccessKey, KeyDefaultRegion,
+}
+
+// ResticKeyCapabilities is what the per-repository application key may do. restic's
+// S3 backend never names a version when it deletes, so B2 only hides the file and
+// writeFiles is enough; without deleteFiles the key cannot destroy a version, and a
+// hidden one stays recoverable until the lifecycle rule deletes it.
+var ResticKeyCapabilities = []string{"listBuckets", "listFiles", "readFiles", "writeFiles"}
+
+// RepositoryReconciler reconciles Repository objects against the B2 API.
 type RepositoryReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
 
-	NewAPI func(token string) borgbase.API
+	NewAPI func(keyID, key string) b2.API
 
-	DefaultTokenSecret types.NamespacedName
-	DefaultTokenKey    string
+	DefaultCredentialsSecret types.NamespacedName
 
 	BackupImage string
 
 	APIReader client.Reader
 
-	Endpoint string
+	AuthURL string
+
+	Now func() time.Time
+
+	apiMu    sync.Mutex
+	apiCache map[string]b2.API
 }
 
 // +kubebuilder:rbac:groups=b2backup.mcswain.dev,resources=repositories,verbs=get;list;watch;update;patch
@@ -76,7 +109,7 @@ type RepositoryReconciler struct {
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
-// Reconcile brings the BorgBase repository and its credentials Secret in line with the spec.
+// Reconcile brings the B2 bucket, application key and credentials Secret in line with the spec.
 func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -87,13 +120,13 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if !repo.DeletionTimestamp.IsZero() {
 		statusBase := repo.DeepCopy()
-		if err := r.finalize(ctx, &repo); err != nil {
+		result, err := r.finalize(ctx, &repo)
+		if err != nil {
 			if statusErr := r.patchStatus(ctx, &repo, statusBase); statusErr != nil {
 				logger.Error(statusErr, "Failed to update status after a failed finalize")
 			}
-			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, nil
+		return result, err
 	}
 
 	if !controllerutil.ContainsFinalizer(&repo, FinalizerName) {
@@ -117,31 +150,45 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, r.patchStatus(ctx, &repo, statusBase)
 	}
 
+	if other, err := r.repositoryConflict(ctx, &repo); err != nil {
+		return ctrl.Result{}, err
+	} else if other != "" {
+		r.setCondition(&repo, metav1.Condition{
+			Type:   b2backupv1.RepositoryConditionReady,
+			Status: metav1.ConditionFalse,
+			Reason: "RepositoryConflict",
+			Message: fmt.Sprintf(
+				"bucket %s path %s overlaps Repository %s, which claimed it first; "+
+					"point one of them elsewhere, or delete this one",
+				repo.Spec.Bucket, displayPath(repo.EffectivePath()), other),
+		})
+		return ctrl.Result{RequeueAfter: r.interval(&repo)}, r.patchStatus(ctx, &repo, statusBase)
+	}
+
 	api, err := r.apiFor(ctx, &repo)
 	if err != nil {
 		r.setCondition(&repo, metav1.Condition{
 			Type:    b2backupv1.RepositoryConditionReady,
 			Status:  metav1.ConditionFalse,
-			Reason:  "APITokenUnavailable",
+			Reason:  "CredentialsUnavailable",
 			Message: err.Error(),
 		})
-		r.Recorder.Eventf(&repo, nil, corev1.EventTypeWarning, "APITokenUnavailable", "Reconcile", "%s", err.Error())
+		r.Recorder.Eventf(&repo, nil, corev1.EventTypeWarning, "CredentialsUnavailable", "Reconcile", "%s", err.Error())
 		if statusErr := r.patchStatus(ctx, &repo, statusBase); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status after an API token failure")
+			logger.Error(statusErr, "Failed to update status after a credentials failure")
 		}
 		return ctrl.Result{}, err
 	}
 
 	result, err := r.reconcile(ctx, &repo, api)
 	if err != nil {
-		meta := metav1.Condition{
+		r.setCondition(&repo, metav1.Condition{
 			Type:    b2backupv1.RepositoryConditionReady,
 			Status:  metav1.ConditionFalse,
-			Reason:  "ReconcileFailed",
+			Reason:  reasonFor(err),
 			Message: err.Error(),
-		}
-		r.setCondition(&repo, meta)
-		r.Recorder.Eventf(&repo, nil, corev1.EventTypeWarning, "ReconcileFailed", "Reconcile", "%s", err.Error())
+		})
+		r.Recorder.Eventf(&repo, nil, corev1.EventTypeWarning, reasonFor(err), "Reconcile", "%s", err.Error())
 		if statusErr := r.patchStatus(ctx, &repo, statusBase); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status after a failed reconcile")
 		}
@@ -154,52 +201,85 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return result, nil
 }
 
-func (r *RepositoryReconciler) reconcile(
-	ctx context.Context, repo *b2backupv1.Repository, api borgbase.API,
-) (ctrl.Result, error) {
-	known := repo.Status.SecretName != "" || repo.Status.Initialized
+type reasonError struct {
+	reason string
+	err    error
+}
 
-	remote, err := r.resolveRepo(ctx, repo, api)
+func (e *reasonError) Error() string { return e.err.Error() }
+func (e *reasonError) Unwrap() error { return e.err }
+
+func withReason(reason string, err error) error {
+	return &reasonError{reason: reason, err: err}
+}
+
+func reasonFor(err error) string {
+	if re, ok := errors.AsType[*reasonError](err); ok {
+		return re.reason
+	}
+	return "ReconcileFailed"
+}
+
+func (r *RepositoryReconciler) reconcile(
+	ctx context.Context, repo *b2backupv1.Repository, api b2.API,
+) (ctrl.Result, error) {
+	known := repo.Status.SecretName != "" || repo.Status.Initialized || repo.Status.ApplicationKeyID != ""
+
+	auth, err := api.Authorize(ctx)
+	if err != nil {
+		return ctrl.Result{}, withReason("CredentialsRejected", fmt.Errorf("authorizing with B2: %w", err))
+	}
+	region, err := auth.S3Region()
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if !remote.IsRestic() {
+	path := repo.EffectivePath()
+	if repo.Status.BucketID != "" && repo.Status.Path != path {
 		return ctrl.Result{}, fmt.Errorf(
-			"%w: repository %s has format %q", borgbase.ErrNotRestic, remote.ID, remote.Format)
+			"this resource already manages path %s but now resolves to %s; "+
+				"delete and recreate the Repository if the move is intended",
+			displayPath(repo.Status.Path), displayPath(path))
 	}
 
-	if other, err := r.repositoryConflict(ctx, repo, remote.ID); err != nil {
-		return ctrl.Result{}, err
-	} else if other != "" {
-		r.setCondition(repo, metav1.Condition{
-			Type:   b2backupv1.RepositoryConditionReady,
-			Status: metav1.ConditionFalse,
-			Reason: "RepositoryConflict",
-			Message: fmt.Sprintf(
-				"BorgBase repository %s is already managed by Repository %s; "+
-					"point one of them elsewhere, or delete this one", remote.ID, other),
-		})
-
-		return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
-	}
-
-	if remote, err = r.reconcileSettings(ctx, repo, remote, api); err != nil {
+	bucket, err := r.resolveBucket(ctx, repo, api)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
+	repo.Status.BucketName = bucket.BucketName
+	repo.Status.BucketID = bucket.BucketID
+	repo.Status.Path = path
+	repo.Status.Endpoint = auth.S3APIURL
 
-	repo.Status.RepositoryID = remote.ID
-	repo.Status.Server = remote.Host()
-	repo.Status.CurrentUsage = formatUsage(remote.CurrentUsage)
-	if remote.QuotaEnabled {
-		repo.Status.Quota = formatQuota(remote.Quota)
-	} else {
-		repo.Status.Quota = ""
+	dataExists := false
+	if !repo.Status.Initialized {
+		exists, err := b2.FileExists(ctx, api, bucket.BucketID, joinPath(path, "config"))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("checking for an existing restic repository: %w", err)
+		}
+		if exists && !repo.Status.Adopted {
+			repo.Status.Adopted = true
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryAdopted", "Adopt",
+				"Found an existing restic repository at %s/%s; adopting it", bucket.BucketName, displayPath(path))
+		}
+		if dataExists, err = b2.AnyVersionUnder(ctx, api, bucket.BucketID, filePrefix(path)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("checking for existing data: %w", err)
+		}
 	}
 
-	if err := r.reconcileSecret(ctx, repo, remote, known); err != nil {
+	if err := r.reconcileLifecycle(ctx, repo, api, bucket); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	creds := credentials{
+		url:    resticURL(auth.S3APIURL, bucket.BucketName, path),
+		region: region,
+	}
+	if err := r.reconcileSecret(ctx, repo, api, bucket, creds, known || dataExists); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	r.reconcileUsage(ctx, repo, api)
 
 	justInitialized := false
 	if !repo.Status.Initialized {
@@ -237,95 +317,372 @@ func (r *RepositoryReconciler) reconcile(
 	if justInitialized {
 		return ctrl.Result{RequeueAfter: initCleanupDelay}, nil
 	}
-
 	return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
 }
 
-func (r *RepositoryReconciler) resolveRepo(
-	ctx context.Context, repo *b2backupv1.Repository, api borgbase.API,
-) (*borgbase.Repo, error) {
-	if id := repo.Spec.ExistingRepositoryID; id != "" {
-		if recorded := repo.Status.RepositoryID; recorded != "" && recorded != id {
-			return nil, fmt.Errorf(
-				"spec.existingRepositoryID is %s but this resource already manages repository %s; "+
-					"delete and recreate the Repository if the change is intended", id, recorded)
-		}
-		remote, err := api.Get(ctx, id)
-		if err != nil {
-			return nil, fmt.Errorf("adopting repository %s: %w", id, err)
-		}
-		repo.Status.Adopted = true
-		return remote, nil
-	}
-
-	if id := repo.Status.RepositoryID; id != "" {
-		remote, err := api.Get(ctx, id)
-		if err != nil {
-			return nil, fmt.Errorf("looking up repository %s: %w", id, err)
-		}
-		return remote, nil
-	}
-
-	name := repo.RepositoryName()
-	remote, err := api.FindByName(ctx, name)
+func (r *RepositoryReconciler) resolveBucket(
+	ctx context.Context, repo *b2backupv1.Repository, api b2.API,
+) (*b2.Bucket, error) {
+	name := repo.Spec.Bucket
+	bucket, err := api.FindBucket(ctx, name)
 	switch {
 	case err == nil:
-		repo.Status.Adopted = true
-		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryAdopted", "Adopt",
-			"Adopted the existing BorgBase repository %s named %s", remote.ID, name)
-		return remote, nil
-	case !errors.Is(err, borgbase.ErrNotFound):
-		return nil, err
+		if recorded := repo.Status.BucketID; recorded != "" && recorded != bucket.BucketID {
+			return nil, withReason("BucketReplaced", fmt.Errorf(
+				"bucket %s now has ID %s but this resource recorded %s; it was deleted and "+
+					"recreated, so the repository it held is gone. Delete and recreate the Repository",
+				name, bucket.BucketID, recorded))
+		}
+		return bucket, nil
+	case !errors.Is(err, b2.ErrNotFound):
+		return nil, fmt.Errorf("looking up bucket %s: %w", name, err)
 	}
 
-	remote, err = api.Add(ctx, borgbase.AddOptions{
-		Name:       name,
-		Region:     repo.Spec.Region,
-		Quota:      quotaMBPtr(repo.Spec.QuotaGiB),
-		AlertDays:  int64Ptr(repo.Spec.AlertDays),
-		AppendOnly: repo.Spec.AppendOnly,
-	})
+	if repo.Spec.Mode != b2backupv1.StorageModeBucket {
+		return nil, withReason("BucketNotFound", fmt.Errorf(
+			"bucket %s does not exist in this B2 account; Prefix mode never creates buckets", name))
+	}
+	if repo.Status.BucketID != "" {
+		return nil, withReason("BucketNotFound", fmt.Errorf(
+			"bucket %s (%s) recorded on this resource no longer exists; refusing to create an "+
+				"empty one in its place", name, repo.Status.BucketID))
+	}
+
+	var rules []b2.LifecycleRule
+	if repo.ManagesLifecycle() {
+		rules = []b2.LifecycleRule{wantedRule(repo)}
+	}
+	bucket, err = api.CreateBucket(ctx, name, rules)
+	if errors.Is(err, b2.ErrDuplicateBucketName) {
+		return nil, withReason("BucketNameTaken", fmt.Errorf(
+			"bucket name %s is taken by another B2 account; bucket names are global", name))
+	}
 	if err != nil {
-		return nil, fmt.Errorf("creating repository %q: %w", name, err)
+		return nil, fmt.Errorf("creating bucket %s: %w", name, err)
 	}
-	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryCreated", "Create",
-		"Created BorgBase repository %s (%s)", remote.ID, name)
-	if err := r.recordRepositoryID(ctx, repo, remote.ID); err != nil {
-		return nil, err
-	}
-	return remote, nil
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "BucketCreated", "Create",
+		"Created private bucket %s (%s)", name, bucket.BucketID)
+	return bucket, nil
 }
 
-func (r *RepositoryReconciler) recordRepositoryID(
-	ctx context.Context, repo *b2backupv1.Repository, id string,
+func wantedRule(repo *b2backupv1.Repository) b2.LifecycleRule {
+	return b2.LifecycleRule{
+		FileNamePrefix:           filePrefix(repo.EffectivePath()),
+		DaysFromHidingToDeleting: ptr.To(int(repo.DaysFromHidingToDeleting())),
+	}
+}
+
+func (r *RepositoryReconciler) reconcileLifecycle(
+	ctx context.Context, repo *b2backupv1.Repository, api b2.API, bucket *b2.Bucket,
 ) error {
-	base := repo.DeepCopy()
-	repo.Status.RepositoryID = id
-	if err := r.Status().Patch(ctx, repo, client.MergeFrom(base)); err != nil {
-		return fmt.Errorf("recording new repository %s on %s/%s: %w", id, repo.Namespace, repo.Name, err)
+	prefix := filePrefix(repo.EffectivePath())
+
+	if hiding := b2.HidingRules(bucket.LifecycleRules, prefix); len(hiding) > 0 {
+		msg := fmt.Sprintf("bucket %s has lifecycle rules hiding files under %q after some days, "+
+			"which will hide restic data that snapshots still need: %q",
+			bucket.BucketName, prefix, hiding)
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "LifecycleHidesData", "Lifecycle", "%s", msg)
+		r.setCondition(repo, metav1.Condition{
+			Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionFalse,
+			Reason: "HidesLiveFiles", Message: msg,
+		})
+		return nil
+	}
+
+	if !repo.ManagesLifecycle() {
+		r.setCondition(repo, metav1.Condition{
+			Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionTrue,
+			Reason: "NotManaged", Message: "spec.lifecycle.manage is false; the bucket's rules are left alone",
+		})
+		return nil
+	}
+
+	for attempt := 0; ; attempt++ {
+		rules, outcome, at := b2.MergeLifecycleRule(bucket.LifecycleRules, wantedRule(repo))
+		switch outcome {
+		case b2.RuleCovered:
+			r.setCondition(repo, metav1.Condition{
+				Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionTrue,
+				Reason: "Covered", Message: fmt.Sprintf(
+					"the bucket's rule for %q already deletes hidden files at least as soon", at),
+			})
+			return nil
+		case b2.RuleUnchanged:
+			r.setCondition(repo, metav1.Condition{
+				Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionTrue,
+				Reason: "Managed", Message: fmt.Sprintf("hidden files under %q are deleted after %d day(s)",
+					prefix, repo.DaysFromHidingToDeleting()),
+			})
+			return nil
+		}
+
+		updated, err := api.UpdateLifecycleRules(ctx, bucket, rules)
+		if errors.Is(err, b2.ErrConflict) && attempt == 0 {
+			if bucket, err = api.FindBucket(ctx, bucket.BucketName); err != nil {
+				return fmt.Errorf("re-reading bucket %s after a conflicting update: %w", repo.Spec.Bucket, err)
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("updating lifecycle rules on bucket %s: %w", bucket.BucketName, err)
+		}
+		*bucket = *updated
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "LifecycleRuleUpdated", "Lifecycle",
+			"Set bucket %s to delete hidden files under %q after %d day(s)",
+			bucket.BucketName, prefix, repo.DaysFromHidingToDeleting())
+	}
+}
+
+type credentials struct {
+	url    string
+	region string
+}
+
+// reconcileSecret writes the credentials Secret, creating a scoped application key
+// when there is no usable one.
+//
+// The restic password is the encryption key for every snapshot in the repository,
+// so once one exists anywhere it is reused verbatim and never regenerated:
+// rotating it would render every existing backup unreadable.
+//
+// mustExist says whether a password must already exist somewhere: this resource
+// has written credentials before, or the path already holds data.
+func (r *RepositoryReconciler) reconcileSecret(
+	ctx context.Context, repo *b2backupv1.Repository, api b2.API, bucket *b2.Bucket,
+	creds credentials, mustExist bool,
+) error {
+	name := repo.SecretName()
+	var existing corev1.Secret
+	err := r.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: name}, &existing)
+	switch {
+	case err == nil:
+		if existing.Labels[labelManagedBy] != managedByValue {
+			return withReason("SecretNotManaged", fmt.Errorf(
+				"secret %s/%s already exists and is not managed by this operator; "+
+					"set spec.secretName to a name the operator owns",
+				existing.Namespace, existing.Name))
+		}
+	case apierrors.IsNotFound(err):
+		existing = corev1.Secret{}
+	default:
+		return err
+	}
+
+	password, generated, err := r.resolvePassword(ctx, repo, &existing, mustExist || repo.Status.Adopted)
+	if err != nil {
+		return err
+	}
+
+	keys, err := api.ListKeys(ctx)
+	if err != nil {
+		return fmt.Errorf("listing application keys: %w", err)
+	}
+
+	keyID := string(existing.Data[KeyAccessKeyID])
+	keySecret := string(existing.Data[KeySecretAccessKey])
+	usable := keyID != "" && keySecret != "" && keyID == repo.Status.ApplicationKeyID &&
+		slices.ContainsFunc(keys, func(k b2.Key) bool {
+			return k.ApplicationKeyID == keyID && keyMatches(k, bucket.BucketID, repo.EffectivePath())
+		})
+
+	var created *b2.Key
+	if !usable {
+		created, err = api.CreateKey(ctx, b2.CreateKeyRequest{
+			KeyName:      keyName(repo),
+			Capabilities: ResticKeyCapabilities,
+			BucketID:     bucket.BucketID,
+			NamePrefix:   filePrefix(repo.EffectivePath()),
+		})
+		if err != nil {
+			return fmt.Errorf("creating an application key: %w", err)
+		}
+		keyID, keySecret = created.ApplicationKeyID, created.ApplicationKey
+	}
+
+	desired := &corev1.Secret{
+		Name:      name,
+		Namespace: repo.Namespace,
+		Labels: map[string]string{
+			labelManagedBy: managedByValue,
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			KeyResticRepository: []byte(creds.url),
+			KeyResticPassword:   []byte(password),
+			KeyAccessKeyID:      []byte(keyID),
+			KeySecretAccessKey:  []byte(keySecret),
+			KeyDefaultRegion:    []byte(creds.region),
+		},
+	}
+	if repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete {
+		if err := controllerutil.SetControllerReference(repo, desired, r.Scheme); err != nil {
+			return err
+		}
+	}
+
+	op, err := r.createOrPatch(ctx, desired, &existing)
+	if err != nil {
+		if created != nil {
+			if delErr := api.DeleteKey(ctx, created.ApplicationKeyID); delErr != nil {
+				err = fmt.Errorf("%w (and deleting the unsaved application key %s: %w)",
+					err, created.ApplicationKeyID, delErr)
+			}
+		}
+		return err
+	}
+	if generated {
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "PasswordGenerated", "Generate",
+			"Generated a new restic password in Secret %s; back it up, it cannot be recovered", name)
+	}
+	if op != "" {
+		log.FromContext(ctx).Info("Reconciled credentials Secret", "secret", name, "operation", op)
+	}
+	repo.Status.SecretName = name
+
+	if created != nil {
+		if err := r.recordKey(ctx, repo, created.ApplicationKeyID); err != nil {
+			return err
+		}
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "KeyCreated", "Create",
+			"Created application key %s restricted to %s/%s", created.ApplicationKeyID,
+			bucket.BucketName, displayPath(repo.EffectivePath()))
+	}
+
+	return r.deleteStaleKeys(ctx, repo, api, keys)
+}
+
+func (r *RepositoryReconciler) resolvePassword(
+	ctx context.Context, repo *b2backupv1.Repository, existing *corev1.Secret, mustExist bool,
+) (string, bool, error) {
+	password := string(existing.Data[KeyResticPassword])
+	if password == "" && repo.Spec.PasswordSecretRef != nil {
+		var err error
+		if password, err = r.readSecretKey(ctx, repo.Namespace, repo.Spec.PasswordSecretRef); err != nil {
+			return "", false, withReason("PasswordUnavailable", fmt.Errorf("reading passwordSecretRef: %w", err))
+		}
+	}
+	if password != "" {
+		return password, false, nil
+	}
+	if mustExist {
+		return "", false, withReason("PasswordUnavailable", fmt.Errorf(
+			"%s/%s already holds a repository or data, or this resource has provisioned one, "+
+				"but no password is available; restore Secret %s or set spec.passwordSecretRef to "+
+				"the existing RESTIC_PASSWORD", repo.Spec.Bucket, displayPath(repo.EffectivePath()),
+			repo.SecretName()))
+	}
+	password, err := secrets.GeneratePassword()
+	if err != nil {
+		return "", false, err
+	}
+	return password, true, nil
+}
+
+func (r *RepositoryReconciler) recordKey(ctx context.Context, repo *b2backupv1.Repository, keyID string) error {
+	obj := repo.DeepCopy()
+	base := obj.DeepCopy()
+	obj.Status.ApplicationKeyID = keyID
+	if err := r.Status().Patch(ctx, obj, client.MergeFrom(base)); err != nil {
+		return fmt.Errorf("recording application key %s on %s/%s: %w", keyID, repo.Namespace, repo.Name, err)
+	}
+	repo.Status.ApplicationKeyID = keyID
+	return nil
+}
+
+func (r *RepositoryReconciler) deleteStaleKeys(
+	ctx context.Context, repo *b2backupv1.Repository, api b2.API, keys []b2.Key,
+) error {
+	name := keyName(repo)
+	for _, k := range keys {
+		if k.KeyName != name || k.ApplicationKeyID == repo.Status.ApplicationKeyID {
+			continue
+		}
+		if err := api.DeleteKey(ctx, k.ApplicationKeyID); err != nil && !errors.Is(err, b2.ErrNotFound) {
+			return fmt.Errorf("deleting superseded application key %s: %w", k.ApplicationKeyID, err)
+		}
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "KeyDeleted", "Delete",
+			"Deleted superseded application key %s", k.ApplicationKeyID)
 	}
 	return nil
 }
 
-func (r *RepositoryReconciler) repositoryConflict(
-	ctx context.Context, repo *b2backupv1.Repository, id string,
-) (string, error) {
-	if id == "" {
-		return "", nil
-	}
+func keyMatches(k b2.Key, bucketID, path string) bool {
+	inBucket := k.BucketID == bucketID || (k.BucketID == "" && slices.Equal(k.BucketIDs, []string{bucketID}))
+	caps := slices.Sorted(slices.Values(k.Capabilities))
+	want := slices.Sorted(slices.Values(ResticKeyCapabilities))
+	return inBucket && k.NamePrefix == filePrefix(path) && slices.Equal(caps, want)
+}
 
+func keyName(repo *b2backupv1.Repository) string {
+	id := strings.ReplaceAll(string(repo.UID), "-", "")
+	if id == "" {
+		sum := sha256.Sum256([]byte(repo.Namespace + "/" + repo.Name))
+		id = hex.EncodeToString(sum[:])
+	}
+	suffix := "-" + id[:min(len(id), 12)]
+	base := sanitizeKeyName("b2bk-" + repo.Namespace + "-" + repo.Name)
+	if len(base)+len(suffix) > keyNameMaxLength {
+		base = base[:keyNameMaxLength-len(suffix)]
+	}
+	return base + suffix
+}
+
+func sanitizeKeyName(s string) string {
+	return strings.Map(func(c rune) rune {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+			return c
+		default:
+			return '-'
+		}
+	}, s)
+}
+
+func (r *RepositoryReconciler) reconcileUsage(ctx context.Context, repo *b2backupv1.Repository, api b2.API) {
+	now := r.now()
+	if !repo.Status.Initialized {
+		return
+	}
+	if t := repo.Status.UsageTime; t != nil && now.Sub(t.Time) < usageInterval {
+		return
+	}
+	total, truncated, err := b2.Usage(ctx, api, repo.Status.BucketID, filePrefix(repo.Status.Path), usageMaxPages)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to measure repository usage")
+		return
+	}
+	repo.Status.UsageTime = &metav1.Time{Time: now}
+	if truncated {
+		repo.Status.CurrentUsage = ""
+		return
+	}
+	repo.Status.CurrentUsage = formatBytes(total)
+}
+
+func (r *RepositoryReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+func (r *RepositoryReconciler) repositoryConflict(
+	ctx context.Context, repo *b2backupv1.Repository,
+) (string, error) {
 	var list b2backupv1.RepositoryList
 	if err := r.List(ctx, &list); err != nil {
 		return "", fmt.Errorf("listing repositories: %w", err)
 	}
 
+	bucket, path := managedLocation(repo)
 	for i := range list.Items {
 		other := &list.Items[i]
 		if !other.DeletionTimestamp.IsZero() ||
 			(other.Namespace == repo.Namespace && other.Name == repo.Name) {
 			continue
 		}
-		if managedID(other) != id {
+		otherBucket, otherPath := managedLocation(other)
+		if otherBucket != bucket || !pathsOverlap(path, otherPath) {
 			continue
 		}
 		if olderRepository(other, repo) {
@@ -335,11 +692,15 @@ func (r *RepositoryReconciler) repositoryConflict(
 	return "", nil
 }
 
-func managedID(repo *b2backupv1.Repository) string {
-	if repo.Status.RepositoryID != "" {
-		return repo.Status.RepositoryID
+func managedLocation(repo *b2backupv1.Repository) (string, string) {
+	if repo.Status.BucketID != "" {
+		return repo.Status.BucketName, repo.Status.Path
 	}
-	return repo.Spec.ExistingRepositoryID
+	return repo.Spec.Bucket, repo.EffectivePath()
+}
+
+func pathsOverlap(a, b string) bool {
+	return a == "" || b == "" || a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 func olderRepository(a, b *b2backupv1.Repository) bool {
@@ -352,128 +713,6 @@ func olderRepository(a, b *b2backupv1.Repository) bool {
 	return a.Name < b.Name
 }
 
-func (r *RepositoryReconciler) reconcileSettings(
-	ctx context.Context, repo *b2backupv1.Repository, remote *borgbase.Repo, api borgbase.API,
-) (*borgbase.Repo, error) {
-	var opts borgbase.EditOptions
-
-	switch {
-	case repo.Spec.QuotaGiB != nil:
-		q := quotaMB(*repo.Spec.QuotaGiB)
-		if !remote.QuotaEnabled || q != remote.Quota {
-			opts.QuotaEnabled = ptr.To(true)
-			opts.Quota = ptr.To(q)
-		}
-	case remote.QuotaEnabled:
-		opts.QuotaEnabled = ptr.To(false)
-		opts.Quota = ptr.To(remote.Quota)
-	}
-	if days := int64Ptr(repo.Spec.AlertDays); days != nil && *days != remote.AlertDays {
-		opts.AlertDays = days
-	}
-	if repo.Spec.AppendOnly != remote.AppendOnly {
-		opts.AppendOnly = ptr.To(repo.Spec.AppendOnly)
-	}
-
-	if opts.IsZero() {
-		return remote, nil
-	}
-
-	updated, err := api.Edit(ctx, remote.ID, opts)
-	if err != nil {
-		return nil, fmt.Errorf("updating settings on repository %s: %w", remote.ID, err)
-	}
-	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "SettingsUpdated", "Edit",
-		"Updated settings on BorgBase repository %s", remote.ID)
-	return updated, nil
-}
-
-// reconcileSecret writes the credentials Secret.
-//
-// The restic password is the encryption key for every snapshot in the repository,
-// so once one exists anywhere it is reused verbatim and never regenerated:
-// rotating it would render every existing backup unreadable.
-//
-// known says whether this resource has already written credentials, and so whether
-// a password must already exist somewhere even though this Secret lacks one.
-func (r *RepositoryReconciler) reconcileSecret(
-	ctx context.Context, repo *b2backupv1.Repository, remote *borgbase.Repo, known bool,
-) error {
-	url, err := remote.ResticURL()
-	if err != nil {
-		return err
-	}
-
-	name := repo.SecretName()
-	var existing corev1.Secret
-	err = r.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: name}, &existing)
-	switch {
-	case err == nil:
-	case apierrors.IsNotFound(err):
-		existing = corev1.Secret{}
-	default:
-		return err
-	}
-
-	password := string(existing.Data[KeyResticPassword])
-	generated := false
-
-	if password == "" && repo.Spec.PasswordSecretRef != nil {
-		password, err = r.readSecretKey(ctx, repo.Namespace, repo.Spec.PasswordSecretRef)
-		if err != nil {
-			return fmt.Errorf("reading passwordSecretRef: %w", err)
-		}
-	}
-
-	if password == "" {
-		if repo.Status.Adopted || known || remote.CurrentUsage > 0 {
-			return fmt.Errorf(
-				"repository %s has already been provisioned but no password is available; "+
-					"restore Secret %s or set spec.passwordSecretRef to the existing RESTIC_PASSWORD",
-				remote.ID, name)
-		}
-		if password, err = secrets.GeneratePassword(); err != nil {
-			return err
-		}
-		generated = true
-	}
-
-	desired := &corev1.Secret{
-		Name:      name,
-		Namespace: repo.Namespace,
-		Labels: map[string]string{
-			labelManagedBy: managedByValue,
-		},
-		Type: corev1.SecretTypeOpaque,
-
-		Data: map[string][]byte{
-			KeyResticRepository: []byte(url),
-			KeyResticPassword:   []byte(password),
-		},
-	}
-
-	if repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete {
-		if err := controllerutil.SetControllerReference(repo, desired, r.Scheme); err != nil {
-			return err
-		}
-	}
-
-	op, err := r.createOrPatch(ctx, desired, &existing)
-	if err != nil {
-		return err
-	}
-	if generated {
-		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "PasswordGenerated", "Generate",
-			"Generated a new restic password in Secret %s; back it up, it cannot be recovered", name)
-	}
-	if op != "" {
-		log.FromContext(ctx).Info("Reconciled credentials Secret", "secret", name, "operation", op)
-	}
-
-	repo.Status.SecretName = name
-	return nil
-}
-
 func (r *RepositoryReconciler) createOrPatch(
 	ctx context.Context, desired *corev1.Secret, existing *corev1.Secret,
 ) (string, error) {
@@ -482,13 +721,6 @@ func (r *RepositoryReconciler) createOrPatch(
 			return "", fmt.Errorf("creating secret %s: %w", desired.Name, err)
 		}
 		return "created", nil
-	}
-
-	if existing.Labels[labelManagedBy] != managedByValue {
-		return "", fmt.Errorf(
-			"secret %s/%s already exists and is not managed by this operator; "+
-				"set spec.secretName to a name the operator owns",
-			existing.Namespace, existing.Name)
 	}
 
 	updated := existing.DeepCopy()
@@ -694,115 +926,171 @@ func jobFailedAt(job *batchv1.Job) *time.Time {
 	return nil
 }
 
-func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Repository) error {
+func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Repository) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(repo, FinalizerName) {
-		return nil
+		return ctrl.Result{}, nil
 	}
 
 	switch {
-	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.RepositoryID != "":
+	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.BucketID != "":
 		api, err := r.apiFor(ctx, repo)
 		if err != nil {
+			if r.forceFinalize(repo, err) {
+				break
+			}
 			r.setCondition(repo, metav1.Condition{
 				Type:    b2backupv1.RepositoryConditionReady,
 				Status:  metav1.ConditionFalse,
-				Reason:  "APITokenUnavailable",
+				Reason:  "CredentialsUnavailable",
 				Message: err.Error(),
 			})
-			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "APITokenUnavailable", "Delete", "%s", err.Error())
-			return err
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "CredentialsUnavailable", "Delete", "%s", err.Error())
+			return ctrl.Result{}, err
 		}
-		if err := r.deleteRemote(ctx, repo, api); err != nil {
-			return err
+		done, err := r.deleteRemote(ctx, repo, api)
+		if err != nil {
+			if r.forceFinalize(repo, err) {
+				break
+			}
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
+			return ctrl.Result{}, err
+		}
+		if !done {
+			return ctrl.Result{RequeueAfter: deleteRequeueDelay}, nil
 		}
 
-	case repo.Status.RepositoryID != "":
+	case repo.Status.BucketID != "":
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryRetained", "Retain",
-			"Retained BorgBase repository %s; delete it manually if it is no longer needed",
-			repo.Status.RepositoryID)
+			"Retained %s/%s and application key %s; delete them manually if they are no longer needed",
+			repo.Status.BucketName, displayPath(repo.Status.Path), repo.Status.ApplicationKeyID)
 	}
 
 	patch := client.MergeFrom(repo.DeepCopy())
 	controllerutil.RemoveFinalizer(repo, FinalizerName)
-	return r.Patch(ctx, repo, patch)
+	return ctrl.Result{}, r.Patch(ctx, repo, patch)
 }
 
-// deleteRemote deletes the BorgBase repository, confirming by lookup rather than
-// by reading the error text when the mutation reports a failure.
+func (r *RepositoryReconciler) forceFinalize(repo *b2backupv1.Repository, err error) bool {
+	if repo.Annotations[b2backupv1.AnnotationForceFinalize] != "true" {
+		return false
+	}
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "RepositoryOrphaned", "Delete",
+		"Could not delete %s/%s or application key %s, and %s is set, so they are being left "+
+			"behind; delete them manually, they are still billed: %s",
+		repo.Status.BucketName, displayPath(repo.Status.Path), repo.Status.ApplicationKeyID,
+		b2backupv1.AnnotationForceFinalize, err.Error())
+	return true
+}
+
 func (r *RepositoryReconciler) deleteRemote(
-	ctx context.Context, repo *b2backupv1.Repository, api borgbase.API,
-) error {
-	id := repo.Status.RepositoryID
-
-	deleteErr := api.Delete(ctx, id)
-	if deleteErr == nil {
-		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
-			"Deleted BorgBase repository %s and all its snapshots", id)
-		return nil
-	}
-
-	gone, probeErr := repositoryGone(ctx, api, id)
-	switch {
-	case gone:
-		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "RepositoryDeleteUnconfirmed", "Delete",
-			"BorgBase rejected the delete of repository %s but no longer has it, so it is "+
-				"treated as deleted; its snapshots may remain: %s", id, deleteErr.Error())
-		return nil
-	case repo.Annotations[b2backupv1.AnnotationForceFinalize] == "true":
-		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "RepositoryOrphaned", "Delete",
-			"BorgBase repository %s could not be deleted and %s is set, so it is being left "+
-				"behind; delete it manually, it is still billed: %s",
-			id, b2backupv1.AnnotationForceFinalize, deleteErr.Error())
-		return nil
-	}
-
-	err := deleteErr
-	if probeErr != nil {
-		err = fmt.Errorf("%w (checking whether it still exists: %w)", deleteErr, probeErr)
-	}
-	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
-	return fmt.Errorf("deleting repository %s: %w", id, err)
-}
-
-func repositoryGone(ctx context.Context, api borgbase.API, id string) (bool, error) {
-	switch _, err := api.Get(ctx, id); {
-	case err == nil:
-		return false, nil
-	case errors.Is(err, borgbase.ErrNotFound):
-		return true, nil
-	default:
-		return false, err
-	}
-}
-
-func (r *RepositoryReconciler) apiFor(
-	ctx context.Context, repo *b2backupv1.Repository,
-) (borgbase.API, error) {
-	ref := repo.Spec.APITokenSecretRef
-	namespace, selector := repo.Namespace, ref
-	if ref == nil {
-		namespace = r.DefaultTokenSecret.Namespace
-		selector = &corev1.SecretKeySelector{
-			Name: r.DefaultTokenSecret.Name,
-			Key:  r.DefaultTokenKey,
-		}
-	}
-
-	token, err := r.readSecretKey(ctx, namespace, selector)
+	ctx context.Context, repo *b2backupv1.Repository, api b2.API,
+) (bool, error) {
+	keys, err := api.ListKeys(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("reading BorgBase API token: %w", err)
+		return false, fmt.Errorf("listing application keys: %w", err)
 	}
-	newAPI := r.NewAPI
-	if newAPI == nil {
-		newAPI = func(t string) borgbase.API {
-			c := borgbase.NewClient(t)
-			if r.Endpoint != "" {
-				c.Endpoint = r.Endpoint
-			}
-			return c
+	name := keyName(repo)
+	for _, k := range keys {
+		if k.ApplicationKeyID != repo.Status.ApplicationKeyID && k.KeyName != name {
+			continue
+		}
+		if err := api.DeleteKey(ctx, k.ApplicationKeyID); err != nil && !errors.Is(err, b2.ErrNotFound) {
+			return false, fmt.Errorf("deleting application key %s: %w", k.ApplicationKeyID, err)
 		}
 	}
-	return newAPI(token), nil
+
+	bucketID, path := repo.Status.BucketID, repo.Status.Path
+	prefix := filePrefix(path)
+	deleted, done, err := b2.DeleteVersionsUnder(ctx, api, bucketID, prefix, deleteBudget)
+	switch {
+	case errors.Is(err, b2.ErrNotFound) && repo.Spec.Mode == b2backupv1.StorageModeBucket:
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
+			"Bucket %s is already gone", repo.Status.BucketName)
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("deleting files under %s/%s: %w", repo.Status.BucketName, displayPath(path), err)
+	case !done:
+		log.FromContext(ctx).Info("Deleted file versions, more remain", "deleted", deleted)
+		return false, nil
+	}
+
+	bucket, err := api.FindBucket(ctx, repo.Status.BucketName)
+	if errors.Is(err, b2.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("re-reading bucket %s: %w", repo.Status.BucketName, err)
+	}
+
+	if repo.Spec.Mode == b2backupv1.StorageModeBucket {
+		remaining, err := b2.AnyVersionUnder(ctx, api, bucketID, "")
+		if err != nil {
+			return false, err
+		}
+		if !remaining {
+			if err := api.DeleteBucket(ctx, bucketID); err != nil && !errors.Is(err, b2.ErrNotFound) {
+				return false, fmt.Errorf("deleting bucket %s: %w", repo.Status.BucketName, err)
+			}
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
+				"Deleted application key %s, every file under %s and bucket %s",
+				repo.Status.ApplicationKeyID, displayPath(path), repo.Status.BucketName)
+			return true, nil
+		}
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "BucketRetained", "Delete",
+			"Bucket %s holds files outside %s, so it was left in place", repo.Status.BucketName, displayPath(path))
+	}
+
+	if rules, removed := b2.RemoveLifecycleRule(bucket.LifecycleRules, prefix); removed {
+		if _, err := api.UpdateLifecycleRules(ctx, bucket, rules); err != nil {
+			return false, fmt.Errorf("removing the lifecycle rule for %q: %w", prefix, err)
+		}
+	}
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
+		"Deleted application key %s and every file under %s/%s",
+		repo.Status.ApplicationKeyID, repo.Status.BucketName, displayPath(path))
+	return true, nil
+}
+
+func (r *RepositoryReconciler) apiFor(ctx context.Context, repo *b2backupv1.Repository) (b2.API, error) {
+	namespace, name := r.DefaultCredentialsSecret.Namespace, r.DefaultCredentialsSecret.Name
+	if ref := repo.Spec.CredentialsSecretRef; ref != nil {
+		namespace, name = repo.Namespace, ref.Name
+	}
+
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret); err != nil {
+		return nil, fmt.Errorf("reading B2 credentials: %w", err)
+	}
+	keyID := string(secret.Data[b2backupv1.CredentialsKeyID])
+	key := string(secret.Data[b2backupv1.CredentialsKey])
+	if keyID == "" || key == "" {
+		return nil, fmt.Errorf("reading B2 credentials: secret %s/%s needs both %s and %s",
+			namespace, name, b2backupv1.CredentialsKeyID, b2backupv1.CredentialsKey)
+	}
+
+	sum := sha256.Sum256([]byte(keyID + "\x00" + key))
+	cacheKey := hex.EncodeToString(sum[:])
+
+	r.apiMu.Lock()
+	defer r.apiMu.Unlock()
+	if api, ok := r.apiCache[cacheKey]; ok {
+		return api, nil
+	}
+	var api b2.API
+	if r.NewAPI != nil {
+		api = r.NewAPI(keyID, key)
+	} else {
+		c := b2.NewClient(keyID, key)
+		if r.AuthURL != "" {
+			c.AuthURL = r.AuthURL
+		}
+		api = c
+	}
+	if r.apiCache == nil {
+		r.apiCache = map[string]b2.API{}
+	}
+	r.apiCache[cacheKey] = api
+	return api, nil
 }
 
 func (r *RepositoryReconciler) readSecretKey(

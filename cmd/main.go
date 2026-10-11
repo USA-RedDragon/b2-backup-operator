@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/b2"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -73,7 +74,7 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 
-	var apiTokenSecret, apiTokenKey, backupImage, cacheStorageClass, borgbaseEndpoint string
+	var credentialsSecret, b2AuthURL, backupImage, cacheStorageClass string
 	defaults := backup.DefaultConfig()
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -96,14 +97,12 @@ func main() {
 	opts := zap.Options{
 		Development: false,
 	}
-	flag.StringVar(&apiTokenSecret, "api-token-secret", "borgbase-api",
-		"Secret holding the default BorgBase API token, as \"name\" or "+
-			"\"namespace/name\". A bare name resolves in the operator's own namespace. "+
-			"A Repository may override this with spec.apiTokenSecretRef.")
-	flag.StringVar(&borgbaseEndpoint, "borgbase-endpoint", "",
-		"Override the BorgBase GraphQL endpoint. Empty uses the public API.")
-	flag.StringVar(&apiTokenKey, "api-token-key", "token",
-		"Key within the default BorgBase API token Secret.")
+	flag.StringVar(&credentialsSecret, "b2-credentials-secret", "b2-credentials",
+		"Secret holding the default B2 application key under "+b2backupv1.CredentialsKeyID+" and "+
+			b2backupv1.CredentialsKey+", as \"name\" or \"namespace/name\". A bare name resolves in "+
+			"the operator's own namespace. A Repository may override this with spec.credentialsSecretRef.")
+	flag.StringVar(&b2AuthURL, "b2-auth-url", "",
+		"Override where b2_authorize_account is called. Empty uses "+b2.DefaultAuthURL+".")
 	flag.StringVar(&backupImage, "backup-image", defaults.Image,
 		"Image used for backup and init jobs. It must provide restic, ts and dumpdb.")
 	flag.StringVar(&cacheStorageClass, "cache-storage-class", "",
@@ -167,9 +166,9 @@ func main() {
 		}),
 	}
 
-	tokenSecret, err := parseNamespacedName(apiTokenSecret, os.Getenv("POD_NAMESPACE"))
+	credentials, err := parseNamespacedName(credentialsSecret, os.Getenv("POD_NAMESPACE"))
 	if err != nil {
-		setupLog.Error(err, "Invalid --api-token-secret")
+		setupLog.Error(err, "Invalid --b2-credentials-secret")
 		os.Exit(1)
 	}
 
@@ -205,12 +204,11 @@ func main() {
 	}
 
 	if err := (&controller.RepositoryReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		DefaultTokenSecret: tokenSecret,
-		DefaultTokenKey:    apiTokenKey,
-		BackupImage:        backupImage,
-		Endpoint:           borgbaseEndpoint,
+		Client:                   mgr.GetClient(),
+		Scheme:                   mgr.GetScheme(),
+		DefaultCredentialsSecret: credentials,
+		BackupImage:              backupImage,
+		AuthURL:                  b2AuthURL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "repository")
 		os.Exit(1)

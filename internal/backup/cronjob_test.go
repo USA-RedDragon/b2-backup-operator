@@ -83,7 +83,7 @@ func TestBuildCronJobBasics(t *testing.T) {
 	}
 
 	c := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0]
-	if c.EnvFrom[0].SecretRef.Name != "restic-b2" {
+	if c.EnvFrom[0].SecretRef.Name != "restic-credentials" {
 		t.Errorf("envFrom secret = %q", c.EnvFrom[0].SecretRef.Name)
 	}
 
@@ -529,6 +529,9 @@ func TestReservedEnvNamesAreRejected(t *testing.T) {
 	}{
 		{name: "repository url", key: envResticRepository, wantErr: true},
 		{name: "encryption key", key: envResticPassword, wantErr: true},
+		{name: "s3 key id", key: envAccessKeyID, wantErr: true},
+		{name: "s3 key", key: envSecretAccessKey, wantErr: true},
+		{name: "s3 region", key: envDefaultRegion, wantErr: true},
 		{name: "snapshot host", key: envResticHost, wantErr: true},
 		{name: "time zone", key: envTZ, wantErr: true},
 		{name: "mariadb host", setup: mariadb, key: envDBHost, wantErr: true},

@@ -57,7 +57,7 @@ func backupHarness(t *testing.T, objs ...client.Object) (*ScheduledBackupReconci
 func initializedRepo() *b2backupv1.Repository {
 	return &b2backupv1.Repository{
 		Name: resticName, Namespace: testNS,
-		Status: b2backupv1.RepositoryStatus{Initialized: true, RepositoryID: testRepoID},
+		Status: b2backupv1.RepositoryStatus{Initialized: true, BucketID: "bucket0001", BucketName: ownBucket},
 	}
 }
 
@@ -373,55 +373,6 @@ func TestTwoBackupsInOneNamespaceAreBothScheduled(t *testing.T) {
 	}
 }
 
-func appendOnlyRepo() *b2backupv1.Repository {
-	repo := initializedRepo()
-	repo.Spec.AppendOnly = true
-	return repo
-}
-
-func TestAppendOnlyWithRetentionDegradesButStillSchedules(t *testing.T) {
-	sb := scheduledBackup()
-	sb.Spec.Retention = &b2backupv1.Retention{Hourly: ptr.To(int32(168))}
-
-	r, c := backupHarness(t, appendOnlyRepo(), sb)
-	reconcileBackup(t, r)
-
-	if err := c.Get(context.Background(),
-		types.NamespacedName{Namespace: testNS, Name: cronJobName},
-		&batchv1.CronJob{}); err != nil {
-		t.Fatalf("no CronJob was created, so a working combination would stop working: %v", err)
-	}
-	cond := readyCondition(t, c)
-	if cond == nil || cond.Status != metav1.ConditionFalse ||
-		cond.Reason != "AppendOnlyWithRetention" {
-		t.Errorf("Ready = %+v, want False with reason AppendOnlyWithRetention", cond)
-	}
-	assertWarningEvent(t, r.Recorder, "AppendOnlyWithRetention")
-}
-
-func TestAppendOnlyWithoutRetentionStaysReady(t *testing.T) {
-	r, c := backupHarness(t, appendOnlyRepo(), scheduledBackup())
-	reconcileBackup(t, r)
-
-	if cond := readyCondition(t, c); cond == nil || cond.Status != metav1.ConditionTrue {
-		t.Errorf("Ready = %+v, want True; no forget is rendered without spec.retention", cond)
-	}
-}
-
-func TestAppendOnlyWithAScriptStaysReady(t *testing.T) {
-	sb := scheduledBackup()
-	sb.Spec.Sources = nil
-	sb.Spec.Script = testScript
-	sb.Spec.Retention = &b2backupv1.Retention{Hourly: ptr.To(int32(168))}
-
-	r, c := backupHarness(t, appendOnlyRepo(), sb)
-	reconcileBackup(t, r)
-
-	if cond := readyCondition(t, c); cond == nil || cond.Status != metav1.ConditionTrue {
-		t.Errorf("Ready = %+v, want True; spec.script renders no forget", cond)
-	}
-}
-
 func TestBackupsForRepositoryUsesTheIndex(t *testing.T) {
 	mine := scheduledBackup()
 	other := scheduledBackup()
@@ -503,25 +454,6 @@ func reconcileBackup(t *testing.T, r *ScheduledBackupReconciler) ctrl.Result {
 		t.Fatalf("reconcile: %v", err)
 	}
 	return res
-}
-
-func assertWarningEvent(t *testing.T, recorder events.EventRecorder, reason string) {
-	t.Helper()
-	recorded, ok := recorder.(*events.FakeRecorder)
-	if !ok {
-		t.Fatalf("Recorder = %T, want the fake", recorder)
-	}
-	for {
-		select {
-		case e := <-recorded.Events:
-			if strings.HasPrefix(e, corev1.EventTypeWarning+" "+reason+" ") {
-				return
-			}
-		default:
-			t.Errorf("no %s Warning event was recorded", reason)
-			return
-		}
-	}
 }
 
 func readyCondition(t *testing.T, c client.Client) *metav1.Condition {

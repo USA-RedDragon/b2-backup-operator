@@ -1704,11 +1704,13 @@ spec:
             - schedule
             type: object
             x-kubernetes-validations:
-            - message: 'spec.env must not set RESTIC_REPOSITORY or RESTIC_PASSWORD:
-                they come from the Repository''s Secret, and a container''s env overrides
+            - message: 'spec.env must not set RESTIC_REPOSITORY, RESTIC_PASSWORD,
+                AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY or AWS_DEFAULT_REGION: they
+                come from the Repository''s Secret, and a container''s env overrides
                 envFrom'
-              rule: '!has(self.env) || self.env.all(k, k != ''RESTIC_REPOSITORY''
-                && k != ''RESTIC_PASSWORD'')'
+              rule: '!has(self.env) || self.env.all(k, !(k in [''RESTIC_REPOSITORY'',
+                ''RESTIC_PASSWORD'', ''AWS_ACCESS_KEY_ID'', ''AWS_SECRET_ACCESS_KEY'',
+                ''AWS_DEFAULT_REGION'']))'
           status:
             description: ScheduledBackupStatus is the observed state of a ScheduledBackup.
             properties:

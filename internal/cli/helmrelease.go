@@ -5,29 +5,39 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
 // Errors returned when reading a HelmRelease.
 var (
+	ErrNoHelmRelease      = errors.New("no HelmRelease found")
 	ErrNoResticController = errors.New("no restic controller in the HelmRelease")
 	ErrNoResticScript     = errors.New("no restic command in the HelmRelease")
-	ErrMultipleClaims     = errors.New("more than one persistence entry sets existingClaim")
-	ErrMultipleDBSecrets  = errors.New("more than one persistence entry is a secret")
+	ErrMultipleClaims     = errors.New("more than one persistent volume claim is mounted in the restic container")
+	ErrMultipleDBSecrets  = errors.New("more than one secret is mounted in the restic container")
+	ErrUnsupportedMount   = errors.New("the restic container mounts a volume a ScheduledBackup cannot")
 )
 
 const resticController = "restic"
 
+var helmReleaseFiles = []string{"helmrelease.yaml", "helm.yaml"}
+
 type helmRelease struct {
 	Metadata struct {
+		Name      string `json:"name"`
 		Namespace string `json:"namespace"`
 	} `json:"metadata"`
 	Spec struct {
 		Values struct {
+			DefaultPodOptions struct {
+				Affinity *corev1.Affinity `json:"affinity"`
+			} `json:"defaultPodOptions"`
 			Controllers map[string]hrController  `json:"controllers"`
 			Persistence map[string]hrPersistence `json:"persistence"`
 		} `json:"values"`
@@ -40,21 +50,65 @@ type hrController struct {
 		ConcurrencyPolicy string `json:"concurrencyPolicy"`
 		TimeZone          string `json:"timeZone"`
 	} `json:"cronjob"`
+	Pod struct {
+		Affinity *corev1.Affinity `json:"affinity"`
+	} `json:"pod"`
 	Containers map[string]hrContainer `json:"containers"`
 }
 
 type hrContainer struct {
-	Command    []string `json:"command"`
-	WorkingDir string   `json:"workingDir"`
+	Command    []string                     `json:"command"`
+	WorkingDir string                       `json:"workingDir"`
+	Resources  *corev1.ResourceRequirements `json:"resources"`
 
 	Env map[string]any `json:"env"`
 }
 
 type hrPersistence struct {
-	Type          string `json:"type"`
-	Name          string `json:"name"`
-	ExistingClaim string `json:"existingClaim"`
-	StorageClass  string `json:"storageClass"`
+	Enabled        *bool                           `json:"enabled"`
+	Type           string                          `json:"type"`
+	Name           string                          `json:"name"`
+	ExistingClaim  string                          `json:"existingClaim"`
+	StorageClass   string                          `json:"storageClass"`
+	GlobalMounts   []hrMount                       `json:"globalMounts"`
+	AdvancedMounts map[string]map[string][]hrMount `json:"advancedMounts"`
+}
+
+type hrMount struct {
+	Path     string `json:"path"`
+	ReadOnly bool   `json:"readOnly"`
+	SubPath  string `json:"subPath"`
+}
+
+const (
+	volumeClaim  = "persistentVolumeClaim"
+	volumeSecret = "secret"
+)
+
+type hrVolume struct {
+	key      string
+	kind     string
+	name     string
+	path     string
+	readOnly bool
+	subPath  string
+}
+
+func resolveHelmRelease(arg string) (string, error) {
+	info, err := os.Stat(arg)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return arg, nil
+	}
+	for _, name := range helmReleaseFiles {
+		path := filepath.Join(arg, name)
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("%w in %s: looked for %s", ErrNoHelmRelease, arg, strings.Join(helmReleaseFiles, ", "))
 }
 
 func readHelmRelease(path string) (*helmRelease, error) {
@@ -66,7 +120,24 @@ func readHelmRelease(path string) (*helmRelease, error) {
 	if err := yaml.Unmarshal(raw, &hr); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
+	if ns := kustomizeNamespace(filepath.Dir(path)); ns != "" {
+		hr.Metadata.Namespace = ns
+	}
 	return &hr, nil
+}
+
+func kustomizeNamespace(dir string) string {
+	raw, err := os.ReadFile(filepath.Join(dir, "kustomization.yaml"))
+	if err != nil {
+		return ""
+	}
+	var k struct {
+		Namespace string `json:"namespace"`
+	}
+	if yaml.Unmarshal(raw, &k) != nil {
+		return ""
+	}
+	return k.Namespace
 }
 
 func (hr *helmRelease) backupController() (hrController, hrContainer, error) {
@@ -79,6 +150,13 @@ func (hr *helmRelease) backupController() (hrController, hrContainer, error) {
 		return hrController{}, hrContainer{}, ErrNoResticScript
 	}
 	return controller, container, nil
+}
+
+func (hr *helmRelease) affinity() *corev1.Affinity {
+	if a := hr.Spec.Values.Controllers[resticController].Pod.Affinity; a != nil {
+		return a
+	}
+	return hr.Spec.Values.DefaultPodOptions.Affinity
 }
 
 func (c hrContainer) script() (string, error) {
@@ -99,52 +177,50 @@ func (c hrContainer) env(name string) string {
 	case int, int64, float64, bool:
 		return fmt.Sprint(value)
 	default:
-
 		return ""
 	}
 }
 
-func (hr *helmRelease) existingClaim() (string, error) {
-	claims := hr.persistenceMatching(func(p hrPersistence) string { return p.ExistingClaim })
-	if len(claims) > 1 {
-		return "", fmt.Errorf("%w (%s); a ScheduledBackup mounts one volume, so migrate cannot "+
-			"choose between them", ErrMultipleClaims, strings.Join(sortedKeys(claims), ", "))
-	}
-	for _, name := range sortedKeys(claims) {
-		return claims[name], nil
-	}
-	return "", nil
-}
-
-func (hr *helmRelease) databaseSecret() (string, error) {
-	secrets := hr.persistenceMatching(func(p hrPersistence) string {
-		if p.Type != "secret" {
-			return ""
+func (hr *helmRelease) volumes() []hrVolume {
+	var out []hrVolume
+	for _, key := range sortedKeys(hr.Spec.Values.Persistence) {
+		p := hr.Spec.Values.Persistence[key]
+		if p.Enabled != nil && !*p.Enabled {
+			continue
 		}
-		return p.Name
-	})
-	if len(secrets) > 1 {
-		return "", fmt.Errorf("%w (%s); a ScheduledBackup mounts one database secret, so migrate "+
-			"cannot choose between them", ErrMultipleDBSecrets, strings.Join(sortedKeys(secrets), ", "))
-	}
-	for _, name := range sortedKeys(secrets) {
-		return secrets[name], nil
-	}
-	return "", nil
-}
+		kind, name := p.Type, p.Name
+		if p.ExistingClaim != "" {
+			kind, name = volumeClaim, p.ExistingClaim
+		}
 
-func (hr *helmRelease) persistenceMatching(value func(hrPersistence) string) map[string]string {
-	found := map[string]string{}
-	for name, p := range hr.Spec.Values.Persistence {
-		if v := value(p); v != "" {
-			found[name] = v
+		var mounts []hrMount
+		switch {
+		case len(p.AdvancedMounts) > 0:
+			mounts = p.AdvancedMounts[resticController][resticController]
+		case len(p.GlobalMounts) > 0:
+			mounts = p.GlobalMounts
+		default:
+			mounts = []hrMount{{}}
+		}
+		for _, m := range mounts {
+			path := m.Path
+			if path == "" {
+				path = "/" + key
+			}
+			out = append(out, hrVolume{
+				key: key, kind: kind, name: name, path: path, readOnly: m.ReadOnly, subPath: m.SubPath,
+			})
 		}
 	}
-	return found
+	return out
 }
 
-func (hr *helmRelease) cacheStorageClass() string {
-	return hr.Spec.Values.Persistence["cache"].StorageClass
+func volumeKeys(volumes []hrVolume) string {
+	keys := make([]string, 0, len(volumes))
+	for _, v := range volumes {
+		keys = append(keys, v.key)
+	}
+	return strings.Join(keys, ", ")
 }
 
 func splitArgs(line string) []string {
@@ -181,14 +257,15 @@ func splitArgs(line string) []string {
 	return args
 }
 
-func flagValue(args []string, name string) (string, bool) {
+func flagValues(args []string, name string) []string {
 	prefix := "--" + name + "="
+	var out []string
 	for _, a := range args {
 		if v, ok := strings.CutPrefix(a, prefix); ok {
-			return v, true
+			out = append(out, v)
 		}
 	}
-	return "", false
+	return out
 }
 
 func parseInt32(s string) (*int32, error) {
@@ -225,8 +302,4 @@ func joinContinuations(script string) []string {
 
 func sortedKeys[V any](m map[string]V) []string {
 	return slices.Sorted(maps.Keys(m))
-}
-
-func (hr *helmRelease) scheduleOf() string {
-	return hr.Spec.Values.Controllers[resticController].CronJob.Schedule
 }

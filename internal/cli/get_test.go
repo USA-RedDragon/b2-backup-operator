@@ -19,13 +19,18 @@ import (
 func readyRepo(ns string) *b2backupv1.Repository {
 	r := newRepo(ns)
 	r.CreationTimestamp = metav1.NewTime(time.Now().Add(-3 * time.Hour))
+	r.Spec.Mode = b2backupv1.StorageModePrefix
+	r.Spec.Bucket = testBucket
+	r.Spec.Path = testPath
 	r.Status = b2backupv1.RepositoryStatus{
-		RepositoryID: testRepoID,
-		Initialized:  true,
-		CurrentUsage: testUsage,
-		Quota:        testQuota,
-		Server:       testServer,
-		SecretName:   testRepoName + "-b2",
+		BucketName:       testBucket,
+		BucketID:         "bucket0001",
+		Path:             testPath,
+		Endpoint:         testEndpoint,
+		ApplicationKeyID: testKeyID,
+		Initialized:      true,
+		CurrentUsage:     testUsage,
+		SecretName:       testRepoName + "-credentials",
 		Conditions: []metav1.Condition{
 			{Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionTrue, Reason: reasonReady},
 		},
@@ -67,8 +72,8 @@ func TestGetTable(t *testing.T) {
 	out := getOutput(t, c, "prod", false, OutputTable)
 
 	for _, want := range []string{
-		"NAME", "REPO ID", "READY", "INITIALIZED", "USAGE",
-		testRepoName, testRepoID, statusTrue, testUsage, testQuota,
+		"NAME", "BUCKET", "PATH", "READY", "INITIALIZED", "USAGE",
+		testRepoName, testBucket, testPath, statusTrue, testUsage,
 		"REPOSITORY", "SCHEDULE", "LAST BACKUP", "SUSPENDED", "ACTIVE",
 		testBackupName, testSchedule, "ago", "3h",
 	} {
@@ -87,7 +92,7 @@ func TestGetWideAddsColumns(t *testing.T) {
 
 	out := getOutput(t, c, "prod", false, OutputWide)
 	for _, want := range []string{
-		"SERVER", testServer, "SECRET", "store-b2",
+		"MODE", "Prefix", "KEY ID", testKeyID, "SECRET", "store-credentials",
 		"TIMEZONE", testTimeZone,
 	} {
 		if !strings.Contains(out, want) {
@@ -135,7 +140,7 @@ func TestGetMachineOutput(t *testing.T) {
 	c := newClient(t, readyRepo(testNS))
 
 	jsonOut := getOutput(t, c, "prod", false, OutputJSON, "repositories")
-	for _, want := range []string{`"kind": "RepositoryList"`, `"apiVersion"`, `"repositoryID": "` + testRepoID + `"`} {
+	for _, want := range []string{`"kind": "RepositoryList"`, `"apiVersion"`, `"applicationKeyID": "` + testKeyID + `"`} {
 		if !strings.Contains(jsonOut, want) {
 			t.Errorf("expected %q in JSON output:\n%s", want, jsonOut)
 		}

@@ -2,7 +2,7 @@ package controller
 
 import (
 	"fmt"
-	"math"
+	"strings"
 )
 
 const (
@@ -10,51 +10,46 @@ const (
 	managedByValue = "b2-backup-operator"
 )
 
-const (
-	bytesPerMB  = 1000000
-	bytesPerGiB = 1073741824
-
-	mbPerMiB = 1.048576
-	mbPerGiB = float64(bytesPerGiB) / bytesPerMB
-)
-
-func formatUsage(mb float64) string {
-	if mb <= 0 {
-		return "0"
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
 	}
-	gib := mb / mbPerGiB
-	if gib < 1 {
-		return fmt.Sprintf("%dMiB", int(math.Round(mb/mbPerMiB)))
+	value := float64(n)
+	suffixes := []string{"KiB", "MiB", "GiB", "TiB", "PiB"}
+	i := -1
+	for value >= unit && i < len(suffixes)-1 {
+		value /= unit
+		i++
 	}
-	if gib >= 1024 {
-		return fmt.Sprintf("%.1fTiB", gib/1024)
+	if i <= 1 {
+		return fmt.Sprintf("%.0f%s", value, suffixes[i])
 	}
-	return fmt.Sprintf("%.1fGiB", gib)
+	return fmt.Sprintf("%.1f%s", value, suffixes[i])
 }
 
-func formatQuota(mb int64) string {
-	if mb <= 0 {
+func filePrefix(path string) string {
+	if path == "" {
 		return ""
 	}
-	return formatUsage(float64(mb))
+	return path + "/"
 }
 
-func quotaMB(gib int32) int64 {
-	return (int64(gib)*bytesPerGiB + bytesPerMB/2) / bytesPerMB
+func joinPath(path, name string) string {
+	return filePrefix(path) + name
 }
 
-func quotaMBPtr(v *int32) *int64 {
-	if v == nil {
-		return nil
+func displayPath(path string) string {
+	if path == "" {
+		return "(bucket root)"
 	}
-	out := quotaMB(*v)
-	return &out
+	return path
 }
 
-func int64Ptr(v *int32) *int64 {
-	if v == nil {
-		return nil
+func resticURL(s3APIURL, bucket, path string) string {
+	url := "s3:" + strings.TrimRight(s3APIURL, "/") + "/" + bucket
+	if path != "" {
+		url += "/" + path
 	}
-	out := int64(*v)
-	return &out
+	return url
 }

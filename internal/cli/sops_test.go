@@ -9,12 +9,12 @@ import (
 )
 
 const (
-	sopsRepoID  = "ab12cd34"
-	sopsRepoURL = "rest:https://" + sopsRepoID + ":s3cret@" + sopsRepoID + ".repo.borgbase.com/./"
+	sopsAppPath = "restic/app"
+	sopsRepoURL = "s3:" + testEndpoint + "/" + testBucket + "/" + sopsAppPath
 )
 
 // fakeSops puts a sops on PATH whose body is the given shell script, and
-// returns the path of a secret.yaml for it to be pointed at.
+// returns the path of an encrypted Secret for it to be pointed at.
 func fakeSops(t *testing.T, script string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -25,7 +25,7 @@ func fakeSops(t *testing.T, script string) string {
 	}
 	t.Setenv("PATH", dir)
 
-	secret := filepath.Join(dir, "secret.yaml")
+	secret := filepath.Join(dir, "app-restic.yaml")
 	if err := os.WriteFile(secret, []byte("sops: encrypted\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -38,44 +38,51 @@ func sopsEmitting(plaintext string) string {
 	return "printf '%s' '" + strings.ReplaceAll(plaintext, "'", `'\''`) + "'"
 }
 
-func TestRepositoryIDFromURL(t *testing.T) {
+func TestParseS3Repository(t *testing.T) {
 	tests := []struct {
 		name    string
 		url     string
-		want    string
+		want    s3Location
 		wantErr bool
 	}{
-		{"rest url", "rest:https://ab12cd34:s3cret@ab12cd34.repo.borgbase.com/./", "ab12cd34", false},
-		{"no password", "rest:https://ab12cd34@ab12cd34.repo.borgbase.com/./", "", true},
-		{"not a rest url", "s3:s3.amazonaws.com/bucket", "", true},
-		{"plain https", "https://ab12cd34:s3cret@ab12cd34.repo.borgbase.com/./", "", true},
-		{"empty id", "rest:https://:s3cret@ab12cd34.repo.borgbase.com/./", "", true},
-		{"empty", "", "", true},
+		{"prefix", sopsRepoURL, s3Location{
+			Endpoint: testEndpoint, Bucket: testBucket, Path: sopsAppPath,
+		}, false},
+		{"trailing slash", sopsRepoURL + "/", s3Location{
+			Endpoint: testEndpoint, Bucket: testBucket, Path: sopsAppPath,
+		}, false},
+		{"bucket root", "s3:" + testEndpoint + "/" + testBucket, s3Location{
+			Endpoint: testEndpoint, Bucket: testBucket,
+		}, false},
+		{"native b2 backend", "b2:acme-backups:restic/app", s3Location{}, true},
+		{"rest server", "rest:https://u:p@host/", s3Location{}, true},
+		{"no scheme", "s3:s3.amazonaws.com/bucket", s3Location{}, true},
+		{"no bucket", "s3:https://s3.us-east-005.backblazeb2.com/", s3Location{}, true},
+		{"double slash", "s3:https://s3.us-east-005.backblazeb2.com/b//a", s3Location{}, true},
+		{"credentials", "s3:https://k:s@s3.us-east-005.backblazeb2.com/b/a", s3Location{}, true},
+		{"empty", "", s3Location{}, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, err := repositoryIDFromURL(tt.url)
+			got, err := parseS3Repository(tt.url)
 			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("repositoryIDFromURL(%q) = %q, want an error", tt.url, id)
-				}
-				if !errors.Is(err, ErrNoRepositoryID) {
-					t.Errorf("error = %v, want it to wrap ErrNoRepositoryID", err)
+				if !errors.Is(err, ErrNoRepositoryURL) {
+					t.Fatalf("parseS3Repository(%q) = %+v, %v; want ErrNoRepositoryURL", tt.url, got, err)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("repositoryIDFromURL(%q) error = %v", tt.url, err)
+				t.Fatalf("parseS3Repository(%q) error = %v", tt.url, err)
 			}
-			if id != tt.want {
-				t.Errorf("repositoryIDFromURL(%q) = %q, want %q", tt.url, id, tt.want)
+			if got != tt.want {
+				t.Errorf("parseS3Repository(%q) = %+v, want %+v", tt.url, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestRepositoryIDFromSecretReadsBothSecretShapes(t *testing.T) {
+func TestRepositoryURLFromSecretReadsBothSecretShapes(t *testing.T) {
 	tests := []struct {
 		name      string
 		plaintext string
@@ -95,7 +102,7 @@ kind: Secret
 metadata:
   name: restic-envs
 data:
-  RESTIC_REPOSITORY: cmVzdDpodHRwczovL2FiMTJjZDM0OnMzY3JldEBhYjEyY2QzNC5yZXBvLmJvcmdiYXNlLmNvbS8uLw==
+  RESTIC_REPOSITORY: czM6aHR0cHM6Ly9zMy51cy1lYXN0LTAwNS5iYWNrYmxhemViMi5jb20vYWNtZS1iYWNrdXBzL3Jlc3RpYy9hcHA=
   RESTIC_PASSWORD: aHVudGVyMg==
 `},
 	}
@@ -104,37 +111,37 @@ data:
 		t.Run(tt.name, func(t *testing.T) {
 			path := fakeSops(t, sopsEmitting(tt.plaintext))
 
-			id, err := repositoryIDFromSecret(path)
+			got, err := repositoryURLFromSecret(path)
 			if err != nil {
-				t.Fatalf("repositoryIDFromSecret() error = %v", err)
+				t.Fatalf("repositoryURLFromSecret() error = %v", err)
 			}
-			if id != sopsRepoID {
-				t.Errorf("repositoryIDFromSecret() = %q, want %q", id, sopsRepoID)
+			if got != sopsRepoURL {
+				t.Errorf("repositoryURLFromSecret() = %q, want %q", got, sopsRepoURL)
 			}
 		})
 	}
 }
 
-func TestRepositoryIDFromSecretDecryptsRatherThanReadingCiphertext(t *testing.T) {
+func TestRepositoryURLFromSecretDecryptsRatherThanReadingCiphertext(t *testing.T) {
 	path := fakeSops(t, "printf 'stringData:\\n  RESTIC_REPOSITORY: %s\\n' "+sopsRepoURL)
 
 	if err := os.WriteFile(path, []byte(
-		"stringData:\n  RESTIC_REPOSITORY: rest:https://wrongone:pw@wrongone.repo.borgbase.com/./\n",
+		"stringData:\n  RESTIC_REPOSITORY: s3:https://s3.us-east-005.backblazeb2.com/wrong/one\n",
 	), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	id, err := repositoryIDFromSecret(path)
+	got, err := repositoryURLFromSecret(path)
 	if err != nil {
-		t.Fatalf("repositoryIDFromSecret() error = %v", err)
+		t.Fatalf("repositoryURLFromSecret() error = %v", err)
 	}
-	if id != sopsRepoID {
-		t.Errorf("repositoryIDFromSecret() = %q, want %q from the decrypted content, "+
-			"not whatever the file happens to hold", id, sopsRepoID)
+	if got != sopsRepoURL {
+		t.Errorf("repositoryURLFromSecret() = %q, want %q from the decrypted content, "+
+			"not whatever the file happens to hold", got, sopsRepoURL)
 	}
 }
 
-func TestRepositoryIDFromSecretRefusesWhatItCannotRead(t *testing.T) {
+func TestRepositoryURLFromSecretRefusesWhatItCannotRead(t *testing.T) {
 	tests := []struct {
 		name    string
 		script  string
@@ -155,21 +162,15 @@ func TestRepositoryIDFromSecretRefusesWhatItCannotRead(t *testing.T) {
 			name:    "no RESTIC_REPOSITORY in the secret",
 			script:  "printf 'stringData:\\n  RESTIC_PASSWORD: hunter2\\n'",
 			want:    "has no RESTIC_REPOSITORY",
-			wantErr: ErrNoRepositoryID,
-		},
-		{
-			name:    "RESTIC_REPOSITORY is not a rest url",
-			script:  "printf 'stringData:\\n  RESTIC_REPOSITORY: s3:s3.amazonaws.com/bucket\\n'",
-			want:    "is not a rest: repository URL",
-			wantErr: ErrNoRepositoryID,
+			wantErr: ErrNoRepositoryURL,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, err := repositoryIDFromSecret(fakeSops(t, tt.script))
+			got, err := repositoryURLFromSecret(fakeSops(t, tt.script))
 			if err == nil {
-				t.Fatalf("repositoryIDFromSecret() = %q, want an error", id)
+				t.Fatalf("repositoryURLFromSecret() = %q, want an error", got)
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error = %v, want it to mention %q", err, tt.want)
@@ -181,15 +182,15 @@ func TestRepositoryIDFromSecretRefusesWhatItCannotRead(t *testing.T) {
 	}
 }
 
-func TestRepositoryIDFromSecretPointsAtTheWayOut(t *testing.T) {
-	t.Run("no secret alongside the HelmRelease", func(t *testing.T) {
+func TestRepositoryURLFromSecretPointsAtTheWayOut(t *testing.T) {
+	t.Run("no such file", func(t *testing.T) {
 		path := fakeSops(t, "exit 0")
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
-		_, err := repositoryIDFromSecret(path)
-		if err == nil || !strings.Contains(err.Error(), "--repository-id") {
-			t.Errorf("error = %v, want it to suggest --repository-id", err)
+		_, err := repositoryURLFromSecret(path)
+		if err == nil || !strings.Contains(err.Error(), "--repository") {
+			t.Errorf("error = %v, want it to suggest --repository", err)
 		}
 	})
 
@@ -198,12 +199,12 @@ func TestRepositoryIDFromSecretPointsAtTheWayOut(t *testing.T) {
 		if err := os.Remove(filepath.Join(filepath.Dir(path), "sops")); err != nil {
 			t.Fatal(err)
 		}
-		_, err := repositoryIDFromSecret(path)
+		_, err := repositoryURLFromSecret(path)
 		if !errors.Is(err, ErrSopsUnavailable) {
 			t.Errorf("error = %v, want ErrSopsUnavailable", err)
 		}
-		if err == nil || !strings.Contains(err.Error(), "--repository-id") {
-			t.Errorf("error = %v, want it to suggest --repository-id", err)
+		if err == nil || !strings.Contains(err.Error(), "--repository") {
+			t.Errorf("error = %v, want it to suggest --repository", err)
 		}
 	})
 }

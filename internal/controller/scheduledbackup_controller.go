@@ -181,23 +181,12 @@ func (r *ScheduledBackupReconciler) reconcile(
 
 	sb.Status.EffectiveSchedule = desired.Spec.Schedule
 
-	ready := metav1.Condition{
+	r.setCondition(sb, metav1.Condition{
 		Type:    b2backupv1.ScheduledBackupConditionReady,
 		Status:  metav1.ConditionTrue,
 		Reason:  "Ready",
 		Message: fmt.Sprintf("Backing up on schedule %s", desired.Spec.Schedule),
-	}
-	if repo.Spec.AppendOnly && sb.Spec.Script == "" && sb.Spec.Retention != nil {
-		message := fmt.Sprintf(
-			"Repository %q is append-only, so the restic forget --prune rendered from spec.retention "+
-				"will fail once retention first expires a snapshot; "+
-				"clear spec.appendOnly on the Repository or remove spec.retention",
-			repo.Name)
-		r.Recorder.Eventf(sb, nil, corev1.EventTypeWarning, "AppendOnlyWithRetention", "Reconcile",
-			"%s", message)
-		degrade(&ready, "AppendOnlyWithRetention", message)
-	}
-	r.setCondition(sb, ready)
+	})
 
 	runs, err := r.observedRuns(ctx, sb, cronJobUID)
 	if err != nil {
@@ -285,16 +274,6 @@ func (r *ScheduledBackupReconciler) patchStatus(
 		return nil
 	}
 	return r.Status().Patch(ctx, sb, client.MergeFrom(base))
-}
-
-func degrade(cond *metav1.Condition, reason, message string) {
-	if cond.Status != metav1.ConditionFalse {
-		cond.Status = metav1.ConditionFalse
-		cond.Reason = reason
-		cond.Message = message
-		return
-	}
-	cond.Message += "; " + message
 }
 
 func (r *ScheduledBackupReconciler) setCondition(

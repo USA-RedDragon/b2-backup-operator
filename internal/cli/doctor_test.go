@@ -27,8 +27,11 @@ func credentialsSecret(name string) *corev1.Secret {
 	return &corev1.Secret{
 		Namespace: ns, Name: name,
 		Data: map[string][]byte{
-			controller.KeyResticRepository: []byte("rest:https://id:pw@id.repo.borgbase.com"),
+			controller.KeyResticRepository: []byte(testRepoURL),
 			controller.KeyResticPassword:   []byte("pw"),
+			controller.KeyAccessKeyID:      []byte(testKeyID),
+			controller.KeySecretAccessKey:  []byte("keysecret"),
+			controller.KeyDefaultRegion:    []byte("us-east-005"),
 		},
 	}
 }
@@ -160,6 +163,54 @@ func TestDoctorDetectsIncompleteSecret(t *testing.T) {
 	}
 	if !strings.Contains(out, controller.KeyResticPassword) {
 		t.Errorf("expected the missing key to be named:\n%s", out)
+	}
+}
+
+func TestDoctorDetectsAMissingS3Key(t *testing.T) {
+	r := readyRepo(testNS)
+	secret := credentialsSecret(r.SecretName())
+	delete(secret.Data, controller.KeySecretAccessKey)
+	c := newClient(t, r, secret)
+
+	out, err := doctor(t, c, "repo/"+testRepoName)
+	if !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("expected ErrUnhealthy, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, controller.KeySecretAccessKey) {
+		t.Errorf("expected the missing key to be named:\n%s", out)
+	}
+}
+
+func TestDoctorDetectsAKeyTheOperatorDidNotRecord(t *testing.T) {
+	r := readyRepo(testNS)
+	secret := credentialsSecret(r.SecretName())
+	secret.Data[controller.KeyAccessKeyID] = []byte("0055aa00000000000000000099")
+	c := newClient(t, r, secret)
+
+	out, err := doctor(t, c, "repo/"+testRepoName)
+	if !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("expected ErrUnhealthy, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "but the operator recorded "+testKeyID) {
+		t.Errorf("expected the key mismatch to be explained:\n%s", out)
+	}
+}
+
+func TestDoctorShowsWhereTheRepositoryLives(t *testing.T) {
+	r := readyRepo(testNS)
+	c := newClient(t, r, credentialsSecret(r.SecretName()))
+
+	out, err := doctor(t, c, "repo/"+testRepoName)
+	if err != nil {
+		t.Fatalf("doctor: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"stored at " + testBucket + "/" + testPath,
+		"has all 5 keys, application key " + testKeyID,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
 	}
 }
 

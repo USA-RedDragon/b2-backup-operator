@@ -6,16 +6,29 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// DeletionPolicy controls what happens to the BorgBase repository when the Repository is deleted.
+// DeletionPolicy controls what happens to the B2 data when the Repository is deleted.
 // +kubebuilder:validation:Enum=Retain;Delete
 type DeletionPolicy string
 
 const (
-	// DeletionPolicyRetain leaves the BorgBase repository in place.
+	// DeletionPolicyRetain leaves the data, the application key and the credentials Secret in place.
 	DeletionPolicyRetain DeletionPolicy = "Retain"
 
-	// DeletionPolicyDelete removes the BorgBase repository and its snapshots.
+	// DeletionPolicyDelete removes the application key and every file version under the
+	// repository's path, and in Bucket mode the bucket itself.
 	DeletionPolicyDelete DeletionPolicy = "Delete"
+)
+
+// StorageMode is how a repository is laid out in B2.
+// +kubebuilder:validation:Enum=Bucket;Prefix
+type StorageMode string
+
+const (
+	// StorageModeBucket gives the repository a bucket of its own, created if it does not exist.
+	StorageModeBucket StorageMode = "Bucket"
+
+	// StorageModePrefix puts the repository under its own path in an existing, shared bucket.
+	StorageModePrefix StorageMode = "Prefix"
 )
 
 const (
@@ -24,11 +37,38 @@ const (
 
 	// RepositoryConditionInitialized reports whether restic init has run.
 	RepositoryConditionInitialized = "Initialized"
+
+	// RepositoryConditionLifecycleRule reports whether old file versions are being cleaned up.
+	RepositoryConditionLifecycleRule = "LifecycleRule"
 )
+
+const (
+	// CredentialsKeyID is the Secret key holding a B2 application key ID.
+	CredentialsKeyID = "B2_APPLICATION_KEY_ID"
+
+	// CredentialsKey is the Secret key holding a B2 application key.
+	CredentialsKey = "B2_APPLICATION_KEY"
+)
+
+// LifecycleSpec is the bucket lifecycle rule the operator keeps for the repository.
+type LifecycleSpec struct {
+	// Manage adds or updates a lifecycle rule scoped to the repository's path, so
+	// that files restic deletes, which B2 only hides, are removed for good.
+	// Rules for other prefixes are never changed. Set false to leave the
+	// bucket's rules alone. Defaults to true.
+	// +optional
+	Manage *bool `json:"manage,omitempty"`
+
+	// DaysFromHidingToDeleting is how long a hidden file version is kept before B2 deletes it.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default:=1
+	// +optional
+	DaysFromHidingToDeleting *int32 `json:"daysFromHidingToDeleting,omitempty"`
+}
 
 // RepositorySpec defines the desired state of a Repository.
 type RepositorySpec struct {
-	// Interval is how often the repository is reconciled against the BorgBase API.
+	// Interval is how often the repository is reconciled against the B2 API.
 	// +kubebuilder:default:="1h"
 	// +kubebuilder:validation:XValidation:rule="self == '0' || self.matches('^([0-9]+([.][0-9]+)?(ns|us|ms|s|m|h))+$')",message="must be a Go duration such as 30m, 1h or 1h30m"
 	// +optional
@@ -38,51 +78,53 @@ type RepositorySpec struct {
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
 
-	// DeletionPolicy decides whether the BorgBase repository outlives this resource.
+	// DeletionPolicy decides whether the B2 data outlives this resource.
 	// +kubebuilder:default:=Retain
 	// +optional
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 
-	// APITokenSecretRef points at the BorgBase API token. Defaults to the operator's own token.
-	// +optional
-	APITokenSecretRef *corev1.SecretKeySelector `json:"apiTokenSecretRef,omitempty"`
+	// Mode is how the repository is laid out. Bucket gives it a private bucket of
+	// its own, created when missing and adopted when this account already has it.
+	// Prefix puts it under its own path in an existing bucket that other
+	// repositories share; the operator never creates or deletes that bucket.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="mode cannot be changed"
+	// +required
+	Mode StorageMode `json:"mode"`
 
-	// ExistingRepositoryID adopts an existing BorgBase repository instead of creating one.
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]{4,32}$`
-	// +optional
-	ExistingRepositoryID string `json:"existingRepositoryID,omitempty"`
+	// Bucket is the B2 bucket name. Bucket names are global across all of B2.
+	// +kubebuilder:validation:MinLength=6
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('b2-')",message="bucket names starting with b2- are reserved by Backblaze"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="bucket cannot be changed"
+	// +required
+	Bucket string `json:"bucket"`
 
-	// PasswordSecretRef seeds the restic password. Required when adopting.
+	// Path is where the repository lives inside the bucket, with no leading or
+	// trailing slash. Defaults to the bucket root in Bucket mode and to
+	// <namespace>/<name> in Prefix mode.
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$`
+	// +kubebuilder:validation:XValidation:rule="!self.matches('(^|/)[.][.]?(/|$)')",message="path must not contain . or .. segments"
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Lifecycle is the bucket lifecycle rule kept for the repository's path.
+	// +optional
+	Lifecycle *LifecycleSpec `json:"lifecycle,omitempty"`
+
+	// CredentialsSecretRef names a Secret in this namespace holding the B2
+	// application key the operator manages this repository with, under
+	// B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY. Defaults to the operator's own.
+	// +optional
+	CredentialsSecretRef *corev1.LocalObjectReference `json:"credentialsSecretRef,omitempty"`
+
+	// PasswordSecretRef seeds the restic password. Required when the path already holds a repository.
 	// +optional
 	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
 
-	// RepositoryName is the name given to the repository in BorgBase. Defaults to the namespace.
-	// +kubebuilder:validation:MaxLength=64
-	// +optional
-	RepositoryName string `json:"repositoryName,omitempty"`
-
-	// Region is the BorgBase region to create the repository in.
-	// +kubebuilder:default:="us"
-	// +optional
-	Region string `json:"region,omitempty"`
-
-	// QuotaGiB caps repository size. Unset means no quota.
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=1000000
-	// +optional
-	QuotaGiB *int32 `json:"quotaGiB,omitempty"`
-
-	// AlertDays is how many quiet days pass before BorgBase alerts. Unset leaves the
-	// repository's current setting.
-	// +kubebuilder:validation:Minimum=0
-	// +optional
-	AlertDays *int32 `json:"alertDays,omitempty"`
-
-	// AppendOnly makes the repository reject deletes and overwrites.
-	// +optional
-	AppendOnly bool `json:"appendOnly,omitempty"`
-
 	// SecretName overrides the name of the Secret the operator writes credentials to.
+	// Defaults to <name>-credentials.
 	// +kubebuilder:validation:MaxLength=253
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
@@ -100,11 +142,27 @@ type RepositoryStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// RepositoryID is the BorgBase repository ID.
+	// BucketName is the bucket holding the repository.
 	// +optional
-	RepositoryID string `json:"repositoryID,omitempty"`
+	BucketName string `json:"bucketName,omitempty"`
 
-	// Adopted reports whether the repository pre-existed this resource.
+	// BucketID is the B2 ID of that bucket.
+	// +optional
+	BucketID string `json:"bucketID,omitempty"`
+
+	// Path is the repository's path inside the bucket. Empty means the bucket root.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Endpoint is the S3-compatible endpoint restic talks to.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// ApplicationKeyID is the B2 application key written to the credentials Secret.
+	// +optional
+	ApplicationKeyID string `json:"applicationKeyID,omitempty"`
+
+	// Adopted reports whether a restic repository already existed at the path.
 	// +optional
 	Adopted bool `json:"adopted,omitempty"`
 
@@ -112,35 +170,32 @@ type RepositoryStatus struct {
 	// +optional
 	Initialized bool `json:"initialized,omitempty"`
 
-	// Server is the host serving the repository over REST.
-	// +optional
-	Server string `json:"server,omitempty"`
-
 	// SecretName is the Secret holding the repository credentials.
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
 
-	// CurrentUsage is the human-readable size of the repository.
+	// CurrentUsage is the total size of the files restic can see under the path.
+	// It excludes hidden versions still awaiting deletion. Empty when unknown.
 	// +optional
 	CurrentUsage string `json:"currentUsage,omitempty"`
 
-	// Quota is the human-readable quota, if one is set.
+	// UsageTime is when CurrentUsage was measured.
 	// +optional
-	Quota string `json:"quota,omitempty"`
+	UsageTime *metav1.Time `json:"usageTime,omitempty"`
 }
 
-// Repository is a restic repository hosted on BorgBase.
+// Repository is a restic repository stored in Backblaze B2.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Repo ID",type="string",JSONPath=".status.repositoryID"
+// +kubebuilder:printcolumn:name="Bucket",type="string",JSONPath=".status.bucketName"
+// +kubebuilder:printcolumn:name="Path",type="string",JSONPath=".status.path"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Initialized",type="boolean",JSONPath=".status.initialized"
 // +kubebuilder:printcolumn:name="Usage",type="string",JSONPath=".status.currentUsage"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.existingRepositoryID) || has(self.spec.passwordSecretRef)",message="passwordSecretRef is required when adopting an existing repository, otherwise its snapshots would be unreadable"
-// +kubebuilder:validation:XValidation:rule="!has(oldSelf.spec.existingRepositoryID) || (has(self.spec.existingRepositoryID) && self.spec.existingRepositoryID == oldSelf.spec.existingRepositoryID)",message="existingRepositoryID cannot be changed or removed once set"
-// +kubebuilder:validation:XValidation:rule="has(oldSelf.spec.existingRepositoryID) || !has(self.spec.existingRepositoryID) || !has(oldSelf.status) || !has(oldSelf.status.repositoryID)",message="cannot adopt a different repository after one has been created for this resource"
+// +kubebuilder:validation:XValidation:rule="has(self.spec.path) == has(oldSelf.spec.path) && (!has(self.spec.path) || self.spec.path == oldSelf.spec.path)",message="path cannot be added, changed or removed once the Repository exists"
 // +kubebuilder:validation:XValidation:rule="!has(self.spec.passwordSecretRef) || !has(self.spec.secretName) || self.spec.secretName != self.spec.passwordSecretRef.name",message="secretName must not be the passwordSecretRef Secret; the operator never writes to the seed"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.credentialsSecretRef) || !has(self.spec.secretName) || self.spec.secretName != self.spec.credentialsSecretRef.name",message="secretName must not be the credentialsSecretRef Secret; the operator never writes to it"
 type Repository struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -159,15 +214,31 @@ func (r *Repository) SecretName() string {
 	if r.Spec.SecretName != "" {
 		return r.Spec.SecretName
 	}
-	return r.Name + "-b2"
+	return r.Name + "-credentials"
 }
 
-// RepositoryName returns the name to give the repository in BorgBase.
-func (r *Repository) RepositoryName() string {
-	if r.Spec.RepositoryName != "" {
-		return r.Spec.RepositoryName
+// EffectivePath returns the path inside the bucket. Empty means the bucket root.
+func (r *Repository) EffectivePath() string {
+	if r.Spec.Path != "" {
+		return r.Spec.Path
 	}
-	return r.Namespace
+	if r.Spec.Mode == StorageModePrefix {
+		return r.Namespace + "/" + r.Name
+	}
+	return ""
+}
+
+// ManagesLifecycle reports whether the operator keeps a lifecycle rule for the repository.
+func (r *Repository) ManagesLifecycle() bool {
+	return r.Spec.Lifecycle == nil || r.Spec.Lifecycle.Manage == nil || *r.Spec.Lifecycle.Manage
+}
+
+// DaysFromHidingToDeleting returns how long hidden versions are kept.
+func (r *Repository) DaysFromHidingToDeleting() int32 {
+	if r.Spec.Lifecycle != nil && r.Spec.Lifecycle.DaysFromHidingToDeleting != nil {
+		return *r.Spec.Lifecycle.DaysFromHidingToDeleting
+	}
+	return 1
 }
 
 // RepositoryList is a list of Repository.

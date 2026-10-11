@@ -12,9 +12,6 @@ import (
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/runner"
 )
 
-// ErrAppendOnly means the operation would delete data the repository will not let go of.
-var ErrAppendOnly = errors.New("repository is append-only")
-
 var errUnknownStatsMode = errors.New("unsupported stats mode")
 
 var statsModes = []string{"restore-size", "files-by-contents", "blobs-per-file", "raw-data"}
@@ -111,12 +108,6 @@ space after a retention change rather than routine upkeep.`,
 			}
 			return runRestic(cmd.Context(), f, args[0], "prune",
 				func(sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository) ([]string, error) {
-					if repo.Spec.AppendOnly {
-						return nil, fmt.Errorf(
-							"%w: repository/%s cannot forget or prune; clear spec.appendOnly first",
-							ErrAppendOnly, repo.Name)
-					}
-
 					flags := retentionFlags(sb.Spec.Retention)
 					if len(flags) == 0 {
 						return nil, fmt.Errorf(
@@ -173,8 +164,9 @@ func newStatsCommand(f *Factory) *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		Long: `Show restic's own view of the repository size.
 
-BorgBase's reported usage is in ` + "`b2bk status`" + `; this is what restic
-thinks, which differs because of deduplication and compression.`,
+The operator's measurement in ` + "`b2bk status`" + ` is the size of the files
+in B2; this is what restic thinks, which differs because of deduplication,
+compression, and files restic has deleted that B2 has only hidden so far.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !slices.Contains(statsModes, mode) {
 				return fmt.Errorf("%w %q, expected one of: %s",

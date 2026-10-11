@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -28,8 +27,9 @@ func newEnvCommand(f *Factory) *cobra.Command {
 		GroupID: GroupEscape,
 		Long: `Print the restic credentials as shell export statements.
 
-The password is redacted unless --show-password is passed. Note that
-RESTIC_REPOSITORY embeds the password too, so it is redacted along with it.
+RESTIC_PASSWORD and AWS_SECRET_ACCESS_KEY are redacted unless --show-password
+is passed. The rest, the s3: repository URL, the application key ID and the
+region, are not secret and are printed as they are.
 
 With --show-password the output is suitable for:
 
@@ -77,23 +77,26 @@ func runEnv(
 		return err
 	}
 
-	repoURL := string(secret.Data[controller.KeyResticRepository])
-	password := string(secret.Data[controller.KeyResticPassword])
-
-	if !showPassword {
-		repoURL = RedactResticURL(repoURL)
-		password = redacted
-		hint := newPrinter(errOut)
-		hint.println("# password redacted; pass --show-password to reveal it")
-		if err := hint.Err(); err != nil {
-			return err
+	hidden := false
+	p := newPrinter(out)
+	for _, key := range controller.SecretKeys {
+		value := string(secret.Data[key])
+		if !showPassword && (key == controller.KeyResticPassword || key == controller.KeySecretAccessKey) {
+			value = redacted
+			hidden = true
 		}
+		p.printf("export %s=%s\n", key, shellQuote(value))
+	}
+	if err := p.Err(); err != nil {
+		return err
 	}
 
-	p := newPrinter(out)
-	p.printf("export %s=%s\n", controller.KeyResticRepository, shellQuote(repoURL))
-	p.printf("export %s=%s\n", controller.KeyResticPassword, shellQuote(password))
-	return p.Err()
+	if hidden {
+		hint := newPrinter(errOut)
+		hint.println("# RESTIC_PASSWORD and AWS_SECRET_ACCESS_KEY redacted; pass --show-password to reveal them")
+		return hint.Err()
+	}
+	return nil
 }
 
 func credentials(ctx context.Context, c client.Client, repo *b2backupv1.Repository) (*corev1.Secret, error) {
@@ -108,33 +111,6 @@ func credentials(ctx context.Context, c client.Client, repo *b2backupv1.Reposito
 		return nil, err
 	}
 	return &secret, nil
-}
-
-// RedactResticURL replaces the password in a restic rest: URL.
-func RedactResticURL(raw string) string {
-	if raw == "" {
-		return ""
-	}
-
-	scheme, rest, ok := strings.Cut(raw, ":")
-	if !ok || scheme != "rest" {
-		return redacted
-	}
-
-	u, err := url.Parse(rest)
-	if err != nil {
-		return redacted
-	}
-	if u.User == nil {
-		return raw
-	}
-	if _, hasPassword := u.User.Password(); !hasPassword {
-		return raw
-	}
-
-	u.User = url.UserPassword(u.User.Username(), redacted)
-
-	return scheme + ":" + strings.ReplaceAll(u.String(), url.QueryEscape(redacted), redacted)
 }
 
 func shellQuote(s string) string {

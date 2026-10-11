@@ -246,7 +246,8 @@ metadata:
   name: store
   namespace: prod
 spec:
-  existingRepositoryID: ab12cd34
+  mode: Prefix
+  bucket: acme-backups
 ---
 apiVersion: b2backup.mcswain.dev/v1
 kind: ScheduledBackup
@@ -304,7 +305,8 @@ metadata:
   name: store
   namespace: prod
 spec:
-  existingRepositoryID: ab12cd34
+  mode: Prefix
+  bucket: acme-backups
   note: |
     kind: ScheduledBackup
 `

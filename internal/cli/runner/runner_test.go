@@ -396,7 +396,7 @@ func TestPreflightCatchesAMissingSecret(t *testing.T) {
 	})
 
 	if err := r.Client.Create(context.Background(),
-		&corev1.Secret{Namespace: testNS, Name: testRepo + "-b2"}); err != nil {
+		&corev1.Secret{Namespace: testNS, Name: testRepo + "-credentials"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -437,7 +437,7 @@ func TestPreflightPassesWhenDependenciesExist(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	if err := r.Client.Create(context.Background(),
-		&corev1.Secret{Namespace: testNS, Name: testRepo + "-b2"}); err != nil {
+		&corev1.Secret{Namespace: testNS, Name: testRepo + "-credentials"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Client.Create(context.Background(),
@@ -608,7 +608,7 @@ func runnableFixture(t *testing.T) (*Runner, *b2backupv1.ScheduledBackup) {
 
 	ctx := context.Background()
 	for _, obj := range []client.Object{
-		&corev1.Secret{Namespace: testNS, Name: testRepo + "-b2"},
+		&corev1.Secret{Namespace: testNS, Name: testRepo + "-credentials"},
 		&corev1.PersistentVolumeClaim{Namespace: testNS, Name: testName + "-cache"},
 	} {
 		if err := r.Client.Create(ctx, obj); err != nil {
@@ -659,7 +659,7 @@ func preflightWithDependencies(t *testing.T, extra ...client.Object) error {
 	ctx := context.Background()
 
 	objs := []client.Object{
-		&corev1.Secret{Namespace: testNS, Name: testRepo + "-b2"},
+		&corev1.Secret{Namespace: testNS, Name: testRepo + "-credentials"},
 		&corev1.PersistentVolumeClaim{Namespace: testNS, Name: testName + "-cache"},
 	}
 	for _, obj := range append(objs, extra...) {

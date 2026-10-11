@@ -39,16 +39,24 @@ const (
 	envResticHost       = "RESTIC_HOST"
 	envResticRepository = "RESTIC_REPOSITORY"
 	envResticPassword   = "RESTIC_PASSWORD"
+	envAccessKeyID      = "AWS_ACCESS_KEY_ID"
+	envSecretAccessKey  = "AWS_SECRET_ACCESS_KEY"
+	envDefaultRegion    = "AWS_DEFAULT_REGION"
 	envDBHost           = "DB_HOST"
 	envDBDatabase       = "DB_DATABASE"
 	envDBUsername       = "DB_USERNAME"
 )
 
+const fromRepositorySecret = "the Repository's Secret"
+
 var envSource = map[string]string{
 	envTZ:               "spec.timeZone",
 	envResticHost:       "spec.resticHost",
-	envResticRepository: "the Repository's Secret",
-	envResticPassword:   "the Repository's Secret",
+	envResticRepository: fromRepositorySecret,
+	envResticPassword:   fromRepositorySecret,
+	envAccessKeyID:      fromRepositorySecret,
+	envSecretAccessKey:  fromRepositorySecret,
+	envDefaultRegion:    fromRepositorySecret,
 	envDBHost:           "spec.database.host",
 	envDBDatabase:       "spec.database.name",
 	envDBUsername:       "spec.database.user",
@@ -395,12 +403,16 @@ func resticHostEnv(sb *b2backupv1.ScheduledBackup) corev1.EnvVar {
 }
 
 func reservedEnvNames(operatorSet []corev1.EnvVar) map[string]struct{} {
-	reserved := make(map[string]struct{}, len(operatorSet)+2)
+	fromSecret := []string{
+		envResticRepository, envResticPassword, envAccessKeyID, envSecretAccessKey, envDefaultRegion,
+	}
+	reserved := make(map[string]struct{}, len(operatorSet)+len(fromSecret))
 	for _, e := range operatorSet {
 		reserved[e.Name] = struct{}{}
 	}
-	reserved[envResticRepository] = struct{}{}
-	reserved[envResticPassword] = struct{}{}
+	for _, name := range fromSecret {
+		reserved[name] = struct{}{}
+	}
 	return reserved
 }
 

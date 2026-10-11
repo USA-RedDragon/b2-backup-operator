@@ -15,8 +15,11 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.repositoryID
-      name: Repo ID
+    - jsonPath: .status.bucketName
+      name: Bucket
+      type: string
+    - jsonPath: .status.path
+      name: Path
       type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
@@ -33,7 +36,7 @@ spec:
     name: v1
     schema:
       openAPIV3Schema:
-        description: Repository is a restic repository hosted on BorgBase.
+        description: Repository is a restic repository stored in Backblaze B2.
         properties:
           apiVersion:
             description: |-
@@ -55,21 +58,24 @@ spec:
           spec:
             description: RepositorySpec defines the desired state of a Repository.
             properties:
-              alertDays:
+              bucket:
+                description: Bucket is the B2 bucket name. Bucket names are global
+                  across all of B2.
+                maxLength: 63
+                minLength: 6
+                pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                type: string
+                x-kubernetes-validations:
+                - message: bucket names starting with b2- are reserved by Backblaze
+                  rule: '!self.startsWith(''b2-'')'
+                - message: bucket cannot be changed
+                  rule: self == oldSelf
+              credentialsSecretRef:
                 description: |-
-                  AlertDays is how many quiet days pass before BorgBase alerts. Unset leaves the
-                  repository's current setting.
-                format: int32
-                minimum: 0
-                type: integer
-              apiTokenSecretRef:
-                description: APITokenSecretRef points at the BorgBase API token. Defaults
-                  to the operator's own token.
+                  CredentialsSecretRef names a Secret in this namespace holding the B2
+                  application key the operator manages this repository with, under
+                  B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY. Defaults to the operator's own.
                 properties:
-                  key:
-                    description: The key of the secret to select from.  Must be a
-                      valid secret key.
-                    type: string
                   name:
                     default: ""
                     description: |-
@@ -79,40 +85,59 @@ spec:
                       almost certainly wrong.
                       More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                     type: string
-                  optional:
-                    description: Specify whether the Secret or its key must be defined
-                    type: boolean
-                required:
-                - key
                 type: object
                 x-kubernetes-map-type: atomic
-              appendOnly:
-                description: AppendOnly makes the repository reject deletes and overwrites.
-                type: boolean
               deletionPolicy:
                 default: Retain
-                description: DeletionPolicy decides whether the BorgBase repository
-                  outlives this resource.
+                description: DeletionPolicy decides whether the B2 data outlives this
+                  resource.
                 enum:
                 - Retain
                 - Delete
                 type: string
-              existingRepositoryID:
-                description: ExistingRepositoryID adopts an existing BorgBase repository
-                  instead of creating one.
-                pattern: ^[a-z0-9]{4,32}$
-                type: string
               interval:
                 default: 1h
                 description: Interval is how often the repository is reconciled against
-                  the BorgBase API.
+                  the B2 API.
                 type: string
                 x-kubernetes-validations:
                 - message: must be a Go duration such as 30m, 1h or 1h30m
                   rule: self == '0' || self.matches('^([0-9]+([.][0-9]+)?(ns|us|ms|s|m|h))+$')
+              lifecycle:
+                description: Lifecycle is the bucket lifecycle rule kept for the repository's
+                  path.
+                properties:
+                  daysFromHidingToDeleting:
+                    default: 1
+                    description: DaysFromHidingToDeleting is how long a hidden file
+                      version is kept before B2 deletes it.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  manage:
+                    description: |-
+                      Manage adds or updates a lifecycle rule scoped to the repository's path, so
+                      that files restic deletes, which B2 only hides, are removed for good.
+                      Rules for other prefixes are never changed. Set false to leave the
+                      bucket's rules alone. Defaults to true.
+                    type: boolean
+                type: object
+              mode:
+                description: |-
+                  Mode is how the repository is laid out. Bucket gives it a private bucket of
+                  its own, created when missing and adopted when this account already has it.
+                  Prefix puts it under its own path in an existing bucket that other
+                  repositories share; the operator never creates or deletes that bucket.
+                enum:
+                - Bucket
+                - Prefix
+                type: string
+                x-kubernetes-validations:
+                - message: mode cannot be changed
+                  rule: self == oldSelf
               passwordSecretRef:
                 description: PasswordSecretRef seeds the restic password. Required
-                  when adopting.
+                  when the path already holds a repository.
                 properties:
                   key:
                     description: The key of the secret to select from.  Must be a
@@ -134,38 +159,47 @@ spec:
                 - key
                 type: object
                 x-kubernetes-map-type: atomic
-              quotaGiB:
-                description: QuotaGiB caps repository size. Unset means no quota.
-                format: int32
-                maximum: 1000000
-                minimum: 1
-                type: integer
-              region:
-                default: us
-                description: Region is the BorgBase region to create the repository
-                  in.
+              path:
+                description: |-
+                  Path is where the repository lives inside the bucket, with no leading or
+                  trailing slash. Defaults to the bucket root in Bucket mode and to
+                  <namespace>/<name> in Prefix mode.
+                maxLength: 512
+                pattern: ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$
                 type: string
-              repositoryName:
-                description: RepositoryName is the name given to the repository in
-                  BorgBase. Defaults to the namespace.
-                maxLength: 64
-                type: string
+                x-kubernetes-validations:
+                - message: path must not contain . or .. segments
+                  rule: '!self.matches(''(^|/)[.][.]?(/|$)'')'
               secretName:
-                description: SecretName overrides the name of the Secret the operator
-                  writes credentials to.
+                description: |-
+                  SecretName overrides the name of the Secret the operator writes credentials to.
+                  Defaults to <name>-credentials.
                 maxLength: 253
                 type: string
               suspend:
                 description: Suspend stops reconciliation without deleting the resource.
                 type: boolean
+            required:
+            - bucket
+            - mode
             type: object
           status:
             description: RepositoryStatus is the observed state of a Repository.
             properties:
               adopted:
-                description: Adopted reports whether the repository pre-existed this
-                  resource.
+                description: Adopted reports whether a restic repository already existed
+                  at the path.
                 type: boolean
+              applicationKeyID:
+                description: ApplicationKeyID is the B2 application key written to
+                  the credentials Secret.
+                type: string
+              bucketID:
+                description: BucketID is the B2 ID of that bucket.
+                type: string
+              bucketName:
+                description: BucketName is the bucket holding the repository.
+                type: string
               conditions:
                 description: Conditions holds the latest observations of the repository's
                   state.
@@ -228,7 +262,12 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               currentUsage:
-                description: CurrentUsage is the human-readable size of the repository.
+                description: |-
+                  CurrentUsage is the total size of the files restic can see under the path.
+                  It excludes hidden versions still awaiting deletion. Empty when unknown.
+                type: string
+              endpoint:
+                description: Endpoint is the S3-compatible endpoint restic talks to.
                 type: string
               initialized:
                 description: Initialized reports whether restic init has completed.
@@ -238,37 +277,33 @@ spec:
                   was computed from.
                 format: int64
                 type: integer
-              quota:
-                description: Quota is the human-readable quota, if one is set.
-                type: string
-              repositoryID:
-                description: RepositoryID is the BorgBase repository ID.
+              path:
+                description: Path is the repository's path inside the bucket. Empty
+                  means the bucket root.
                 type: string
               secretName:
                 description: SecretName is the Secret holding the repository credentials.
                 type: string
-              server:
-                description: Server is the host serving the repository over REST.
+              usageTime:
+                description: UsageTime is when CurrentUsage was measured.
+                format: date-time
                 type: string
             type: object
         required:
         - spec
         type: object
         x-kubernetes-validations:
-        - message: passwordSecretRef is required when adopting an existing repository,
-            otherwise its snapshots would be unreadable
-          rule: '!has(self.spec.existingRepositoryID) || has(self.spec.passwordSecretRef)'
-        - message: existingRepositoryID cannot be changed or removed once set
-          rule: '!has(oldSelf.spec.existingRepositoryID) || (has(self.spec.existingRepositoryID)
-            && self.spec.existingRepositoryID == oldSelf.spec.existingRepositoryID)'
-        - message: cannot adopt a different repository after one has been created
-            for this resource
-          rule: has(oldSelf.spec.existingRepositoryID) || !has(self.spec.existingRepositoryID)
-            || !has(oldSelf.status) || !has(oldSelf.status.repositoryID)
+        - message: path cannot be added, changed or removed once the Repository exists
+          rule: has(self.spec.path) == has(oldSelf.spec.path) && (!has(self.spec.path)
+            || self.spec.path == oldSelf.spec.path)
         - message: secretName must not be the passwordSecretRef Secret; the operator
             never writes to the seed
           rule: '!has(self.spec.passwordSecretRef) || !has(self.spec.secretName) ||
             self.spec.secretName != self.spec.passwordSecretRef.name'
+        - message: secretName must not be the credentialsSecretRef Secret; the operator
+            never writes to it
+          rule: '!has(self.spec.credentialsSecretRef) || !has(self.spec.secretName)
+            || self.spec.secretName != self.spec.credentialsSecretRef.name'
     served: true
     storage: true
     subresources:

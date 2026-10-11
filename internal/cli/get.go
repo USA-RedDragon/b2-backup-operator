@@ -181,24 +181,25 @@ func printRepositories(out io.Writer, items []b2backupv1.Repository, allNamespac
 	tw := NewTabWriter(out)
 	w := newPrinter(tw)
 	writeHeader(w, allNamespaces, output,
-		[]string{"NAME", "REPO ID", "READY", "INITIALIZED", "USAGE", "QUOTA", "AGE"},
-		[]string{"SERVER", "SECRET", "ADOPTED", "SUSPENDED"})
+		[]string{"NAME", "BUCKET", "PATH", "READY", "INITIALIZED", "USAGE", "AGE"},
+		[]string{"MODE", "KEY ID", "SECRET", "ADOPTED", "SUSPENDED"})
 
 	for i := range items {
 		r := &items[i]
 		writeNamespace(w, allNamespaces, r.Namespace)
 		w.printf("%s\t%s\t%s\t%s\t%s\t%s\t%s",
 			r.Name,
-			orNone(r.Status.RepositoryID),
+			orNone(r.Status.BucketName),
+			repositoryPath(r),
 			ConditionStatus(r.Status.Conditions, b2backupv1.RepositoryConditionReady),
 			yesNo(r.Status.Initialized),
 			orNone(r.Status.CurrentUsage),
-			orNone(r.Status.Quota),
 			Age(r.CreationTimestamp),
 		)
 		if output == OutputWide {
-			w.printf("\t%s\t%s\t%s\t%s",
-				orNone(r.Status.Server),
+			w.printf("\t%s\t%s\t%s\t%s\t%s",
+				orNone(string(r.Spec.Mode)),
+				orNone(r.Status.ApplicationKeyID),
 				orNone(r.Status.SecretName),
 				yesNo(r.Status.Adopted),
 				yesNo(r.Spec.Suspend),
@@ -207,6 +208,17 @@ func printRepositories(out io.Writer, items []b2backupv1.Repository, allNamespac
 		w.println()
 	}
 	return flushTable(w, tw)
+}
+
+func repositoryPath(r *b2backupv1.Repository) string {
+	switch {
+	case r.Status.BucketID == "":
+		return orNone("")
+	case r.Status.Path == "":
+		return "/"
+	default:
+		return r.Status.Path
+	}
 }
 
 func printScheduledBackups(out io.Writer, items []b2backupv1.ScheduledBackup, allNamespaces bool, output string) error {
