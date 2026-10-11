@@ -41,11 +41,7 @@ backup.`,
 			if err != nil {
 				return err
 			}
-			ns, err := f.Namespace()
-			if err != nil {
-				return err
-			}
-			sb, _, err := resolveRunTarget(cmd.Context(), c, ns, args[0])
+			sb, repo, err := resolveSubject(cmd.Context(), f, c, args[0], true, &opts)
 			if err != nil {
 				return err
 			}
@@ -56,7 +52,7 @@ backup.`,
 			}
 
 			opts.Purpose = "shell"
-			return openShell(cmd.Context(), run, f, sb, opts, shell)
+			return openShell(cmd.Context(), run, f, subjectOf(sb, repo), opts, shell)
 		},
 	}
 
@@ -75,14 +71,14 @@ func openShell(
 	ctx context.Context,
 	run *runner.Runner,
 	f *Factory,
-	sb *b2backupv1.ScheduledBackup,
+	subject runner.Subject,
 	opts runner.Options,
 	shell string,
 ) error {
 	stdin, ok := f.Streams.In.(*os.File)
 	interactive := ok && f.Interactive()
 
-	return run.Attach(ctx, sb, opts, defaultResticTimeout, func(pod *corev1.Pod) error {
+	return run.Attach(ctx, subject, opts, defaultResticTimeout, func(pod *corev1.Pod) error {
 		p := newPrinter(f.Streams.ErrOut)
 		p.printf("connected to pod/%s\n", pod.Name)
 		if err := p.Err(); err != nil {

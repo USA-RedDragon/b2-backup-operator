@@ -41,6 +41,10 @@ const (
 	// apart.
 	LabelScheduledBackup = "b2backup.mcswain.dev/scheduledbackup"
 
+	// LabelRepository records on a Job and its pod the Repository it was
+	// built from when no ScheduledBackup uses that Repository.
+	LabelRepository = "b2backup.mcswain.dev/repository"
+
 	labelManagedBy = "app.kubernetes.io/managed-by"
 	containerName  = "restic"
 	cacheVolume    = "cache"
@@ -119,21 +123,52 @@ var RestoreCapabilities = []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER",
 
 var idleCommand = []string{"sleep", "infinity"}
 
+// Subject is what a one-off Job is built for: a ScheduledBackup, whose
+// CronJob it copies, or else a Repository no ScheduledBackup uses.
+type Subject struct {
+	Backup     *b2backupv1.ScheduledBackup
+	Repository *b2backupv1.Repository
+}
+
+// ForBackup is the Subject of a ScheduledBackup.
+func ForBackup(sb *b2backupv1.ScheduledBackup) Subject { return Subject{Backup: sb} }
+
+func (s Subject) object() client.Object {
+	if s.Backup != nil {
+		return s.Backup
+	}
+	return s.Repository
+}
+
 // Build derives a one-off Job from the backup's CronJob. It does not create it.
 func (r *Runner) Build(
 	ctx context.Context, sb *b2backupv1.ScheduledBackup, opts Options,
 ) (*batchv1.Job, error) {
-	var cj batchv1.CronJob
-	key := types.NamespacedName{Namespace: sb.Namespace, Name: backup.CronJobName(sb)}
-	if err := r.Client.Get(ctx, key, &cj); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("%w: expected %s; run `b2bk doctor sb/%s`",
-				ErrNoCronJob, key.Name, sb.Name)
-		}
-		return nil, err
-	}
+	return r.BuildFor(ctx, ForBackup(sb), opts)
+}
 
-	spec := *cj.Spec.JobTemplate.Spec.DeepCopy()
+// BuildFor derives a one-off Job for s: from the CronJob of its ScheduledBackup,
+// or for a bare Repository from backup.RepositoryJobSpec. It does not create it.
+func (r *Runner) BuildFor(ctx context.Context, s Subject, opts Options) (*batchv1.Job, error) {
+	var spec batchv1.JobSpec
+	labels := map[string]string{labelManagedBy: ManagedByValue}
+	if sb := s.Backup; sb != nil {
+		var cj batchv1.CronJob
+		key := types.NamespacedName{Namespace: sb.Namespace, Name: backup.CronJobName(sb)}
+		if err := r.Client.Get(ctx, key, &cj); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, fmt.Errorf("%w: expected %s; run `b2bk doctor sb/%s`",
+					ErrNoCronJob, key.Name, sb.Name)
+			}
+			return nil, err
+		}
+		spec = *cj.Spec.JobTemplate.Spec.DeepCopy()
+		labels[LabelScheduledBackup] = sb.Name
+	} else {
+		spec = backup.RepositoryJobSpec(s.Repository, opts.Image)
+		labels[LabelRepository] = s.Repository.Name
+	}
+	owner := s.object()
 	spec.TTLSecondsAfterFinished = ptr.To(ttlSeconds)
 	spec.BackoffLimit = ptr.To(int32(0))
 	spec.Template.Spec.RestartPolicy = corev1.RestartPolicyNever
@@ -143,7 +178,7 @@ func (r *Runner) Build(
 
 	container := findContainer(&spec.Template.Spec)
 	if container == nil {
-		return nil, fmt.Errorf("CronJob %s has no %q container", key.Name, containerName)
+		return nil, fmt.Errorf("the Job for %s has no %q container", owner.GetName(), containerName)
 	}
 
 	if opts.TTY {
@@ -177,7 +212,6 @@ func (r *Runner) Build(
 	spec.Template.Spec.Volumes = append(spec.Template.Spec.Volumes, opts.ExtraVolumes...)
 	container.VolumeMounts = append(container.VolumeMounts, opts.ExtraMounts...)
 
-	labels := map[string]string{labelManagedBy: ManagedByValue, LabelScheduledBackup: sb.Name}
 	if opts.Purpose != "" {
 		labels[LabelPurpose] = opts.Purpose
 	}
@@ -188,23 +222,22 @@ func (r *Runner) Build(
 	spec.Template.Labels = labels
 
 	job := &batchv1.Job{
-		Name:      jobName(sb, opts.Purpose),
-		Namespace: sb.Namespace,
+		Name:      jobName(owner.GetName(), opts.Purpose),
+		Namespace: owner.GetNamespace(),
 		Labels:    labels,
 		Spec:      spec,
 	}
-	if err := controllerutil.SetOwnerReference(sb, job, r.Client.Scheme()); err != nil {
+	if err := controllerutil.SetOwnerReference(owner, job, r.Client.Scheme()); err != nil {
 		return nil, err
 	}
 	return job, nil
 }
 
-func jobName(sb *b2backupv1.ScheduledBackup, purpose string) string {
+func jobName(name, purpose string) string {
 	if purpose == "" {
 		purpose = "run"
 	}
 	suffix := fmt.Sprintf("-b2bk-%s-%s", purpose, rand.String(5))
-	name := sb.Name
 	if limit := max(0, maxJobName-len(suffix)); len(name) > limit {
 		name = name[:limit]
 	}
@@ -584,12 +617,12 @@ func (r *Runner) Wait(ctx context.Context, job *batchv1.Job, timeout time.Durati
 // Run builds a Job, runs it to completion and streams its logs to w.
 func (r *Runner) Run(
 	ctx context.Context,
-	sb *b2backupv1.ScheduledBackup,
+	s Subject,
 	opts Options,
 	w io.Writer,
 	timeout time.Duration,
 ) error {
-	job, err := r.Build(ctx, sb, opts)
+	job, err := r.BuildFor(ctx, s, opts)
 	if err != nil {
 		return err
 	}
@@ -617,14 +650,14 @@ func (r *Runner) Run(
 // Attach starts an idle Job and hands its pod to fn, cleaning up afterwards.
 func (r *Runner) Attach(
 	ctx context.Context,
-	sb *b2backupv1.ScheduledBackup,
+	s Subject,
 	opts Options,
 	timeout time.Duration,
 	fn func(pod *corev1.Pod) error,
 ) error {
 	opts.TTY = true
 
-	job, err := r.Build(ctx, sb, opts)
+	job, err := r.BuildFor(ctx, s, opts)
 	if err != nil {
 		return err
 	}

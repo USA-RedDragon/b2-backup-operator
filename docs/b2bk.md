@@ -65,6 +65,19 @@ Repository stands for the one ScheduledBackup that uses it. When several do, the
 command refuses and lists them: each has its own retention, tags, claims and
 database, and picking one would prune or restore under the wrong one.
 
+A Repository that no ScheduledBackup uses still takes `snapshots`, `check`,
+`stats`, `unlock`, `exec` and `shell`, which only read or maintain the
+repository. Their pod gets the Repository's credentials Secret, an `emptyDir`
+for the restic cache, and nothing else: no claims, no database, none of a
+backup's scheduling, so `--mount-data` and `--mount-cache` are refused. The
+image is `--image` when given, else the `--backup-image` argument of the
+operator's Deployment (labelled `app.kubernetes.io/name=b2-backup-operator`,
+`control-plane=controller-manager`), else the image b2bk was built with when
+that Deployment cannot be read. b2bk says on stderr which it used. `snapshots`
+then lists every snapshot in the repository, filtered only by `--host` when
+given. `restore`, `prune`, `backup` and `rotate-password` still need a
+ScheduledBackup.
+
 Standard kubectl connection flags work everywhere: `-n/--namespace`,
 `--context`, `--kubeconfig`. `-A` and `-o` appear only on `get`, where they
 mean something.

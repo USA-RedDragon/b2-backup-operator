@@ -37,6 +37,9 @@ it needs --all-tags.
 The host filter defaults to the host this backup records its snapshots under:
 spec.resticHost, or the namespace when that is unset; --host="" lifts it.
 
+A Repository no ScheduledBackup uses lists every snapshot in it, filtered only
+by --host when given.
+
 --json prints restic's JSON and nothing else on stdout: a plain list of
 snapshots, since it passes --group-by= over the image's RESTIC_GROUP_BY.`,
 		Args: cobra.ExactArgs(1),
@@ -61,12 +64,12 @@ snapshots, since it passes --group-by= over the image's RESTIC_GROUP_BY.`,
 
 func snapshotsCommand(sb *b2backupv1.ScheduledBackup, o *snapshotsOptions) ([]string, error) {
 	host := o.host
-	if !o.hostSet {
+	if !o.hostSet && sb != nil {
 		host = sb.EffectiveResticHost()
 	}
 
 	argv := []string{"snapshots"}
-	if !o.allTags {
+	if !o.allTags && sb != nil {
 		tagArgs, err := snapshotTagArgs(sb)
 		if err != nil {
 			return nil, err

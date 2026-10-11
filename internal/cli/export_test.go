@@ -39,7 +39,7 @@ func NewTestFactoryIn(
 	}
 	f.client = c
 	f.once.client.Do(func() {})
-	f.attachHook = func(_ context.Context, _ *b2backupv1.ScheduledBackup, opts runner.Options,
+	f.attachHook = func(_ context.Context, _ runner.Subject, opts runner.Options,
 		fn func(restorePod, string) error) error {
 		pod, err := attach(opts)
 		if err != nil {
@@ -103,4 +103,10 @@ func Execute(f *Factory, args ...string) error {
 	cmd := newRoot(f, "b2bk")
 	cmd.SetArgs(args)
 	return cmd.Execute()
+}
+
+// RunWith makes f hand the one-off Jobs of b2bk commands that stream logs to
+// run instead of starting them.
+func RunWith(f *Factory, run func(runner.Subject, runner.Options) error) {
+	f.runHook = func(_ context.Context, s runner.Subject, opts runner.Options) error { return run(s, opts) }
 }

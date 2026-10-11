@@ -106,7 +106,7 @@ func hookedFactory(t *testing.T, c client.Client, pod restorePod, simulateOperat
 	f := factoryWithClient(t, c)
 	var errOut bytes.Buffer
 	f.Streams.ErrOut = &errOut
-	f.attachHook = func(_ context.Context, sb *b2backupv1.ScheduledBackup, _ runner.Options,
+	f.attachHook = func(_ context.Context, _ runner.Subject, _ runner.Options,
 		fn func(restorePod, string) error) error {
 		if simulateOperator {
 			operatorSuspends(t, c)
@@ -296,7 +296,7 @@ func TestOverwritingRestoresHoldTheScheduleUntilTheTargetIsWhole(t *testing.T) {
 				c := newClient(t, fx.objects()...)
 				pod := &fakePod{}
 				f := factoryWithClient(t, c)
-				f.attachHook = func(ctx context.Context, sb *b2backupv1.ScheduledBackup, _ runner.Options,
+				f.attachHook = func(ctx context.Context, _ runner.Subject, _ runner.Options,
 					fn func(restorePod, string) error) error {
 					current := backupState(t, c)
 					current.Spec.Schedule = "@daily"
@@ -459,7 +459,7 @@ func TestARestoreStopsWhenAnotherBackupComesToShareItsTarget(t *testing.T) {
 	c := newClient(t, fx.objects()...)
 	pod := &fakePod{}
 	f := factoryWithClient(t, c)
-	f.attachHook = func(ctx context.Context, _ *b2backupv1.ScheduledBackup, _ runner.Options,
+	f.attachHook = func(ctx context.Context, _ runner.Subject, _ runner.Options,
 		fn func(restorePod, string) error) error {
 		late := newBackup(otherBackup, testRepoName)
 		late.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: testClaimName, MountPath: "/mnt"}}

@@ -328,7 +328,7 @@ func TestJobNameFitsAndIsUnique(t *testing.T) {
 	const draws = 200
 	seen := make(map[string]struct{}, draws)
 	for range draws {
-		name := jobName(long, "snapshots")
+		name := jobName(long.Name, "snapshots")
 		if len(name) > 52 {
 			t.Fatalf("job name is %d chars, want <= 52: %q", len(name), name)
 		}
@@ -342,7 +342,7 @@ func TestJobNameFitsAndIsUnique(t *testing.T) {
 			"redrawn, and two concurrent runs would fight over one Job", len(seen), draws)
 	}
 
-	if got := jobName(long, strings.Repeat("p", 60)); got == "" {
+	if got := jobName(long.Name, strings.Repeat("p", 60)); got == "" {
 		t.Error("a purpose longer than the name budget must not panic or empty the name")
 	}
 }
@@ -632,7 +632,7 @@ func TestRunReportsTheJobsResultNotTheLogStream(t *testing.T) {
 
 	r.PodStartTimeout = 10 * time.Second
 	opts := Options{Command: testCommand}
-	err := r.Run(context.Background(), sb, opts, failingWriter{}, 10*time.Second)
+	err := r.Run(context.Background(), ForBackup(sb), opts, failingWriter{}, 10*time.Second)
 	if !errors.Is(err, ErrFailed) {
 		t.Fatalf("a log-streaming hiccup masked the job result: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestRunStillReportsAStreamErrorWhenTheJobSucceeded(t *testing.T) {
 
 	r.PodStartTimeout = 10 * time.Second
 	opts := Options{Command: testCommand}
-	err := r.Run(context.Background(), sb, opts, failingWriter{}, 10*time.Second)
+	err := r.Run(context.Background(), ForBackup(sb), opts, failingWriter{}, 10*time.Second)
 	if !errors.Is(err, errBrokenPipe) {
 		t.Errorf("the job succeeded, so the stream error should stand: %v", err)
 	}

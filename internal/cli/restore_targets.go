@@ -71,7 +71,7 @@ func restoreToDir(
 	if err != nil {
 		return err
 	}
-	return run.Attach(ctx, sb, runner.Options{Purpose: purposeDownload}, defaultResticTimeout,
+	return run.Attach(ctx, runner.ForBackup(sb), runner.Options{Purpose: purposeDownload}, defaultResticTimeout,
 		func(pod *corev1.Pod) error {
 			return o.download(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, src, dest,
 				f.Streams.Out, f.Streams.ErrOut)
@@ -543,14 +543,22 @@ func (f *Factory) attachRestorePod(
 	ctx context.Context, sb *b2backupv1.ScheduledBackup, opts runner.Options,
 	fn func(pod restorePod, job string) error,
 ) error {
+	return f.attachPod(ctx, runner.ForBackup(sb), opts, fn)
+}
+
+// attachPod runs fn against a pod started for s, with the name of its Job.
+func (f *Factory) attachPod(
+	ctx context.Context, s runner.Subject, opts runner.Options,
+	fn func(pod restorePod, job string) error,
+) error {
 	if f.attachHook != nil {
-		return f.attachHook(ctx, sb, opts, fn)
+		return f.attachHook(ctx, s, opts, fn)
 	}
 	run, err := f.Runner()
 	if err != nil {
 		return err
 	}
-	return run.Attach(ctx, sb, opts, defaultResticTimeout, func(pod *corev1.Pod) error {
+	return run.Attach(ctx, s, opts, defaultResticTimeout, func(pod *corev1.Pod) error {
 		return fn(runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, pod.Labels[batchv1.JobNameLabel])
 	})
 }

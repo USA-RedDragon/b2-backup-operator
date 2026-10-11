@@ -58,7 +58,7 @@ a ScheduledBackup on the repository, or of the Repository itself, is running.`,
 					return refuseRepositoryInUse(ctx, c, sb, repo)
 				}
 			}
-			return runResticGuarded(cmd.Context(), f, args[0], "unlock", guard,
+			return runResticGuarded(cmd.Context(), f, args[0], "unlock", true, guard,
 				func(*b2backupv1.ScheduledBackup, *b2backupv1.Repository) ([]string, error) {
 					argv := []string{"unlock"}
 					if removeAll {
@@ -136,7 +136,7 @@ a CronJob left without one, or a backup Job still running an older spec.`,
 					return err
 				}
 			}
-			return runResticGuarded(cmd.Context(), f, args[0], "prune", requireCurrent,
+			return runResticGuarded(cmd.Context(), f, args[0], "prune", false, requireCurrent,
 				func(sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository) ([]string, error) {
 					flags := retentionFlags(sb.Spec.Retention)
 					if len(flags) == 0 {
@@ -305,6 +305,7 @@ func refuseRepositoryInUse(
 		}
 		inUse := pod.Labels[labelManagedBy] == operatorManagedBy && names[pod.Labels["app.kubernetes.io/name"]]
 		if pod.Labels[labelManagedBy] == runner.ManagedByValue {
+			inUse = inUse || pod.Labels[runner.LabelRepository] == repo.Name
 			owner := pod.Labels[runner.LabelScheduledBackup]
 			for name := range names {
 				inUse = inUse || owner == name || (owner == "" && strings.HasPrefix(podJob(pod), name+"-b2bk-"))

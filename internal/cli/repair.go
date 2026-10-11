@@ -198,7 +198,7 @@ func runRotatePassword(
 		return err
 	}
 
-	err = run.Run(ctx, sb, runner.Options{
+	err = run.Run(ctx, runner.ForBackup(sb), runner.Options{
 		Purpose: "rotate",
 		Command: resticCommand("key", "add",
 			"--new-password-file="+newKeyMountPath+"/password"),

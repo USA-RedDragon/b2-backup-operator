@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -39,7 +40,8 @@ type Factory struct {
 
 	interactive *bool
 
-	attachHook func(context.Context, *b2backupv1.ScheduledBackup, runner.Options, func(restorePod, string) error) error
+	attachHook func(context.Context, runner.Subject, runner.Options, func(restorePod, string) error) error
+	runHook    func(context.Context, runner.Subject, runner.Options) error
 
 	once struct {
 		scheme     sync.Once
@@ -69,6 +71,7 @@ func (f *Factory) Scheme() *runtime.Scheme {
 	f.once.scheme.Do(func() {
 		s := runtime.NewScheme()
 		utilruntime.Must(corev1.AddToScheme(s))
+		utilruntime.Must(appsv1.AddToScheme(s))
 		utilruntime.Must(batchv1.AddToScheme(s))
 		utilruntime.Must(b2backupv1.AddToScheme(s))
 		f.scheme = s
