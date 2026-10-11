@@ -378,7 +378,7 @@ func TestDoctorStopsAtARepositoryConflict(t *testing.T) {
 	repo := newRepo(testNS)
 	repo.Status.Conditions = []metav1.Condition{{
 		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse,
-		Reason:  "RepositoryConflict",
+		Reason:  reasonRepositoryConflict,
 		Message: "bucket acme-backups path restic/prod overlaps Repository other/incumbent, which claimed it first",
 	}}
 	c := newClient(t, repo)

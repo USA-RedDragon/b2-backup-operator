@@ -503,7 +503,7 @@ func TestDatabaseRestoreGoesIntoTheSourcesDatabase(t *testing.T) {
 			case "DB_DATABASE in spec.env":
 				sb.Spec.Env = map[string]string{"DB_DATABASE": "from-env"}
 			case "DB_HOST in spec.env":
-				sb.Spec.Env = map[string]string{"DB_HOST": "other-rw"}
+				sb.Spec.Env = map[string]string{envDBHost: "other-rw"}
 			}
 			o := &restoreOptions{snapshot: latest, database: tt.flag}
 			src, err := o.databaseSource(sb)

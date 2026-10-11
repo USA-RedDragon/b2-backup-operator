@@ -27,7 +27,9 @@ How a `DESTROYS` command is gated:
   is passed, so a script cannot fall through the prompt.
 - **A current, uncontested backup.** `prune`, `restore --in-place` and
   `restore --to-database` act on the ScheduledBackup's spec, so they run only
-  when the operator has caught up with it: `status.observedGeneration` equals
+  when its Repository's Secret and location are its own (not in
+  `RepositoryConflict`, `SecretHoldsRetainedPassword` and the like) and the
+  operator has caught up with it: `status.observedGeneration` equals
   `metadata.generation`, `Ready` is `True` at that generation, and the CronJob
   is controlled by the ScheduledBackup and records, in its
   `b2backup.mcswain.dev/rendered-from` and `forget-scope` annotations, that it
@@ -220,8 +222,9 @@ never restores somewhere it did not name.
 
 Both overwriting targets work on every ScheduledBackup in the namespace that
 backs up the same thing: for `--in-place`, each one with one of the restored
-claims in `spec.volumes`; for `--to-database`, each one whose `spec.database`
-has the same engine and credentials Secret. They are refused while a Job of any
+claims in `spec.volumes`, including claims mounted under a restored path; for
+`--to-database`, each one whose `spec.database` has the same engine and
+credentials Secret, unless both name a host and the hosts differ. They are refused while a Job of any
 of them is running: a scheduled or triggered backup, or a b2bk restore, which
 b2bk labels `b2backup.mcswain.dev/b2bk-purpose`. A b2bk Job without that label,
 from an older b2bk, counts as a restore.
@@ -242,9 +245,11 @@ A restore that fails after it started writing records what it was writing in
 mounts included, or a `db/<engine>/<secret>/<host>/<database>` entry. While any
 entry is recorded the hold stays: the next backup would save the partial
 restore, and retention could then keep it over good snapshots. A later restore
-that succeeds removes the entries it covers only when it restored the whole
-source: a snapshot holding exactly the source's paths, with no `--path`,
-`--include` or `--exclude`. One narrowed by any of these, one of another target,
+that succeeds removes the entries of the claims its source's paths are on, and
+only when it restored the whole source: a snapshot holding exactly the source's
+paths, with no `--path`, `--include` or `--exclude`. It never removes the entry
+of a claim mounted under them, which the source may exclude; restore that claim's
+own source, or check it and run `b2bk resume`. One narrowed by any of these, one of another target,
 and one that stops before writing remove nothing. `b2bk resume` removes the
 backup's entries, from it and from every other ScheduledBackup that carries
 them, once you have checked the data. If another ScheduledBackup comes to share

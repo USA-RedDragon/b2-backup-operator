@@ -17,14 +17,15 @@ import (
 )
 
 const (
-	flagYes          = "--yes"
-	targetInPlace    = "in place"
-	notRendered      = "has not rendered"
-	inATagConflict   = "tag conflict"
-	renderedFromKey  = "b2backup.mcswain.dev/rendered-from"
-	specHashKey      = "b2backup.mcswain.dev/spec-hash"
-	currentGenRepo   = 2
-	currentGenBackup = 3
+	flagYes                  = "--yes"
+	reasonRepositoryConflict = "RepositoryConflict"
+	targetInPlace            = "in place"
+	notRendered              = "has not rendered"
+	inATagConflict           = "tag conflict"
+	renderedFromKey          = "b2backup.mcswain.dev/rendered-from"
+	specHashKey              = "b2backup.mcswain.dev/spec-hash"
+	currentGenRepo           = 2
+	currentGenBackup         = 3
 )
 
 type currentFixture struct {
@@ -204,5 +205,21 @@ func TestRestoreOfARepositoryWithSeveralBackupsNeedsOneNamed(t *testing.T) {
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	if err := cmd.Execute(); !errors.Is(err, ErrSeveralBackupsForRepository) {
 		t.Errorf("err = %v, want the restore refused until one ScheduledBackup is named", err)
+	}
+}
+
+func TestPruneRefusesARepositoryThatIsNotItsOwn(t *testing.T) {
+	t.Parallel()
+	fx := currentBackup(t)
+	fx.repo.Status.Conditions = []metav1.Condition{{
+		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse, Reason: reasonRepositoryConflict,
+		Message: "another Repository names this Secret",
+	}}
+	f := factoryWithClient(t, newClient(t, fx.objects()...))
+	cmd := newPruneCommand(f)
+	cmd.SetArgs([]string{subjectBackup, flagYes})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); !errors.Is(err, ErrRepositoryNotUsable) {
+		t.Errorf("err = %v, want prune refused while the Repository is not its own", err)
 	}
 }

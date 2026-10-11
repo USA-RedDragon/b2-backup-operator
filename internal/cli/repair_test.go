@@ -339,7 +339,7 @@ func TestRotatePasswordRefusesARepositoryThatIsNotItsOwn(t *testing.T) {
 	t.Parallel()
 	tests := map[string]func(*b2backupv1.Repository){
 		"in conflict": func(r *b2backupv1.Repository) {
-			r.Status.Conditions[0].Status, r.Status.Conditions[0].Reason = metav1.ConditionFalse, "RepositoryConflict"
+			r.Status.Conditions[0].Status, r.Status.Conditions[0].Reason = metav1.ConditionFalse, reasonRepositoryConflict
 		},
 		"not Ready for any reason": func(r *b2backupv1.Repository) {
 			r.Status.Conditions[0].Status, r.Status.Conditions[0].Reason = metav1.ConditionFalse, "ReconcileFailed"

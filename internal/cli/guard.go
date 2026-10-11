@@ -40,6 +40,9 @@ func requireCurrent(
 	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository,
 ) error {
 	wait := fmt.Sprintf("check b2bk status %s and wait for the operator to reconcile it", sb.Name)
+	if why := controller.RepositoryNotOwn(repo); why != "" {
+		return fmt.Errorf("%w: repository/%s %s", ErrRepositoryNotUsable, repo.Name, why)
+	}
 	if sb.Status.ObservedGeneration != sb.Generation {
 		return fmt.Errorf("%w: scheduledbackup/%s is at generation %d and the operator has seen %d; %s",
 			ErrNotCurrent, sb.Name, sb.Generation, sb.Status.ObservedGeneration, wait)

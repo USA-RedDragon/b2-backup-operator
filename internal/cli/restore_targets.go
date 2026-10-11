@@ -384,15 +384,14 @@ func restoreInPlace(
 	if err != nil {
 		return err
 	}
-	var claims []string
 	for _, p := range src.paths {
-		v := backup.MountFor(sb, p)
-		if v == nil {
+		if backup.MountFor(sb, p) == nil {
 			return fmt.Errorf("%w: %s is on none of scheduledbackup/%s's claims", ErrNoSourceVolume, p, sb.Name)
 		}
-		if !slices.Contains(claims, "pvc/"+v.ExistingClaim) {
-			claims = append(claims, "pvc/"+v.ExistingClaim)
-		}
+	}
+	var claims []string
+	for _, claim := range restoredClaims(sb, src.paths) {
+		claims = append(claims, "pvc/"+claim)
 	}
 
 	if err := requireCurrentBackup(ctx, c, sb); err != nil {
@@ -405,7 +404,8 @@ func restoreInPlace(
 	}
 	var hold *restoreHold
 	if !o.dryRun {
-		hold, err = holdForRestore(ctx, c, sb, restoredClaims(sb, src.paths), false, claimTargets(sb, src.paths))
+		hold, err = holdForRestore(ctx, c, sb, restoredClaims(sb, src.paths), false,
+			claimTargets(sb, src.paths), directClaimTargets(sb, src.paths))
 		if err != nil {
 			return err
 		}
@@ -465,7 +465,8 @@ func restoreToDatabase(
 	target := databaseTarget(sb, src.database)
 	var hold *restoreHold
 	if !o.dryRun {
-		if hold, err = holdForRestore(ctx, c, sb, nil, true, []string{databaseKey(sb, src.database)}); err != nil {
+		key := []string{databaseKey(sb, src.database)}
+		if hold, err = holdForRestore(ctx, c, sb, nil, true, key, key); err != nil {
 			return err
 		}
 		hold.full = true

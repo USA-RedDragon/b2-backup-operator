@@ -27,6 +27,8 @@ const (
 	cronJobKind     = "CronJob"
 	otherBackup     = "other"
 	appDataPartial  = `["pvc/app-data:/"]`
+	mediaMount      = "/data/media"
+	mediaClaim      = "media"
 	batchAPIVersion = "batch/v1"
 )
 
@@ -428,14 +430,14 @@ func TestARestoreHoldsAndMarksClaimsMountedUnderIt(t *testing.T) {
 	ctx := context.Background()
 	nested := func(sb *b2backupv1.ScheduledBackup) {
 		filesAtData(sb)
-		sb.Spec.Volumes = append(sb.Spec.Volumes, b2backupv1.VolumeSpec{ExistingClaim: "media", MountPath: "/data/media"})
+		sb.Spec.Volumes = append(sb.Spec.Volumes, b2backupv1.VolumeSpec{ExistingClaim: mediaClaim, MountPath: mediaMount})
 	}
 	fx := currentBackup(t, nested)
 	if got := claimTargets(fx.sb, []string{dataDir}); !slices.Contains(got, "pvc/media:/") {
 		t.Errorf("targets = %v, want the claim mounted under /data", got)
 	}
 	other := newBackup(otherBackup, testRepoName)
-	other.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "media", MountPath: "/media"}}
+	other.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: mediaClaim, MountPath: "/media"}}
 	other.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles, Tag: otherBackup}}
 	c := newClient(t, fx.objects(other)...)
 	f, _ := hookedFactory(t, c, &failingPod{failOn: resticRestore}, true)
@@ -507,5 +509,40 @@ func TestResumeLetsGoOfThePartialRestoreEverywhere(t *testing.T) {
 	}
 	if _, partial := held(t, c, otherBackup); len(partial) > 0 {
 		t.Errorf("partial = %v; the other backup of the claim stayed held after the data was checked", partial)
+	}
+}
+
+func TestARestoreOfAParentNeverClearsANestedClaimItMayNotHaveWritten(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fx := currentBackup(t, func(sb *b2backupv1.ScheduledBackup) {
+		filesAtData(sb)
+		sb.Spec.Volumes = append(sb.Spec.Volumes, b2backupv1.VolumeSpec{ExistingClaim: mediaClaim, MountPath: mediaMount})
+		sb.Spec.Sources[0].Exclude = []string{mediaMount}
+	})
+	fx.sb.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: `["pvc/media:/"]`}
+	c := newClient(t, fx.objects()...)
+	f, _ := hookedFactory(t, c, &fakePod{}, true)
+	if err := restoreInPlace(ctx, f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, partial := held(t, c, testBackupName); !slices.Contains(partial, "pvc/media:/") {
+		t.Errorf("partial = %v; a restore of /data that excludes /data/media let go of media", partial)
+	}
+}
+
+func TestADatabaseNamedByTheSecretIsSharedWithOneNamingItsHost(t *testing.T) {
+	t.Parallel()
+	a := newBackup(testBackupName, testRepoName)
+	withDatabase(a)
+	b := newBackup(otherBackup, testRepoName)
+	withDatabase(b)
+	b.Spec.Env = map[string]string{envDBHost: "postgresql-rw"}
+	got, err := sharingBackups(context.Background(), newClient(t, a, b), a, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("held %d backups; the Secret's host may be the one the other names", len(got))
 	}
 }
