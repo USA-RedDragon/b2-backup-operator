@@ -100,6 +100,13 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 func (r *ScheduledBackupReconciler) reconcile(
 	ctx context.Context, sb *b2backupv1.ScheduledBackup,
 ) (_ ctrl.Result, err error) {
+	synced := false
+	defer func() {
+		if err != nil && !synced {
+			err = errors.Join(err, r.suspendOwnCronJob(ctx, sb))
+		}
+	}()
+
 	var repo b2backupv1.Repository
 	key := types.NamespacedName{Namespace: sb.Namespace, Name: sb.Spec.RepositoryRef.Name}
 	if err := r.Get(ctx, key, &repo); err != nil {
@@ -140,13 +147,6 @@ func (r *ScheduledBackupReconciler) reconcile(
 		})
 		return ctrl.Result{RequeueAfter: backupRequeueInterval}, r.suspendOwnCronJob(ctx, sb)
 	}
-
-	synced := false
-	defer func() {
-		if err != nil && !synced {
-			err = errors.Join(err, r.suspendOwnCronJob(ctx, sb))
-		}
-	}()
 
 	if err := r.reconcileCache(ctx, sb); err != nil {
 		return ctrl.Result{}, err
