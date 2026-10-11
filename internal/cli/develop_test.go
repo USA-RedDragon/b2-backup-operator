@@ -1035,3 +1035,19 @@ func TestNormalizeScriptKeepsAPathAnUnquotedExcludeLetThrough(t *testing.T) {
 		t.Error("double and single quotes around a pattern with nothing to expand should compare equal")
 	}
 }
+
+func TestShellOptionsSetInAPipedGroupEndWithIt(t *testing.T) {
+	t.Parallel()
+	const operator = "set -o pipefail\n{\nset -euo pipefail\nBODY\nrestic cache --cleanup\n} 2>&1 | ts '%H:%M:%S'\n"
+	tests := []struct{ original, want string }{
+		{"set -o pipefail\n{ set -eu; restic backup /a; } 2>&1 | ts\nrestic forget --keep-daily=1\n", optErrexit},
+		{"set -o pipefail\n{\nset -eu\nrestic backup /a\n} 2>&1 | ts\nrestic forget --keep-daily=1\n", optErrexit},
+		{"set -euo pipefail\n{ restic backup /a; } 2>&1 | ts\nrestic forget --keep-daily=1\n", ""},
+	}
+	for _, tt := range tests {
+		generated := strings.Replace(operator, "BODY\n", scriptBody(tt.original), 1)
+		if got := strings.Join(shellOptionsAdded(tt.original, generated), ", "); got != tt.want {
+			t.Errorf("shellOptionsAdded(%q) = %q, want %q", tt.original, got, tt.want)
+		}
+	}
+}

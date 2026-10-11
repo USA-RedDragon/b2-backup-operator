@@ -1440,3 +1440,16 @@ func TestMigrateRefusesAScriptThatDoesNotParse(t *testing.T) {
 		t.Errorf("err = %v, want a { with no closing refused\n%s", err, out)
 	}
 }
+
+func TestMigrateNotesAnErrexitThatEndedWithItsGroup(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "                exec > >(ts '%H:%M:%S') 2>&1\n                set -eu\n",
+		"                set -o pipefail\n                { set -eu; restic backup --tag=pre /mirror; } 2>&1 | ts\n", 1)
+	out, err := migrate(t, body)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !strings.Contains(out, "# shell: ") {
+		t.Errorf("no note that the rest of the script now runs under set -e:\n%s", out)
+	}
+}
