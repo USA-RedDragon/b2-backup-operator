@@ -43,8 +43,8 @@ const (
 )
 
 var (
-	preambleLines  = []string{"exec > >(ts '%H:%M:%S') 2>&1", "set -eu"}
-	postambleLine  = "restic cache --cleanup"
+	preambleLines  = []string{"exec > >(ts '%H:%M:%S') 2>&1", "set -o pipefail", "{", "set -eu", "set -euo pipefail"}
+	postambleLines = []string{"} 2>&1 | ts '%H:%M:%S'", "restic cache --cleanup"}
 	handledEnvVars = []string{"TZ", envResticHost, cnpgSecretPathEnv}
 )
 
@@ -467,6 +467,9 @@ func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
 	var parsed parsedScript
 
 	for _, line := range joinContinuations(scriptBody(script)) {
+		if shellSpecial(line) {
+			return parsed, notStructured("%q relies on the shell to expand or escape something", line)
+		}
 		args := splitArgs(line)
 		if len(args) < 2 || args[0] != "restic" {
 			return parsed, notStructured("it runs %q", line)
@@ -505,6 +508,33 @@ func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
 	return parsed, nil
 }
 
+// shellSpecial reports whether the shell would change line's words before restic
+// saw them: an escape, an expansion, an unquoted glob, a redirection or another
+// command. splitArgs does none of that, so such a line is kept verbatim.
+func shellSpecial(line string) bool {
+	var quote rune
+	for _, r := range line {
+		switch {
+		case quote == '\'':
+			if r == '\'' {
+				quote = 0
+			}
+		case quote == '"':
+			switch r {
+			case '"':
+				quote = 0
+			case '\\', '$', '`':
+				return true
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case strings.ContainsRune("\\$`*?[~;&|<>(){}#", r):
+			return true
+		}
+	}
+	return false
+}
+
 func underMount(p string, mounts []hrVolume) bool {
 	if !path.IsAbs(p) {
 		return false
@@ -526,8 +556,10 @@ func scriptBody(script string) string {
 			lines = lines[1:]
 		}
 	}
-	if n := len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == postambleLine {
-		lines = lines[:n-1]
+	for _, want := range postambleLines {
+		if n := len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == want {
+			lines = lines[:n-1]
+		}
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
