@@ -893,3 +893,35 @@ func TestParityComparesWhereTheBackupLivesAndWhichKeyOpensIt(t *testing.T) {
 		})
 	}
 }
+
+func TestParityPicksTheResticCronJobOutOfARenderedRelease(t *testing.T) {
+	t.Parallel()
+	generated := writeGenerated(t, "36 * * * *")
+	cj, _, _, err := generatedCronJob(generated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := cj.DeepCopy()
+	other.Name, other.Spec.Schedule = "app-aaa", "0 4 * * 1"
+	cj.Labels[labelController] = resticController
+	var manifest []byte
+	for _, obj := range []any{other, cj} {
+		data, err := yaml.Marshal(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest = append(manifest, []byte("---\napiVersion: batch/v1\nkind: CronJob\n")...)
+		manifest = append(manifest, data...)
+	}
+	original := filepath.Join(t.TempDir(), "rendered.yaml")
+	if err := os.WriteFile(original, manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err = runParity(&out, generated, original, migrateOptions{})
+	if !errors.Is(err, ErrParityDiffers) || strings.Contains(out.String(), "CADENCE DIFFERS") ||
+		!strings.Contains(out.String(), "CONTROLLER DROPPED") {
+		t.Errorf("parity = %v; want the CronJob labelled restic compared and app-aaa reported as dropped:\n%s",
+			err, out.String())
+	}
+}

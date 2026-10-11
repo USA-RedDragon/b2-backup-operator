@@ -46,6 +46,7 @@ const (
 	podHostname            = "(the pod's hostname)"
 	unsetSetting           = "unset"
 	kindRepositoryDoc      = "Repository"
+	kindCronJob            = "CronJob"
 )
 
 // controllerManagerZone is the zone a CronJob without timeZone runs in: the
@@ -462,10 +463,10 @@ func readOriginal(arg string) (originalRelease, error) {
 	if err != nil {
 		return originalRelease{}, err
 	}
-	if cj, err := readCronJob(path); err != nil {
+	if rendered, err := readRenderedRelease(path); err != nil {
 		return originalRelease{}, err
-	} else if cj != nil {
-		return originalRelease{cronJob: cj, namespace: cj.Namespace}, nil
+	} else if rendered != nil {
+		return originalRelease{cronJob: rendered.cronJob, others: rendered.others, namespace: rendered.cronJob.Namespace}, nil
 	}
 
 	raw, err := os.ReadFile(path)
@@ -494,6 +495,88 @@ func readOriginal(arg string) (originalRelease, error) {
 	return originalRelease{cronJob: rendered.cronJob, others: rendered.others, namespace: namespace}, nil
 }
 
+// readRenderedRelease reads a manifest of rendered workloads, such as helm
+// template output. The backup is the CronJob app-template labels as the restic
+// controller, or the only CronJob; every other workload is another controller.
+func readRenderedRelease(path string) (*appTemplateRelease, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cronJobs []*batchv1.CronJob
+	var others []appTemplateController
+	docs := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(raw)))
+	for {
+		doc, err := docs.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", path, err)
+		}
+		var meta struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		}
+		if yaml.Unmarshal(doc, &meta) != nil {
+			continue
+		}
+		var template *corev1.PodTemplateSpec
+		switch meta.Kind {
+		case kindCronJob:
+			var cj batchv1.CronJob
+			if err := yaml.Unmarshal(doc, &cj); err != nil {
+				return nil, fmt.Errorf("reading %s: %w", path, err)
+			}
+			cronJobs = append(cronJobs, &cj)
+			continue
+		case "Job", "Deployment", "StatefulSet", "DaemonSet":
+			var workload struct {
+				Spec struct {
+					Template corev1.PodTemplateSpec `json:"template"`
+				} `json:"spec"`
+			}
+			if err := yaml.Unmarshal(doc, &workload); err != nil {
+				return nil, fmt.Errorf("reading %s: %w", path, err)
+			}
+			template = &workload.Spec.Template
+		default:
+			continue
+		}
+		others = append(others, workloadSummary(meta.Metadata.Name, strings.ToLower(meta.Kind), template.Spec))
+	}
+	if len(cronJobs) == 0 {
+		return nil, nil
+	}
+	restic := cronJobs[0]
+	if len(cronJobs) > 1 {
+		i := slices.IndexFunc(cronJobs, func(cj *batchv1.CronJob) bool {
+			return cj.Labels[labelController] == resticController
+		})
+		if i < 0 {
+			return nil, fmt.Errorf("%s holds %d CronJobs and none is labelled %s=%s", path, len(cronJobs),
+				labelController, resticController)
+		}
+		restic = cronJobs[i]
+	}
+	for _, cj := range cronJobs {
+		if cj != restic {
+			others = append(others, workloadSummary(cj.Name, controllerTypeCronJob, cj.Spec.JobTemplate.Spec.Template.Spec))
+		}
+	}
+	return &appTemplateRelease{cronJob: restic, others: others}, nil
+}
+
+func workloadSummary(name, kind string, pod corev1.PodSpec) appTemplateController {
+	out := appTemplateController{name: name, kind: kind}
+	for _, c := range append(slices.Clone(pod.InitContainers), pod.Containers...) {
+		out.commands = append(out.commands, append(slices.Clone(c.Command), c.Args...))
+	}
+	return out
+}
+
 func readCronJob(path string) (*batchv1.CronJob, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -509,7 +592,7 @@ func readCronJob(path string) (*batchv1.CronJob, error) {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
 		var cj batchv1.CronJob
-		if yaml.Unmarshal(doc, &cj) != nil || cj.Kind != "CronJob" {
+		if yaml.Unmarshal(doc, &cj) != nil || cj.Kind != kindCronJob {
 			continue
 		}
 		return &cj, nil
