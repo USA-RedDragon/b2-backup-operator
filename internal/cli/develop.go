@@ -581,7 +581,7 @@ var (
 
 const cnpgDumpToken = "-- <cnpg dump>"
 
-var forgetScope = regexp.MustCompile(` --(?:tag=(\S+)|host="\$RESTIC_HOST")`)
+var forgetScope = regexp.MustCompile(` --(?:tag=(\S+)|host="\$RESTIC_HOST"|group-by=tags)`)
 
 // normalizeRendered normalizes a rendered script like normalizeScript, and also
 // takes out of restic forget the --host and --tag scoping the operator adds when

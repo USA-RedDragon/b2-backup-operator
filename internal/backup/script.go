@@ -118,6 +118,11 @@ func renderSource(src b2backupv1.BackupSource, workingDir, retryLock string) (st
 // restic already defaults --host to $RESTIC_HOST; the flag makes it explicit.
 const ForgetHostFlag = `--host="$RESTIC_HOST"`
 
+// ForgetGroupFlag keeps each tag a retention group of its own whatever
+// RESTIC_GROUP_BY says: grouped by host alone, a backup's sources would share one
+// group, and the policy would keep one snapshot per period across all of them.
+const ForgetGroupFlag = "--group-by=tags"
+
 func renderForget(r *b2backupv1.Retention, tags []string, retryLock string) string {
 	if r == nil {
 		return ""
@@ -141,7 +146,7 @@ func renderForget(r *b2backupv1.Retention, tags []string, retryLock string) stri
 	if len(flags) == 0 {
 		return ""
 	}
-	scope := []string{ForgetHostFlag}
+	scope := []string{ForgetHostFlag, ForgetGroupFlag}
 	for _, tag := range tags {
 		scope = append(scope, "--tag="+tag)
 	}

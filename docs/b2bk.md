@@ -495,7 +495,7 @@ preamble and postamble around them, the hand-written `exec > >(ts ...)` and
 The script comparison ignores the quoting around `--exclude` patterns and the
 `--retry-lock` and `--secret-mount` flags, which the operator renders and the
 hand-written script does not. It also takes out of `restic forget` the
-`--host="$RESTIC_HOST"` and `--tag` flags the operator adds, when the tags are
+`--host="$RESTIC_HOST"`, `--group-by=tags` and `--tag` flags the operator adds, when the tags are
 exactly the backup's own, and notes the change as `FORGET SCOPED`: restic
 already defaults `--host` to `$RESTIC_HOST`, so only the tags change what forget
 considers. A `CNPG_SECRET_PATH` pointing at wherever the database Secret is

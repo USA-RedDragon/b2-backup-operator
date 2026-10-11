@@ -528,7 +528,7 @@ func TestParityComparesEverythingThatDecidesWhereABackupGoes(t *testing.T) {
 
 func TestNormalizeRenderedKeepsAForgetScopedToOtherTags(t *testing.T) {
 	t.Parallel()
-	rendered := `restic forget --prune --host="$RESTIC_HOST" --tag=files --keep-daily=7`
+	rendered := `restic forget --prune --host="$RESTIC_HOST" --group-by=tags --tag=files --keep-daily=7`
 	if got, _, note := normalizeRendered(rendered, []string{filesTag}); got != "restic forget --prune --keep-daily=7" ||
 		note == "" {
 		t.Errorf("normalized = %q, note %q", got, note)

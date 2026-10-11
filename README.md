@@ -221,7 +221,7 @@ spec:
 
 A files source backs up `paths` in one snapshot, each absolute or relative to the working directory, and each on one of the volumes or the scratch space. The operator always renders them absolute, as `restic backup --tag=files /data/app`, so restic records `/data/app` and stores the files under it. `b2bk restore` relies on that to put them back where they were. Several paths in one source make one snapshot of all of them, as `restic backup /data /blobs` does.
 
-After the sources, the operator runs `restic forget --prune` with `spec.retention`, scoped with `--host="$RESTIC_HOST"` and one `--tag` per source tag. restic ORs repeated `--tag` flags, and the image groups by tags, so this backup's retention applies to its own snapshots only, and two ScheduledBackups writing into one repository with different retention do not expire each other's snapshots.
+After the sources, the operator runs `restic forget --prune` with `spec.retention`, scoped with `--host="$RESTIC_HOST"` and one `--tag` per source tag, and grouped with `--group-by=tags`. restic ORs repeated `--tag` flags, and the image groups by tags, so this backup's retention applies to its own snapshots only, and two ScheduledBackups writing into one repository with different retention do not expire each other's snapshots.
 
 Each source needs a tag of its own: the image groups `forget` by tags, so two sources under one tag would share one retention group, and the policy would keep one snapshot per period across both and expire the other source's. A ScheduledBackup whose sources share a tag is refused, and a second ScheduledBackup writing into the same Repository on the same host under a tag an older one already uses goes `Ready=False` with reason `TagConflict` and gets no CronJob. A `spec.script` backup must be the only ScheduledBackup on its Repository: the shell can build any restic command at run time, with any `--tag` or `--host`, so what its `forget` reaches cannot be read from the script, and it conflicts with any other ScheduledBackup there. Give it a Repository of its own.
 
@@ -261,7 +261,7 @@ So `spec.env` is refused when it names one of those. Which names are reserved de
 
 The error names each offending variable and the field to use instead. It is raised at reconcile time, so a ScheduledBackup that predates this check goes `Ready=False` rather than quietly shadowing its own credentials. A CEL rule on the CRD rejects the five names from the Repository's Secret at admission as well: they are unconditional, and a CEL rule cannot be relaxed later without a version bump.
 
-`RESTIC_GROUP_BY` and `RESTIC_REST_USERNAME`/`RESTIC_REST_PASSWORD` are deliberately **not** reserved. The operator never sets them; the image's restic wrapper reads them, and overriding them is a supported thing to do.
+`RESTIC_GROUP_BY` and `RESTIC_REST_USERNAME`/`RESTIC_REST_PASSWORD` are deliberately **not** reserved. The operator never sets them; the image's restic wrapper reads them, and overriding them is a supported thing to do. The operator's own `forget` passes `--group-by=tags` regardless, so an override cannot merge two sources into one retention group: grouped by host alone, the policy would keep one snapshot per period across every source and expire the rest.
 
 ### The snapshot host
 
