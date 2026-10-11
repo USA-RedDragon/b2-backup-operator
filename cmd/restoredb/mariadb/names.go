@@ -44,7 +44,9 @@ type qualifiedNames struct {
 	// afterEngine is set after the word ENGINE, until its value.
 	afterEngine bool
 	// reach names an engine or table option that reaches tables outside the
-	// staging database, such as MERGE's UNION or FEDERATED's CONNECTION.
+	// staging database, such as MERGE's UNION or FEDERATED's CONNECTION, or
+	// places a table's files outside the data directory, DATA or INDEX
+	// DIRECTORY.
 	reach string
 }
 
@@ -193,7 +195,7 @@ func (q *qualifiedNames) endWord() {
 		q.sawSelect = true
 	case "ENGINE":
 		q.afterEngine = true
-	case "UNION", "CONNECTION":
+	case "UNION", "CONNECTION", "DIRECTORY":
 		q.see(word)
 	}
 }
