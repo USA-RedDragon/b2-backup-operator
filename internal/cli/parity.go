@@ -39,7 +39,7 @@ const (
 	backupCNPGDefaultMount = "/postgresql-app"
 	repositorySecretToken  = "the Repository's Secret"
 	credentialsSecretName  = "restic-b2"
-	imageCacheDir          = "/cache"
+	operatorCacheDir       = "/cache"
 	podHostname            = "(the pod's hostname)"
 	unsetSetting           = "unset"
 )
@@ -148,6 +148,7 @@ func viewOf(cj *batchv1.CronJob, namespace, repositorySecret, defaultZone string
 	if err != nil {
 		return v, err
 	}
+	delete(env, envResticCacheDir)
 	normalizeCNPGSecretPath(env, v.script, secretMounts)
 	v.env = env
 
@@ -314,7 +315,7 @@ func effectiveCacheDir(env map[string]string, script, image string) string {
 		return pathpkg.Clean(dir)
 	}
 	if isUpstreamImage(image) || isOperatorImage(image) {
-		return imageCacheDir
+		return operatorCacheDir
 	}
 	return ""
 }

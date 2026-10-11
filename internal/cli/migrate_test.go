@@ -903,3 +903,57 @@ func TestMigrateNotesTheResticInitJobItReplaces(t *testing.T) {
 		t.Errorf("the dropped restic init Job was not called out:\n%s", out)
 	}
 }
+
+func TestMigrateTakesOnlyResticsCacheForTheCache(t *testing.T) {
+	t.Parallel()
+	t.Run("a claim named cache that the script backs up", func(t *testing.T) {
+		t.Parallel()
+		body := strings.Replace(homeClusterRelease, "restic backup --tag=mirror /mirror", "restic backup --tag=mirror /cache", 1)
+		body += "      cache:\n        existingClaim: app-cache\n"
+		out, err := migrate(t, body)
+		if !errors.Is(err, ErrUnsupportedMount) {
+			t.Errorf("err = %v, want the claim at /cache refused, since the operator mounts restic's cache there\n%s", err, out)
+		}
+	})
+	t.Run("a claim named cache mounted elsewhere", func(t *testing.T) {
+		t.Parallel()
+		body := strings.Replace(homeClusterRelease, "restic backup --tag=mirror /mirror", "restic backup --tag=mirror /appcache", 1)
+		body += "      cache:\n        existingClaim: app-cache\n        globalMounts:\n          - path: /appcache\n"
+		out, err := migrate(t, body)
+		if err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		_, sb := migrated(t, out)
+		if !slices.ContainsFunc(sb.Spec.Volumes, func(v b2backupv1.VolumeSpec) bool {
+			return v.ExistingClaim == "app-cache" && v.EffectiveMountPath() == "/appcache"
+		}) || sb.Spec.Cache != nil || sb.Spec.Script != "" {
+			t.Errorf("volumes %+v, cache %+v, script %q; want app-cache backed up as data", sb.Spec.Volumes,
+				sb.Spec.Cache, sb.Spec.Script)
+		}
+	})
+	t.Run("restic's cache under another name", func(t *testing.T) {
+		t.Parallel()
+		out, err := migrate(t, homeClusterRelease+"      restic-cache:\n        type: emptyDir\n        globalMounts:\n          - path: /cache\n")
+		if err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		_, sb := migrated(t, out)
+		if sb.Spec.Scratch != nil {
+			t.Errorf("scratch = %+v; restic's cache at /cache became scratch space", sb.Spec.Scratch)
+		}
+	})
+	t.Run("a cache RESTIC_CACHE_DIR points at", func(t *testing.T) {
+		t.Parallel()
+		body := strings.Replace(homeClusterRelease, "              TZ: America/Chicago\n",
+			"              TZ: America/Chicago\n              RESTIC_CACHE_DIR: /restic-cache\n", 1)
+		out, err := migrate(t, body+"      cache:\n        existingClaim: app-cache\n        globalMounts:\n          - path: /restic-cache\n")
+		if err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		_, sb := migrated(t, out)
+		if len(sb.Spec.Volumes) != 1 || sb.Spec.Env[envResticCacheDir] != "" {
+			t.Errorf("volumes %+v, env %v; want the cache claim taken as the cache and RESTIC_CACHE_DIR left "+
+				"to the image's /cache, where the operator mounts its own", sb.Spec.Volumes, sb.Spec.Env)
+		}
+	})
+}
