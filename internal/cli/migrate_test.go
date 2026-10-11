@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1399,5 +1400,43 @@ func TestMigrateNotesTheShellOptionsTheOperatorAdds(t *testing.T) {
 	}
 	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(parityOut, "SHELL OPTIONS ADDED: errexit") {
 		t.Errorf("parity = %v, want errexit reported:\n%s", err, parityOut)
+	}
+}
+
+func TestMigrateStripsABraceGroupOnlyWithItsClosing(t *testing.T) {
+	t.Parallel()
+	const old = "                exec > >(ts '%H:%M:%S') 2>&1\n                set -eu\n"
+	tests := []struct{ name, open, close string }{
+		{"another ts", "                set -o pipefail\n                {\n                set -eu\n", "                } 2>&1 | ts -s\n"},
+		{"a closing migrate does not know", "                {\n                set -eu\n", "                } > /dev/null\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			body := strings.Replace(homeClusterRelease, old, tt.open, 1)
+			body = strings.Replace(body, "                restic cache --cleanup\n", "                restic cache --cleanup\n"+tt.close, 1)
+			body = strings.Replace(body, "restic backup --tag=mirror /mirror", "restic backup --tag=mirror /mirror || echo failed", 1)
+			sb, _, parityOut, _ := migrateAndParity(t, body, migrateOptions{repository: sopsRepoURL})
+			opens, closes := strings.Count(sb.Spec.Script, "{"), strings.Count(sb.Spec.Script, "}")
+			if opens != closes {
+				t.Errorf("script = %q; a brace lost its partner", sb.Spec.Script)
+			}
+			if strings.Contains(parityOut, "SCRIPT DOES NOT PARSE") {
+				t.Errorf("parity:\n%s", parityOut)
+			}
+		})
+	}
+}
+
+func TestMigrateRefusesAScriptThatDoesNotParse(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is not on PATH")
+	}
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "                exec > >(ts '%H:%M:%S') 2>&1\n                set -eu\n",
+		"                {\n                set -eu\n", 1)
+	body = strings.Replace(body, "restic backup --tag=mirror /mirror", "restic backup --tag=mirror /mirror || echo failed", 1)
+	if out, err := migrate(t, body); !errors.Is(err, ErrUnsupportedCommand) {
+		t.Errorf("err = %v, want a { with no closing refused\n%s", err, out)
 	}
 }

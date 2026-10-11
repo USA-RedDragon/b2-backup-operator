@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -967,5 +968,29 @@ func TestShellOptionsAddedOnlyCountWhatTheScriptUses(t *testing.T) {
 		if got := strings.Join(shellOptionsAdded(tt.original, generated), ", "); got != tt.want {
 			t.Errorf("shellOptionsAdded(%q) = %q, want %q", tt.original, got, tt.want)
 		}
+	}
+}
+
+func TestParityCatchesAGeneratedScriptThatDoesNotParse(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is not on PATH")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	hr := filepath.Join(dir, "helmrelease.yaml")
+	gen := filepath.Join(dir, "generated.yaml")
+	original := strings.Replace(parityRelease, "restic backup --tag=files /data", "restic backup --tag=files /data || echo failed", 1)
+	generated := strings.Replace(parityGenerated, "  sources:\n    - type: files\n      paths: [/data]\n  retention: {daily: 7}\n",
+		"  script: |\n    restic backup --tag=files /data || echo failed\n    restic forget --prune --keep-daily=7\n    } 2>&1 | ts -s\n", 1)
+	if err := os.WriteFile(hr, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gen, []byte(generated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runParity(&out, gen, hr, migrateOptions{})
+	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "SCRIPT DOES NOT PARSE") {
+		t.Errorf("parity = %v; a stray } ends the operator's group early:\n%s", err, out.String())
 	}
 }
