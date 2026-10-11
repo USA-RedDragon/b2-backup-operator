@@ -296,10 +296,10 @@ func rebaseAbsolute(pattern string, root []string) ([]string, bool) {
 func rebaseRelative(pattern string, root []string) ([]string, bool) {
 	segs := strings.Split(strings.Trim(pattern, "/"), "/")
 	out := []string{pattern}
-	if len(segs) == 1 {
-		return out, true
+	for len(segs) > 1 && segs[0] == "**" {
+		segs = segs[1:]
 	}
-	if segs[0] == "**" {
+	if len(segs) == 1 {
 		return out, true
 	}
 	for j := 1; j < len(segs); j++ {
