@@ -141,6 +141,9 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if !repo.DeletionTimestamp.IsZero() {
+		if err := r.uncached().Get(ctx, req.NamespacedName, &repo); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
 		statusBase := repo.DeepCopy()
 		result, err := r.finalize(ctx, &repo)
 		if err != nil {
@@ -1375,6 +1378,9 @@ func jobFailedAt(job *batchv1.Job) *time.Time {
 	return nil
 }
 
+// finalize runs on a Repository read past the informer cache: a pass deleting
+// a Repository that a pass still in the cache's past provisioned must see what
+// that pass recorded, or it skips the remote deletion and releases the Secret.
 func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Repository) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(repo, FinalizerName) {
 		return ctrl.Result{}, nil
