@@ -415,7 +415,8 @@ func (c hrController) runsResticInit() bool {
 }
 
 // podOptions is the restic pod's options: the controller's pod value of each
-// wins over defaultPodOptions, as under app-template's default overwrite strategy.
+// wins over defaultPodOptions, as under app-template's default overwrite
+// strategy, where a map wins even when empty and a list or string only when not.
 func (hr *helmRelease) podOptions() hrPodOptions {
 	def := hr.Spec.Values.DefaultPodOptions
 	pod := hr.Spec.Values.Controllers[resticController].Pod
@@ -426,7 +427,7 @@ func (hr *helmRelease) podOptions() hrPodOptions {
 	if pod.SecurityContext != nil {
 		out.SecurityContext = pod.SecurityContext
 	}
-	if len(pod.NodeSelector) > 0 {
+	if pod.NodeSelector != nil {
 		out.NodeSelector = pod.NodeSelector
 	}
 	if len(pod.Tolerations) > 0 {
@@ -435,7 +436,7 @@ func (hr *helmRelease) podOptions() hrPodOptions {
 	if pod.PriorityClassName != "" {
 		out.PriorityClassName = pod.PriorityClassName
 	}
-	if len(pod.Labels) > 0 {
+	if pod.Labels != nil {
 		out.Labels = pod.Labels
 	}
 	if pod.AutomountServiceAccountToken != nil {
