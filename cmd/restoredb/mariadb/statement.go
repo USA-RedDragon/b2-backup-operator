@@ -32,6 +32,7 @@ const (
 	verbDrop        = "DROP"
 	verbAlter       = "ALTER"
 	kindSequence    = "SEQUENCE"
+	kindTable       = "TABLE"
 	objectsTriggers = "triggers, stored routines or events"
 	objectsViews    = "views"
 	tooLong         = "a statement too long to check: "
@@ -47,7 +48,7 @@ var (
 	}
 	serverObjects  = []string{"USER", "ROLE", "SERVER", "TABLESPACE", "LOGFILE", "INSTANCE"}
 	routineObjects = []string{"TRIGGER", "PROCEDURE", "FUNCTION", "EVENT", "PACKAGE"}
-	tableObjects   = []string{"TABLE", "TABLES", kindSequence}
+	tableObjects   = []string{kindTable, "TABLES", kindSequence}
 	// lexingModes change how the client and server read quotes and
 	// backslashes, which the restore's lexer does not follow.
 	lexingModes = []string{"ANSI", "ANSI_QUOTES", "NO_BACKSLASH_ESCAPES", "ORACLE", "POSTGRESQL", "DB2",

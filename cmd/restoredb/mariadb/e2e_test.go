@@ -531,6 +531,8 @@ func TestMariaDBKeepsTheDumpInsideStaging(t *testing.T) {
 		"a global variable":                "SET GLOBAL max_connections = 99;\n",
 		"a global variable after another":  "SET @a = 1, GLOBAL max_connections = 99;\n",
 		"a qualified table in a versioned": "/*!40000 ALTER TABLE `other`.`t` DISABLE KEYS */;\n",
+		"a multi-table UPDATE":             "UPDATE `child`, `other`.`t` SET `other`.`t`.`id` = 44;\n",
+		"a DELETE from a joined table":     "DELETE `t` FROM `other`.`t`;\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			backup, _ := seed(t)
@@ -616,5 +618,29 @@ ALTER TABLE app.b ADD CONSTRAINT fk1 FOREIGN KEY (id) REFERENCES app.p (id);`)
 	}
 	if got := fingerprint(t, appDB); got != want {
 		t.Errorf("app does not match the backup:\n%s", got)
+	}
+}
+
+// mariadb-dump qualifies a name with a database in CREATE TABLE for a foreign
+// key to another database. That still restores. (A sequence default, which it
+// qualifies too, cannot be restored from a mariadb-dump even by hand: its
+// LOCK TABLES leaves the sequence unlocked, error 1100.)
+func TestMariaDBRestoresQualifiedNamesInCreateTable(t *testing.T) {
+	sql(t, seedSQL+`
+CREATE TABLE other.p (id INT PRIMARY KEY) ENGINE=InnoDB;
+INSERT INTO other.p VALUES (5);
+CREATE TABLE app.d (pid INT, FOREIGN KEY (pid) REFERENCES other.p (id)) ENGINE=InnoDB;
+INSERT INTO app.d (pid) VALUES (5);`)
+	want := fingerprint(t, appDB)
+	backup := dump(t)
+	if !strings.Contains(backup, "REFERENCES `other`.`p`") {
+		t.Fatal("the dump has no foreign key to other")
+	}
+	sql(t, mutateSQL)
+	if _, err := restore(t, backup, argDropOld); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := fingerprint(t, appDB); got != want {
+		t.Error("app does not match the backup")
 	}
 }

@@ -376,9 +376,12 @@ client splits it, and checks each statement before the client sees it.
 `USE`, `CREATE DATABASE` and `DROP DATABASE` statements, which a dump taken with
 `--databases` or `--add-drop-database` has, are left out, so the dump always
 lands in the staging database and never in the database it names. A dump of
-more than one database is refused. So is a statement that names its table with
-a database, such as ``INSERT INTO `other`.`t` ``, since it would write past the
-staging database; one that changes the server, replication or accounts, such as
+more than one database is refused. So is any name qualified with a database,
+anywhere in a statement, such as ``INSERT INTO `other`.`t` ``, a multi-table
+``UPDATE `t`, `other`.`u` `` or ``DO NEXTVAL(`other`.`s`)``, since it could write
+past the staging database or run code there. `CREATE TABLE` is the exception,
+since mariadb-dump qualifies a foreign key to another database there, but a
+`CREATE TABLE ... SELECT` is refused. Also refused: one that changes the server, replication or accounts, such as
 `SET GLOBAL`, `CHANGE MASTER TO` (from `--master-data` or `--dump-slave`) or
 `GRANT`; one that builds SQL at run time, such as `PREPARE` or `EXECUTE`; one
 that writes a file on the server, such as `SELECT ... INTO OUTFILE`; one too long

@@ -476,3 +476,51 @@ func TestClientLoadNamesTheDatabaseAsAnOption(t *testing.T) {
 		t.Errorf("args = %q", args)
 	}
 }
+
+// A name qualified with a database is refused wherever it is in a statement,
+// except in CREATE TABLE, where mariadb-dump writes them for a foreign key to
+// another database and for a sequence default, and nothing runs.
+func TestFilterRefusesNamesInOtherDatabases(t *testing.T) {
+	t.Parallel()
+	rows := strings.Repeat("(1,'a.b -- `x`.`y`'),", 400)
+	for _, stmt := range []string{
+		"UPDATE `t`, `other`.`u` SET `other`.`u`.`x`=1",
+		"DELETE `other`.`u` FROM `other`.`u`",
+		"DELETE `t`, `u` FROM `t` JOIN `other`.`u`",
+		"DELETE `t` FROM `other`.`t`",
+		"ALTER TABLE `t` EXCHANGE PARTITION p0 WITH TABLE `other`.`u`",
+		"INSERT INTO `t` SELECT * FROM `other`.`u`",
+		"ALTER TABLE `t` RENAME `other`.`u`",
+		"DO NEXTVAL(`other`.`s`)",
+		"DO other.f()",
+		"ANALYZE TABLE `other`.`u`",
+		"SELECT `other` . `f`()",
+		"SELECT `other`/* x */.`f`()",
+		"INSERT INTO `t` VALUES " + rows + "(`other`.`f`())",
+	} {
+		got, _, err := filterString(t, createTable+stmt+";\n")
+		if !errors.Is(err, ErrOtherDatabase) {
+			t.Errorf("%.80q: err = %v", stmt, err)
+		}
+		rest := stmt[strings.LastIndex(stmt, "other")-1:]
+		if !strings.HasPrefix(got, createTable) || strings.Contains(got, rest) {
+			t.Errorf("%.80q: passed on %.200q", stmt, got)
+		}
+	}
+	if _, _, err := filterString(t, "CREATE TABLE `t2` AS SELECT 1;\n"); !errors.Is(err, ErrUnsupportedStatement) {
+		t.Errorf("CREATE TABLE ... SELECT: err = %v", err)
+	}
+	for _, stmt := range []string{
+		"CREATE TABLE `d` (\n  `id` int(11) DEFAULT nextval(`app`.`s`),\n" +
+			"  CONSTRAINT `fk` FOREIGN KEY (`id`) REFERENCES `other`.`p` (`id`)\n) ENGINE=InnoDB",
+		"SET @@SESSION.SQL_LOG_BIN = 0",
+		"/*!40101 SET @saved_cs_client     = @@character_set_client */",
+		"INSERT INTO `a.b` VALUES (1.5,'a.b',0x2E,.5,1.e3,_binary 'x.y',X'2E')," + rows + "(2,NULL)",
+		"DO SETVAL(`s`, 1001, 0)",
+		"UPDATE `t`, `u` SET `x` = 1",
+	} {
+		if _, _, err := filterString(t, stmt+";\n"); err != nil {
+			t.Errorf("%.80q: err = %v", stmt, err)
+		}
+	}
+}
