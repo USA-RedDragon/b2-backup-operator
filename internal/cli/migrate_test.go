@@ -600,7 +600,8 @@ func TestMigrateThenParityOnAHomeClusterRelease(t *testing.T) {
 	}
 	got := out.String()
 	if !strings.Contains(got, "DUMP FORMAT CHANGES") || strings.Contains(got, "SCRIPT DIFFERS") ||
-		strings.Contains(got, volumeDiffers) || strings.Contains(got, "DATABASE SECRET DIFFERS") {
+		strings.Contains(got, volumeDiffers) || strings.Contains(got, "DATABASE SECRET DIFFERS") ||
+		strings.Contains(got, "ENV DIFFERS") {
 		t.Errorf("want only the dump change, got:\n%s", got)
 	}
 	if !strings.Contains(got, "RESCHEDULED") {

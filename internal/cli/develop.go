@@ -221,7 +221,7 @@ type plan struct {
 	dbSecret   string
 	workingDir string
 	host       string
-	env        string
+	env        map[string]string
 	repository string
 	tags       []string
 	namespace  string
@@ -283,13 +283,18 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 			describeSchedule(rendered.schedule, rendered.timeZone), renderedCadence))
 	}
 
+	if _, both := rendered.env[cnpgSecretPathEnv]; !both {
+		delete(original.env, cnpgSecretPathEnv)
+	} else if _, both = original.env[cnpgSecretPathEnv]; !both {
+		delete(rendered.env, cnpgSecretPathEnv)
+	}
 	for _, c := range []struct{ label, original, rendered string }{
 		{"TIMEZONE DIFFERS", original.timeZone, rendered.timeZone},
 		{volumeDiffers, original.volumes, rendered.volumes},
 		{"DATABASE SECRET DIFFERS", original.dbSecret, rendered.dbSecret},
 		{"WORKING DIR DIFFERS", original.workingDir, rendered.workingDir},
 		{"RESTIC HOST DIFFERS", original.host, rendered.host},
-		{"ENV DIFFERS", original.env, rendered.env},
+		{"ENV DIFFERS", describeEnv(original.env), describeEnv(rendered.env)},
 	} {
 		if c.original != c.rendered {
 			differences = append(differences, fmt.Sprintf("%s: original %s, generated %s",
@@ -392,13 +397,13 @@ func renderedPlan(path string) (plan, error) {
 
 	env := map[string]string{"TZ": tz}
 	maps.Copy(env, sb.Spec.Env)
+	secretMounts := map[string]bool{}
 	if db := sb.Spec.Database; db != nil {
 		out.dbSecret = db.EffectiveSecretName()
-		if env[cnpgSecretPathEnv] == b2backupv1.DBSecretMountPath {
-			env[cnpgSecretPathEnv] = databaseMountToken
-		}
+		secretMounts[b2backupv1.DBSecretMountPath] = true
 	}
-	out.env = describeEnv(env)
+	normalizeCNPGSecretPath(env, script, secretMounts)
+	out.env = env
 
 	if repo, err := readRepository(path, sb.Namespace, sb.Spec.RepositoryRef.Name); err == nil && repo != nil {
 		out.repository = describeLocation(repo.Spec.Bucket, repo.EffectivePath())
@@ -415,6 +420,26 @@ const (
 )
 
 const backupCNPGDefaultMount = "/postgresql-app"
+
+// normalizeCNPGSecretPath leaves CNPG_SECRET_PATH in env only when the script
+// runs backup-cnpg.sh, the one thing that reads it, and then as the directory it
+// effectively names, or as databaseMountToken when that is where the database
+// Secret is mounted. runParity compares it only when both sides run the script;
+// a switch to dumpdb is reported as a dump change of its own.
+func normalizeCNPGSecretPath(env map[string]string, script string, secretMounts map[string]bool) {
+	if !strings.Contains(script, backupCNPGScript) {
+		delete(env, cnpgSecretPathEnv)
+		return
+	}
+	value, ok := env[cnpgSecretPathEnv]
+	if !ok {
+		value = backupCNPGDefaultMount
+	}
+	if secretMounts[pathpkg.Clean(value)] {
+		value = databaseMountToken
+	}
+	env[cnpgSecretPathEnv] = value
+}
 
 func describeEnv(env map[string]string) string {
 	parts := make([]string, 0, len(env))
@@ -511,19 +536,13 @@ func originalPlan(arg string) (plan, error) {
 		if value == "" {
 			value = fmt.Sprintf("<%v>", container.Env[name])
 		}
-		if name == cnpgSecretPathEnv && secretMounts[pathpkg.Clean(value)] {
-			value = databaseMountToken
-		}
 		env[name] = value
 	}
-	if _, ok := env[cnpgSecretPathEnv]; !ok && strings.Contains(script, backupCNPGScript) &&
-		secretMounts[backupCNPGDefaultMount] {
-		env[cnpgSecretPathEnv] = databaseMountToken
-	}
+	normalizeCNPGSecretPath(env, script, secretMounts)
 	if _, ok := env["TZ"]; !ok {
 		env["TZ"] = ""
 	}
-	out.env = describeEnv(env)
+	out.env = env
 	return out, nil
 }
 
