@@ -23,7 +23,7 @@ const (
 	snapOlder   = "bbbbbbbb22222222"
 	snapDB      = "cccccccc33333333"
 	snapOldDump = "dddddddd44444444"
-	snapStash   = "eeeeeeee55555555"
+	snapMulti   = "eeeeeeee55555555"
 	snapOther   = "ffffffff66666666"
 	snapSub     = "1234567812345678"
 )
@@ -43,7 +43,7 @@ func snapshotsFixture() []resticSnapshot {
 		{ID: snapFiles, Time: day, Paths: []string{dataDir}, Hostname: testNS, Tags: []string{filesTag}},
 		{ID: snapDB, Time: day.Add(time.Hour), Paths: []string{"/" + testNS + ".dmp"}, Hostname: testNS, Tags: []string{"db"}},
 		{ID: snapOldDump, Time: day.Add(-48 * time.Hour), Paths: []string{"/" + testNS}, Hostname: testNS, Tags: []string{"db"}},
-		{ID: snapStash, Time: day.Add(2 * time.Hour), Paths: []string{dataDir, blobsDir}, Hostname: testNS, Tags: []string{filesTag}},
+		{ID: snapMulti, Time: day.Add(2 * time.Hour), Paths: []string{dataDir, blobsDir}, Hostname: testNS, Tags: []string{filesTag}},
 		{ID: snapOther, Time: day.Add(3 * time.Hour), Paths: []string{dataDir}, Hostname: "renamed", Tags: []string{filesTag}},
 		{ID: snapSub, Time: day.Add(4 * time.Hour), Paths: []string{"/data/app"}, Hostname: testNS, Tags: []string{filesTag}},
 	}
@@ -93,7 +93,7 @@ func TestParseSnapshotsReadsFlatAndGroupedOutput(t *testing.T) {
 func TestChooseSnapshot(t *testing.T) {
 	t.Parallel()
 	files := restoreSource{tag: filesTag, host: testNS, paths: []string{dataDir}}
-	stash := restoreSource{tag: filesTag, host: testNS, paths: []string{blobsDir, dataDir}}
+	multiPath := restoreSource{tag: filesTag, host: testNS, paths: []string{blobsDir, dataDir}}
 	db := restoreSource{tag: "db", host: testNS}
 	tests := []struct {
 		name     string
@@ -104,7 +104,7 @@ func TestChooseSnapshot(t *testing.T) {
 		wantErr  error
 	}{
 		{"the latest of exactly the source's paths, on its host", latest, snapshotsFixture(), files, snapFiles, nil},
-		{"the latest of a multi-path source", latest, snapshotsFixture(), stash, snapStash, nil},
+		{"the latest of a multi-path source", latest, snapshotsFixture(), multiPath, snapMulti, nil},
 		{"the latest dump, never a files snapshot", latest, snapshotsFixture(), db, snapDB, nil},
 		{"nothing matches", latest, byID(snapOther), files, "", nil},
 		{"a named snapshot of the source", snapOlder, byID(snapOlder), files, snapOlder, nil},
@@ -115,7 +115,7 @@ func TestChooseSnapshot(t *testing.T) {
 		{"a named dump restored over files", snapDB, byID(snapDB), files, "", ErrWrongSnapshot},
 		{"a named files snapshot restored into a database", snapFiles, byID(snapFiles), db, "", ErrWrongSnapshot},
 		{"a named old plain-SQL dump", snapOldDump, byID(snapOldDump), db, snapOldDump, nil},
-		{"a named snapshot of another path", snapStash, byID(snapStash), files, "", ErrWrongSnapshot},
+		{"a named snapshot of another path", snapMulti, byID(snapMulti), files, "", ErrWrongSnapshot},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -154,7 +154,7 @@ func TestSnapshotsQueryFiltersTheLatestAndNamesAnID(t *testing.T) {
 func TestRestoreSteps(t *testing.T) {
 	t.Parallel()
 	single := resticSnapshot{ID: snapFiles, Paths: []string{dataDir}}
-	multi := resticSnapshot{ID: snapStash, Paths: []string{dataDir, blobsDir}}
+	multi := resticSnapshot{ID: snapMulti, Paths: []string{dataDir, blobsDir}}
 	tests := []struct {
 		name    string
 		snap    resticSnapshot
@@ -240,7 +240,7 @@ func (p *fakePod) exec(_ context.Context, argv []string, stdout io.Writer) error
 	return nil
 }
 
-func stashBackup() *b2backupv1.ScheduledBackup {
+func multiVolumeBackup() *b2backupv1.ScheduledBackup {
 	sb := newBackup(testBackupName, testRepoName)
 	sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "config", MountPath: dataDir}, {ExistingClaim: "blobs"}}
 	sb.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles, Paths: []string{dataDir, blobsDir}}}
@@ -273,12 +273,12 @@ func TestVolumeRestoresPutFilesBackWhereTheyWere(t *testing.T) {
 		},
 		{
 			name:   "in place, both claims of a multi-path source",
-			sb:     stashBackup(),
+			sb:     multiVolumeBackup(),
 			o:      restoreOptions{snapshot: latest},
 			target: inPlaceTarget,
 			want: []string{
-				"restic restore " + snapStash + ":/blobs --target=/blobs",
-				"restic restore " + snapStash + ":/data --target=/data",
+				"restic restore " + snapMulti + ":/blobs --target=/blobs",
+				"restic restore " + snapMulti + ":/data --target=/data",
 			},
 		},
 		{
@@ -335,7 +335,7 @@ func TestVolumeRestoresPutFilesBackWhereTheyWere(t *testing.T) {
 
 func TestANewClaimCopiesOneClaim(t *testing.T) {
 	t.Parallel()
-	sb := stashBackup()
+	sb := multiVolumeBackup()
 	src, err := (&restoreOptions{}).filesSource(sb)
 	if err != nil {
 		t.Fatal(err)
