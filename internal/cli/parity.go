@@ -440,11 +440,17 @@ func readOriginal(arg string) (originalRelease, error) {
 		Metadata struct {
 			Namespace string `json:"namespace"`
 		} `json:"metadata"`
+		Spec struct {
+			TargetNamespace string `json:"targetNamespace"`
+		} `json:"spec"`
 	}
 	if err := yaml.Unmarshal(raw, &meta); err != nil {
 		return originalRelease{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	namespace := releaseNamespace(path, meta.Metadata.Namespace)
+	namespace, err := releaseNamespace(path, meta.Metadata.Namespace, meta.Spec.TargetNamespace)
+	if err != nil {
+		return originalRelease{}, err
+	}
 	rendered, err := renderAppTemplateFile(path, namespace)
 	if err != nil {
 		return originalRelease{}, fmt.Errorf("%s: %w", path, err)

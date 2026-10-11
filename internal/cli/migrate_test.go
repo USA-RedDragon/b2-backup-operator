@@ -1186,3 +1186,74 @@ func TestMigrateKeepsACronJobWithoutATimeZoneOnUTC(t *testing.T) {
 		t.Errorf("parity = %v, want the original read as running in UTC:\n%s", err, parityOut)
 	}
 }
+
+func writeFluxTree(t *testing.T, body string) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "apps", "myapp", "resources", "restic")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		filepath.Join(root, "apps", "myapp", "ks.yaml"): `apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: myapp
+  namespace: flux-system
+spec:
+  targetNamespace: flux-target
+  path: ./apps/myapp/resources
+`,
+		filepath.Join(dir, "kustomization.yaml"): "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nnamespace: " +
+			kustomizedNS + "\n",
+		filepath.Join(dir, "helmrelease.yaml"): body,
+	}
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestMigrateHonorsTheFluxTargetNamespace(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, writeFluxTree(t, homeClusterRelease), migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo, sb := migrated(t, buf.String())
+	if repo.Namespace != "flux-target" || sb.Namespace != "flux-target" {
+		t.Errorf("namespaces %q and %q, want the Flux Kustomization's targetNamespace", repo.Namespace, sb.Namespace)
+	}
+
+	buf.Reset()
+	body := strings.Replace(homeClusterRelease, specValuesLines, "spec:\n  targetNamespace: release-target\n  values:\n", 1)
+	if err := runMigrate(&buf, writeFluxTree(t, body), migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, sb := migrated(t, buf.String()); sb.Namespace != "release-target" {
+		t.Errorf("namespace %q, want the HelmRelease's own targetNamespace, where Helm installs the CronJob", sb.Namespace)
+	}
+}
+
+func TestMigrateRefusesANumberAppTemplateWouldRewrite(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "              TZ: America/Chicago\n",
+		"              TZ: America/Chicago\n              RESTIC_READ_CONCURRENCY: 12\n", 1)
+	out, err := migrate(t, body)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, sb := migrated(t, out); sb.Spec.Env["RESTIC_READ_CONCURRENCY"] != "12" {
+		t.Errorf("env = %v, want 12 kept", sb.Spec.Env)
+	}
+
+	body = strings.Replace(body, "RESTIC_READ_CONCURRENCY: 12", "RESTIC_PACK_SIZE: 1000000", 1)
+	if out, err := migrate(t, body); !errors.Is(err, ErrUnsupportedValues) || !strings.Contains(fmt.Sprint(err), "1e+06") {
+		t.Errorf("err = %v, want 1000000 refused, since app-template renders it as 1e+06\n%s", err, out)
+	}
+}

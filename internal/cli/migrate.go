@@ -68,8 +68,9 @@ func newMigrateCommand(f *Factory) *cobra.Command {
 
 Reads the app-template HelmRelease (helmrelease.yaml or helm.yaml in the
 directory, or the file given) and emits a Repository and a ScheduledBackup on
-stdout. A kustomization.yaml beside it that sets a namespace wins over the
-HelmRelease's own. Nothing is applied and nothing is modified; diff the output
+stdout, in the namespace Flux would apply it to: the HelmRelease's
+targetNamespace, then its Flux Kustomization's, then kustomization.yaml's,
+then its own. Nothing is applied and nothing is modified; diff the output
 against the HelmRelease, then check it with b2bk parity.
 
 The Repository is in Prefix mode and adopts the existing restic repository in
@@ -266,12 +267,8 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]s
 	if err != nil {
 		return nil, err
 	}
-	if err := migrateEnv(container, sb); err != nil {
+	if err := migrateContainerEnv(container, m); err != nil {
 		return nil, err
-	}
-	if dir := container.env(envResticCacheDir); dir != "" && path.Clean(dir) != operatorCacheDir {
-		m.notes = append(m.notes, fmt.Sprintf("cache: RESTIC_CACHE_DIR=%s is dropped. restic keeps its cache at "+
-			"the image's %s, where the operator mounts its cache claim.", dir, operatorCacheDir))
 	}
 
 	parsed, err := parseBackupScript(script, mounts)
@@ -620,6 +617,20 @@ func boolOrder(a, b bool) int {
 		return -1
 	}
 	return 1
+}
+
+func migrateContainerEnv(container hrContainer, m *migration) error {
+	if err := container.checkNumbers(); err != nil {
+		return err
+	}
+	if err := migrateEnv(container, m.backup); err != nil {
+		return err
+	}
+	if dir := container.env(envResticCacheDir); dir != "" && path.Clean(dir) != operatorCacheDir {
+		m.notes = append(m.notes, fmt.Sprintf("cache: RESTIC_CACHE_DIR=%s is dropped. restic keeps its cache at "+
+			"the image's %s, where the operator mounts its cache claim.", dir, operatorCacheDir))
+	}
+	return nil
 }
 
 func migrateEnv(container hrContainer, sb *b2backupv1.ScheduledBackup) error {
