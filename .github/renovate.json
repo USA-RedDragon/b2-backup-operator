@@ -4,6 +4,7 @@
         "local>USA-RedDragon/renovate-configs",
         "local>USA-RedDragon/renovate-configs:golang"
     ],
+    "ignorePaths": ["**/node_modules/**", "**/vendor/**", "**/test/**", "**/tests/**", "**/__tests__/**", "**/__fixtures__/**", "**/testdata/**"],
     "customManagers": [
         {
             "customType": "regex",
