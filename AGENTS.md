@@ -92,7 +92,9 @@ one of these:
   forget in, that Repository's restic repository. As a second line, backup Jobs
   read `status.secretName` (`backup.CredentialsSecret`), and a ScheduledBackup
   suspends its CronJob with `RepositoryNotItsOwn` while `RepositoryNotOwn` says
-  the Repository's Secret or location may not be its own.
+  the Repository's Secret or location may not be its own. That reads the
+  `Owned` condition, which only the ownership checks change: Ready is
+  overwritten by any later failure, so never key ownership on Ready alone.
 - **The operator only writes to Secrets it created**, identified by the
   `app.kubernetes.io/managed-by` label.
 - **The B2 credentials are resolved lazily**, so a Retain deletion works without them.
