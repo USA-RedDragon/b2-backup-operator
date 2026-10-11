@@ -1536,7 +1536,8 @@ func (r *RepositoryReconciler) forceFinalize(repo *b2backupv1.Repository, err er
 // data was deleted, the credentials Secret loses its ownerReference so garbage
 // collection cannot take the password for data left in B2. Its own finalizer,
 // which under deletionPolicy Delete stays on until the data is deleted, stays
-// while the password exists nowhere else.
+// while the password exists nowhere else and status records the location or the
+// application key, which is recorded the moment the Secret is first written.
 func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backupv1.Repository, dataDeleted bool) error {
 	var secret corev1.Secret
 	err := r.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: repo.SecretName()}, &secret)
@@ -1563,7 +1564,7 @@ func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backup
 		preserved, known, why := r.passwordPreserved(ctx, repo, string(secret.Data[KeyResticPassword]))
 		switch {
 		case known:
-			protect = !preserved && repo.Status.BucketID != ""
+			protect = !preserved && (repo.Status.BucketID != "" || repo.Status.ApplicationKeyID != "")
 		default:
 			protect = controllerutil.ContainsFinalizer(&secret, SecretFinalizer)
 			why += "; the last check before it went did not find the password preserved"

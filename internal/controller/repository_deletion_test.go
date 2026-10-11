@@ -488,3 +488,37 @@ func TestAddingTheFinalizerKeepsAnotherControllersFinalizer(t *testing.T) {
 		t.Errorf("finalizers = %v, want %s added", got, FinalizerName)
 	}
 }
+
+func TestAPasswordWrittenBeforeStatusWasRecordedKeepsItsFinalizer(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	var failFinal atomic.Bool
+	var patches atomic.Int32
+	r, c := newHarnessWithInterceptor(t, f, interceptor.Funcs{
+		SubResourcePatch: func(ctx context.Context, cl client.Client, sub string, obj client.Object,
+			patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			if _, ok := obj.(*b2backupv1.Repository); ok && failFinal.Load() && patches.Add(1) > 1 {
+				return apierrors.NewServiceUnavailable("status write lost")
+			}
+			return cl.SubResource(sub).Patch(ctx, obj, patch, opts...)
+		},
+	}, bucketRepo(func(r *b2backupv1.Repository) {
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+	}))
+	failFinal.Store(true)
+	_ = reconcileErr(r)
+	failFinal.Store(false)
+	repo := getRepo(t, c)
+	if repo.Status.BucketID != "" || repo.Status.ApplicationKeyID == "" {
+		t.Fatalf("precondition: only the key should be recorded, got %+v", repo.Status)
+	}
+	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Fatal("precondition: the Secret should carry the finalizer")
+	}
+
+	deleteRepo(t, c)
+	reconcileUntilGone(t, r, c)
+	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Error("the only copy of a password written for a provisioned key lost its finalizer")
+	}
+}
