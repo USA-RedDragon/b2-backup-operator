@@ -162,8 +162,10 @@ func (l *clientLexer) comment(buf []byte, i int, at func(int) (byte, bool),
 	emit func([]byte, byteKind) error) (n int, done bool, err error) {
 	c := buf[i]
 	if !l.mlComment && l.inString == 0 && (c == '#' || c == '-') {
-		comment, ok := l.lineCommentAt(c, i, at)
+		comment, ok, cerr := l.lineCommentAt(c, i, at)
 		switch {
+		case cerr != nil:
+			return 0, true, cerr
 		case !ok:
 			return 0, true, nil
 		case comment:
@@ -260,26 +262,38 @@ func (l *clientLexer) skippable(c byte) error {
 
 // lineCommentAt reports whether the # or - at i starts a comment to the end of
 // the line: # always, -- when whitespace or the end of the line follows, or
-// at the start of a statement.
-func (l *clientLexer) lineCommentAt(c byte, i int, at func(int) (byte, bool)) (comment, ok bool) {
+// at the start of a statement. Inside a statement, -- followed by a control
+// byte is refused: the server takes it as a comment where the client does not,
+// so where the statement ends would differ.
+func (l *clientLexer) lineCommentAt(c byte, i int, at func(int) (byte, bool)) (comment, ok bool, err error) {
 	if c == '#' {
-		return true, true
+		return true, true, nil
 	}
 	next, ok := at(i + 1)
 	if !ok {
-		return false, false
+		return false, false, nil
 	}
 	if next != '-' {
-		return false, true
+		return false, true, nil
 	}
 	if !l.inStatement {
-		return true, true
+		return true, true, nil
 	}
 	next2, ok := at(i + 2)
 	if !ok {
-		return false, false
+		return false, false, nil
 	}
-	return next2 == 0 || isClientSpace(next2), true
+	if isControlByte(next2) {
+		return false, true, fmt.Errorf("%w: -- followed by a control byte, which the server takes as a comment "+
+			"and the client does not, so restoredb cannot tell where the statement ends", ErrUnsupportedStatement)
+	}
+	return next2 == 0 || isClientSpace(next2), true, nil
+}
+
+// isControlByte reports whether c is one of the control bytes the server takes
+// as whitespace after --, which the client does not.
+func isControlByte(c byte) bool {
+	return c != 0 && (c < 0x20 && !isClientSpace(c) || c == 0x7f)
 }
 
 func (l *clientLexer) plain(buf []byte, i int, at func(int) (byte, bool),

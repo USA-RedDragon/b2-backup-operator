@@ -919,3 +919,28 @@ func TestFilterRefusesQuotesInASkippableComment(t *testing.T) {
 		}
 	}
 }
+
+// does not, so the restore refuses it rather than read the dump differently.
+func TestFilterRefusesADashCommentWithAControlByte(t *testing.T) {
+	t.Parallel()
+	for _, dump := range []string{
+		"CREATE TABLE `u` (`a` int --\x01\n) ENGINE=InnoDB;\n",
+		"CREATE TABLE `u` (`a` int --\x7f x\n) ENGINE=InnoDB;\n",
+		"INSERT INTO `t` VALUES (1) --\x01 x\n;\n",
+	} {
+		if _, _, err := filterString(t, createTable+dump); !errors.Is(err, ErrUnsupportedStatement) {
+			t.Errorf("%q: err = %v", dump, err)
+		}
+	}
+	for _, dump := range []string{
+		"-- a comment\nINSERT INTO `t` VALUES (1);\n",
+		"--\nINSERT INTO `t` VALUES (1);\n",
+		"-- ------------------------------\n",
+		"INSERT INTO `t` VALUES (1) -- trailing\n;\n",
+		"INSERT INTO `t` VALUES ('a--b');\n",
+	} {
+		if _, _, err := filterString(t, dump); err != nil {
+			t.Errorf("%q: err = %v", dump, err)
+		}
+	}
+}
