@@ -1312,3 +1312,18 @@ func TestMigrateRefusesAnotherKeyForTheRepository(t *testing.T) {
 		t.Errorf("err = %v, want a restic-envs without RESTIC_PASSWORD refused, since the Repository reads it", err)
 	}
 }
+
+func TestMigrateLetsAnEmptyPodMapClearTheDefault(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "    defaultPodOptions:\n",
+		"    defaultPodOptions:\n      nodeSelector: {disk: ssd}\n      labels: {team: storage}\n", 1)
+	body = strings.Replace(body, "        type: cronjob\n", "        type: cronjob\n        pod:\n          nodeSelector: {}\n          labels: {}\n", 1)
+	sb, _, parityOut, _ := migrateAndParity(t, body, migrateOptions{repository: sopsRepoURL})
+	if len(sb.Spec.NodeSelector) != 0 || len(sb.Spec.PodLabels) != 0 {
+		t.Errorf("nodeSelector %v, podLabels %v; app-template renders neither when the pod sets them empty",
+			sb.Spec.NodeSelector, sb.Spec.PodLabels)
+	}
+	if strings.Contains(parityOut, "NODE SELECTOR DIFFERS") || strings.Contains(parityOut, "POD LABELS DIFFER") {
+		t.Errorf("parity disagrees:\n%s", parityOut)
+	}
+}
