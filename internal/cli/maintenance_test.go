@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -89,5 +90,19 @@ func TestUnlockRemoveAllRefusesWhileAnythingUsesTheRepository(t *testing.T) {
 				t.Errorf("err = %v, want --remove-all refused while a Job may hold a live lock", err)
 			}
 		})
+	}
+}
+
+func TestUnlockRemoveAllRefusesARepositoryThatIsNotItsOwn(t *testing.T) {
+	t.Parallel()
+	fx := currentBackup(t)
+	fx.repo.Status.Conditions = []metav1.Condition{{
+		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse, Reason: reasonRepositoryConflict,
+	}}
+	cmd := newUnlockCommand(factoryWithClient(t, newClient(t, fx.objects()...)))
+	cmd.SetArgs([]string{subjectBackup, "--remove-all", flagYes})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); !errors.Is(err, ErrRepositoryNotUsable) {
+		t.Errorf("err = %v, want --remove-all refused while the locks may be another repository's", err)
 	}
 }

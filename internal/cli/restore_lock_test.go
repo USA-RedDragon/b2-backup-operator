@@ -546,3 +546,22 @@ func TestADatabaseNamedByTheSecretIsSharedWithOneNamingItsHost(t *testing.T) {
 		t.Errorf("held %d backups; the Secret's host may be the one the other names", len(got))
 	}
 }
+
+func TestARestoreOfASourceWithExcludesNeverClearsAPartialRestore(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fx := currentBackup(t, func(sb *b2backupv1.ScheduledBackup) {
+		filesAtData(sb)
+		sb.Spec.Sources[0].Exclude = []string{cacheDir}
+	})
+	fx.sb.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: appDataPartial}
+	c := newClient(t, fx.objects()...)
+	f, _ := hookedFactory(t, c, &fakePod{}, true)
+	if err := restoreInPlace(ctx, f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, partial := held(t, c, testBackupName); len(partial) != 1 {
+		t.Errorf("partial = %v; a restore that skips %s let go of a partial restore that may have written there",
+			partial, cacheDir)
+	}
+}
