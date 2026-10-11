@@ -105,7 +105,9 @@ one of these:
   retention only reaches its own snapshots. `b2bk prune` builds the same flags
   in `pruneArgs`. Two sources, or two ScheduledBackups on one Repository, under
   one tag would share a forget group and expire each other's snapshots, so
-  `backup.Validate` and the `TagConflict` condition refuse them.
+  `backup.Validate` and the `TagConflict` condition refuse them. A script backup
+  must be alone on its Repository: no parser can tell what a shell script will
+  forget, under which tag or host, so `tagConflict` does not try.
 - **Backups read as root with `DAC_OVERRIDE`.** The image runs as root; with
   every capability dropped, root cannot read another user's `0700` directory
   and restic saves an incomplete snapshot. Restore Jobs add `CHOWN`,
