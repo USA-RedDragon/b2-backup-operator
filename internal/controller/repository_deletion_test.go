@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/b2"
@@ -415,5 +417,35 @@ func TestAnInitJobOfAnotherRepositoryIsNeverTakenForThisOne(t *testing.T) {
 	var job batchv1.Job
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(foreign), &job); err != nil {
 		t.Errorf("the other Repository's init Job was touched: %v", err)
+	}
+}
+
+func TestFinalizeReadsStatusPastAStaleCache(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	var stale atomic.Bool
+	r, c := newHarnessWithInterceptor(t, f, interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if err := cl.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if repo, ok := obj.(*b2backupv1.Repository); ok && stale.Load() {
+				repo.Status = b2backupv1.RepositoryStatus{}
+			}
+			return nil
+		},
+	}, bucketRepo(func(r *b2backupv1.Repository) {
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+	}))
+	reconcileN(t, r, 2)
+	bucket := f.Bucket(ownBucket)
+	f.PutFile(bucket.BucketID, "data/00/aa", 1)
+
+	stale.Store(true)
+	deleteRepo(t, c)
+	reconcileUntilGone(t, r, c)
+	if f.Bucket(ownBucket) != nil {
+		t.Error("a finalize pass reading a cache from before provisioning left the data behind")
 	}
 }
