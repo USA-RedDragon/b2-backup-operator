@@ -178,14 +178,17 @@ func validateBackup(out io.Writer, sb *b2backupv1.ScheduledBackup) error {
 
 func newParityCommand(f *Factory) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "parity <generated.yaml> <helmrelease.yaml>",
+		Use:     "parity <generated.yaml> <helmrelease.yaml | resources/restic directory>",
 		Short:   "Compare a generated backup against the HelmRelease it replaces",
 		GroupID: GroupDevelopment,
 		Long: `Check that migrating an app does not change what gets backed up.
 
-Compares the rendered script, the resolved schedule and the time zone against
-the hand-written HelmRelease. Exits non-zero on any difference, so it can gate
-a migration.
+Compares the rendered script, the resolved schedule, the time zone, the claim
+mounted and the database Secret against the hand-written HelmRelease. Exits
+non-zero on any difference, so it can gate a migration.
+
+A database dump that moves from backup-cnpg.sh to dumpdb cnpg is reported as a
+difference of its own, since the dump's format and file name change with it.
 
 Both sides are parsed in-process; nothing external is needed on PATH.`,
 		Args: cobra.ExactArgs(2),
@@ -200,6 +203,8 @@ type plan struct {
 	script   string
 	schedule string
 	timeZone string
+	volume   string
+	dbSecret string
 }
 
 func runParity(out io.Writer, generatedPath, helmReleasePath string) error {
@@ -215,9 +220,13 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string) error {
 	p := newPrinter(out)
 	var differences, notes []string
 
-	scriptDiffers := normalizeScript(rendered.script) != normalizeScript(original.script)
+	renderedScript, renderedDumps := normalizeScript(rendered.script)
+	originalScript, originalDumps := normalizeScript(original.script)
+	scriptDiffers := renderedScript != originalScript
 	if scriptDiffers {
 		differences = append(differences, "SCRIPT DIFFERS")
+	} else if dumps := dumpChanges(originalDumps, renderedDumps); len(dumps) > 0 {
+		differences = append(differences, dumps...)
 	}
 
 	renderedCadence, err := cadenceOf(rendered.schedule)
@@ -242,6 +251,15 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string) error {
 	if rendered.timeZone != original.timeZone {
 		differences = append(differences, fmt.Sprintf(
 			"TIMEZONE DIFFERS: original %q, generated %q", original.timeZone, rendered.timeZone))
+	}
+	if rendered.volume != original.volume {
+		differences = append(differences, fmt.Sprintf(
+			"VOLUME DIFFERS: original %s, generated %s", orNone(original.volume), orNone(rendered.volume)))
+	}
+	if rendered.dbSecret != original.dbSecret {
+		differences = append(differences, fmt.Sprintf(
+			"DATABASE SECRET DIFFERS: original %s, generated %s",
+			orNone(original.dbSecret), orNone(rendered.dbSecret)))
 	}
 
 	for _, n := range notes {
@@ -289,10 +307,21 @@ func renderedPlan(path string) (plan, error) {
 	if tz == "" {
 		tz = defaultTimeZone
 	}
-	return plan{script: script, schedule: schedule, timeZone: tz}, nil
+	out := plan{script: script, schedule: schedule, timeZone: tz}
+	if v := sb.Spec.Volume; v != nil {
+		out.volume = describeVolume(v.ExistingClaim, v.EffectiveMountPath(), v.ReadOnly)
+	}
+	if db := sb.Spec.Database; db != nil {
+		out.dbSecret = db.EffectiveSecretName()
+	}
+	return out, nil
 }
 
-func originalPlan(path string) (plan, error) {
+func originalPlan(arg string) (plan, error) {
+	path, err := resolveHelmRelease(arg)
+	if err != nil {
+		return plan{}, err
+	}
 	hr, err := readHelmRelease(path)
 	if err != nil {
 		return plan{}, err
@@ -310,24 +339,84 @@ func originalPlan(path string) (plan, error) {
 	if tz == "" {
 		tz = defaultTimeZone
 	}
-	return plan{script: script, schedule: controller.CronJob.Schedule, timeZone: tz}, nil
+	out := plan{script: script, schedule: controller.CronJob.Schedule, timeZone: tz}
+
+	var claims, secretNames []string
+	for _, v := range hr.volumes() {
+		switch {
+		case v.kind == volumeClaim && v.name != "" && v.key != "cache":
+			claims = append(claims, describeVolume(v.name, v.path, v.readOnly))
+		case v.kind == volumeSecret:
+			secretNames = append(secretNames, v.name)
+		}
+	}
+	out.volume = strings.Join(claims, " and ")
+	if usesDatabase(script) {
+		out.dbSecret = strings.Join(secretNames, " and ")
+	}
+	return out, nil
+}
+
+func usesDatabase(script string) bool {
+	return strings.Contains(script, "dumpdb ") || strings.Contains(script, "backup-cnpg.sh") ||
+		strings.Contains(script, "backup-mariadb.sh")
+}
+
+func describeVolume(claim, path string, readOnly bool) string {
+	s := claim + " at " + path
+	if readOnly {
+		s += " (read-only)"
+	}
+	return s
 }
 
 var (
 	ignoredFlags = regexp.MustCompile(` --(retry-lock|secret-mount)=\S+`)
 
 	quotedExclude = regexp.MustCompile(`--exclude=(?:'([^']*)'|"([^"]*)")`)
+
+	cnpgDump = regexp.MustCompile(`-- (?:dumpdb cnpg|backup-cnpg[.]sh)((?: --(?:database|dbname)=\S+)?)$`)
+
+	dumpDatabase = regexp.MustCompile(`--(?:database|dbname)=`)
 )
 
-func normalizeScript(s string) string {
-	var lines []string
+const cnpgDumpToken = "-- <cnpg dump>"
+
+func normalizeScript(s string) (string, []string) {
+	var lines, dumps []string
 	for _, line := range joinContinuations(s) {
 		line = ignoredFlags.ReplaceAllString(line, "")
 		line = quotedExclude.ReplaceAllString(line, "--exclude=$1$2")
+		if m := cnpgDump.FindStringSubmatchIndex(line); m != nil {
+			command := "dumpdb cnpg"
+			if strings.Contains(line[m[0]:m[2]], "backup-cnpg.sh") {
+				command = "backup-cnpg.sh"
+			}
+			dumps = append(dumps, command)
+			database := dumpDatabase.ReplaceAllString(line[m[2]:m[3]], "--database=")
+			line = line[:m[0]] + cnpgDumpToken + database
+		}
 
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			lines = append(lines, trimmed)
 		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), dumps
+}
+
+func dumpChanges(original, rendered []string) []string {
+	var out []string
+	for i := range min(len(original), len(rendered)) {
+		if original[i] == rendered[i] {
+			continue
+		}
+		change := fmt.Sprintf("DUMP FORMAT CHANGES: database dump %d moves from %s to %s", i+1, original[i], rendered[i])
+		if original[i] == "backup-cnpg.sh" {
+			change += ". backup-cnpg.sh writes plain SQL stored as <host>; dumpdb cnpg writes pg_dump's " +
+				"custom format stored as <host>.dmp, which b2bk restore --to-database reads. " +
+				"Earlier snapshots keep the old format"
+		}
+		out = append(out, change)
+	}
+	return out
 }

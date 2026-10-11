@@ -316,6 +316,11 @@ spec:
 	}
 }
 
+func normalized(s string) string {
+	out, _ := normalizeScript(s)
+	return out
+}
+
 func TestNormalizeScriptUnquotesEveryExcludeOnALine(t *testing.T) {
 	original := `restic backup /data --exclude='cache' --exclude='tmp' --exclude='node_modules'`
 	rendered := "restic backup --retry-lock=5m /data \\\n" +
@@ -323,18 +328,41 @@ func TestNormalizeScriptUnquotesEveryExcludeOnALine(t *testing.T) {
 		"  --exclude='tmp' \\\n" +
 		"  --exclude='node_modules'"
 
-	if got, want := normalizeScript(original), normalizeScript(rendered); got != want {
+	if got, want := normalized(original), normalized(rendered); got != want {
 		t.Errorf("the same excludes normalized differently:\noriginal: %q\nrendered: %q", got, want)
 	}
-	if strings.Contains(normalizeScript(original), "'") {
-		t.Errorf("a quote survived normalization: %q", normalizeScript(original))
+	if strings.Contains(normalized(original), "'") {
+		t.Errorf("a quote survived normalization: %q", normalized(original))
 	}
 }
 
 func TestNormalizeScriptStillSeesARealExcludeChange(t *testing.T) {
 	a := `restic backup /data --exclude='cache' --exclude='tmp'`
 	b := `restic backup /data --exclude='cache' --exclude='logs'`
-	if normalizeScript(a) == normalizeScript(b) {
-		t.Errorf("a changed exclude pattern normalized away: %q", normalizeScript(a))
+	if normalized(a) == normalized(b) {
+		t.Errorf("a changed exclude pattern normalized away: %q", normalized(a))
+	}
+}
+
+func TestNormalizeScriptMatchesTheTwoCNPGDumpers(t *testing.T) {
+	original := "restic backup --tag=db --stdin-from-command -- backup-cnpg.sh --dbname=app"
+	rendered := "restic backup --retry-lock=5m --tag=db --stdin-from-command -- dumpdb cnpg " +
+		"--secret-mount=/var/run/secrets/b2backup/database --database=app"
+
+	a, aDumps := normalizeScript(original)
+	b, bDumps := normalizeScript(rendered)
+	if a != b {
+		t.Errorf("the same dump normalized differently:\n%q\n%q", a, b)
+	}
+	if got := dumpChanges(aDumps, bDumps); len(got) != 1 || !strings.Contains(got[0], "<host>.dmp") {
+		t.Errorf("dumpChanges = %q, want the format change named", got)
+	}
+	if got := dumpChanges(bDumps, bDumps); len(got) != 0 {
+		t.Errorf("dumpChanges with nothing changed = %q", got)
+	}
+
+	other, _ := normalizeScript("restic backup --tag=db --stdin-from-command -- backup-cnpg.sh --dbname=other")
+	if other == a {
+		t.Error("a different database normalized away")
 	}
 }

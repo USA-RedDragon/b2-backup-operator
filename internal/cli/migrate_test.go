@@ -524,3 +524,52 @@ func TestMigrateAcceptsAFileAndNamesTheBackupAfterTheRelease(t *testing.T) {
 		t.Errorf("names %s and %s, want obsidibot-restic backing up into restic", sb.Name, repo.Name)
 	}
 }
+
+func TestMigrateThenParityOnAHomeClusterRelease(t *testing.T) {
+	dir := writeHomeClusterRelease(t, homeClusterRelease)
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	generated := filepath.Join(t.TempDir(), "generated.yaml")
+	if err := os.WriteFile(generated, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	err := runParity(&out, generated, dir)
+	if !errors.Is(err, ErrParityDiffers) {
+		t.Fatalf("parity = %v, want the dump change reported\n%s", err, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "DUMP FORMAT CHANGES") || strings.Contains(got, "SCRIPT DIFFERS") ||
+		strings.Contains(got, "VOLUME DIFFERS") || strings.Contains(got, "DATABASE SECRET DIFFERS") {
+		t.Errorf("want only the dump change, got:\n%s", got)
+	}
+	if !strings.Contains(got, "RESCHEDULED") {
+		t.Errorf("want the schedule reported as moved:\n%s", got)
+	}
+}
+
+func TestMigrateThenParityOnAVerbatimScriptIsEquivalent(t *testing.T) {
+	body := strings.Replace(homeClusterRelease,
+		"restic backup --tag=db --stdin-from-command -- backup-cnpg.sh\n",
+		"restic backup --tag=db --tag=app --stdin-filename=app.sql --stdin-from-command -- backup-cnpg.sh --dbname=app\n", 1)
+	dir := writeHomeClusterRelease(t, body)
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	generated := filepath.Join(t.TempDir(), "generated.yaml")
+	if err := os.WriteFile(generated, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := runParity(&out, generated, dir); err != nil {
+		t.Fatalf("parity: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "EQUIVALENT") {
+		t.Errorf("want EQUIVALENT:\n%s", out.String())
+	}
+}
