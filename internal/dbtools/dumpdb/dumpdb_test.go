@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os/exec"
 	"strings"
 	"testing"
@@ -59,6 +60,36 @@ func TestDryRunDoesNotExecute(t *testing.T) {
 	// `false` would exit 1 if it ran.
 	if err := dumpdb.RunCmd(testCmd(&out), "false", nil, &dumpdb.RunOpts{DryRun: true}); err != nil {
 		t.Errorf("dry run should not execute: %v", err)
+	}
+}
+
+func TestStdinOptionReplacesCommandStdin(t *testing.T) {
+	tests := []struct {
+		name  string
+		stdin io.Reader
+		want  string
+	}{
+		{name: "override", stdin: strings.NewReader("from opts"), want: "from opts"},
+		{name: "default", stdin: nil, want: "from cobra"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			cmd.SetIn(strings.NewReader("from cobra"))
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&stderr)
+
+			if err := dumpdb.RunCmd(cmd, "cat", nil, &dumpdb.RunOpts{Stdin: tt.stdin}); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if stdout.String() != tt.want {
+				t.Errorf("stdout = %q, want %q", stdout.String(), tt.want)
+			}
+		})
 	}
 }
 

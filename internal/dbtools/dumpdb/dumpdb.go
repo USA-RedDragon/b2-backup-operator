@@ -23,6 +23,7 @@ type RunOpts struct {
 	Envs   []string
 	Redact []string
 	DryRun bool
+	Stdin  io.Reader
 }
 
 func RunCmd(cmd *cobra.Command, name string, args []string, opts *RunOpts) error {
@@ -35,6 +36,9 @@ func RunCmd(cmd *cobra.Command, name string, args []string, opts *RunOpts) error
 	e := exec.CommandContext(cmd.Context(), name, args...)
 	e.Env = append(os.Environ(), opts.Envs...)
 	e.Stdin = cmd.InOrStdin()
+	if opts.Stdin != nil {
+		e.Stdin = opts.Stdin
+	}
 	e.Stdout = cmd.OutOrStdout()
 	e.Stderr = cmd.ErrOrStderr()
 
