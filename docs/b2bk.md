@@ -787,7 +787,9 @@ not dropped. So are `spec.valuesFrom`, `spec.postRenderers`, a chart other than
 on the CronJob, pod annotations, `defaultPodOptionsStrategy`, `backoffLimit`,
 `startingDeadlineSeconds`, `activeDeadlineSeconds`, a `ttlSecondsAfterFinished`
 other than the operator's 3600, any `envFrom` other than `restic-envs` and
-`restic-b2`, and, in `restic-envs`, a key that is not `RESTIC_*`, one that would
+`restic-b2`, an `envFrom` item naming more than one Secret or ConfigMap (of
+which app-template reads only the first of `configMap`, `configMapRef`,
+`secret` and `secretRef`), and, in `restic-envs`, a key that is not `RESTIC_*`, one that would
 point restic at another repository or key (`RESTIC_REPOSITORY_FILE`,
 `RESTIC_PASSWORD_FILE`, `RESTIC_PASSWORD_COMMAND`), or a credential, since
 `spec.env` is plaintext.

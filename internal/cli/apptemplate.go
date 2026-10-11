@@ -34,6 +34,8 @@ const (
 	keyDNSPolicy        = "dnsPolicy"
 	keyHostPath         = "hostPath"
 	keyConfigMap        = "configMap"
+	keyConfigMapRef     = "configMapRef"
+	keySecretRef        = "secretRef"
 	keyBackoffLimit     = "backoffLimit"
 	keyStartingDeadline = "startingDeadlineSeconds"
 	keyActiveDeadline   = "activeDeadlineSeconds"
@@ -680,27 +682,12 @@ func renderEnvFrom(where string, v any) ([]any, error) {
 		if !ok {
 			return nil, unmodeled("%s holds %v, which is not a map", where, item)
 		}
-		if err := checkKeys(where, m, []string{"secret", "secretRef", keyConfigMap, "configMapRef", "prefix"}); err != nil {
+		if err := checkKeys(where, m, []string{"secret", keySecretRef, keyConfigMap, keyConfigMapRef, "prefix"}); err != nil {
 			return nil, err
 		}
-		rendered := map[string]any{}
-		for _, ref := range []struct{ short, long string }{{"secret", "secretRef"}, {keyConfigMap, "configMapRef"}} {
-			if name, ok := m[ref.short].(string); ok {
-				rendered[ref.long] = map[string]any{keyName: name}
-			}
-			if r, ok := m[ref.long].(map[string]any); ok {
-				if err := checkKeys(where+"."+ref.long, r, []string{keyName, "optional"}); err != nil {
-					return nil, err
-				}
-				target := map[string]any{keyName: r[keyName]}
-				if r["optional"] == true {
-					target["optional"] = true
-				}
-				rendered[ref.long] = target
-			}
-		}
-		if len(rendered) != 1 {
-			return nil, unmodeled("%s holds %v, which names no single Secret or ConfigMap", where, m)
+		rendered, err := renderEnvFromRef(where, m)
+		if err != nil {
+			return nil, err
 		}
 		if p, _ := m["prefix"].(string); p != "" {
 			rendered["prefix"] = p
@@ -708,6 +695,35 @@ func renderEnvFrom(where string, v any) ([]any, error) {
 		out = append(out, rendered)
 	}
 	return out, nil
+}
+
+// renderEnvFromRef is the reference app-template takes from an envFrom item:
+// the first of configMap, configMapRef, secret and secretRef it sets.
+func renderEnvFromRef(where string, m map[string]any) (map[string]any, error) {
+	for _, ref := range []struct{ key, field string }{
+		{keyConfigMap, keyConfigMapRef}, {keyConfigMapRef, keyConfigMapRef}, {"secret", keySecretRef}, {keySecretRef, keySecretRef},
+	} {
+		v, ok := m[ref.key]
+		if !ok {
+			continue
+		}
+		if name, isName := v.(string); isName {
+			return map[string]any{ref.field: map[string]any{keyName: name}}, nil
+		}
+		r, isMap := v.(map[string]any)
+		if !isMap {
+			return nil, unmodeled("%s.%s is neither a name nor a map", where, ref.key)
+		}
+		if err := checkKeys(where+"."+ref.key, r, []string{keyName, "optional"}); err != nil {
+			return nil, err
+		}
+		target := map[string]any{keyName: r[keyName]}
+		if r["optional"] == true {
+			target["optional"] = true
+		}
+		return map[string]any{ref.field: target}, nil
+	}
+	return nil, unmodeled("%s holds %v, which names no Secret or ConfigMap", where, m)
 }
 
 func (r *appTemplateRenderer) persistence() (map[string]map[string]any, error) {

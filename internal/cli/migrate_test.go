@@ -1288,3 +1288,13 @@ func TestMigrateRefusesASecretTheBackupWouldNotFind(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrateRefusesAnAmbiguousEnvFromItem(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "              - secretRef:\n                  name: restic-envs\n",
+		"              - secret: other-secret\n                secretRef:\n                  name: restic-envs\n", 1)
+	out, err := migrate(t, body)
+	if !errors.Is(err, ErrUnsupportedValues) {
+		t.Errorf("err = %v; app-template reads other-secret here, not restic-envs\n%s", err, out)
+	}
+}

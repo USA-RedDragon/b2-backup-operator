@@ -64,6 +64,11 @@ controllers:
             value: 42
         envFrom:
           - secret: restic-envs
+          - secret: chosen
+            secretRef:
+              name: ignored
+          - configMap: first
+            secret: second
           - configMapRef:
               name: settings
               optional: true

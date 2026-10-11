@@ -100,6 +100,10 @@ spec:
               envFrom:
               - secretRef:
                   name: restic-envs
+              - secretRef:
+                  name: chosen
+              - configMapRef:
+                  name: first
               - configMapRef:
                   name: settings
                   optional: true

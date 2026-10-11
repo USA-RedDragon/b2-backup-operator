@@ -386,7 +386,16 @@ func checkEnvFrom(sources []hrEnvFrom) error {
 		if e.SecretRef != nil {
 			name = e.SecretRef.Name
 		}
+		refs := 0
+		for _, set := range []bool{e.Secret != "", e.SecretRef != nil, e.ConfigMap != "", e.ConfigMapRef != nil} {
+			if set {
+				refs++
+			}
+		}
 		switch {
+		case refs > 1:
+			return fmt.Errorf("%w: an envFrom item names more than one Secret or ConfigMap, and app-template "+
+				"reads only one of them", ErrUnsupportedValues)
 		case e.Prefix != "":
 			return fmt.Errorf("%w: envFrom adds the prefix %s", ErrUnsupportedValues, e.Prefix)
 		case e.ConfigMap != "" || e.ConfigMapRef != nil:
