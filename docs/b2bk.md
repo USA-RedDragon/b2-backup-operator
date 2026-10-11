@@ -229,10 +229,15 @@ file, since restic cannot use a file as the subfolder.
 **What `--delete` leaves alone.** The source's own `exclude` patterns are passed
 to `restic restore` as excludes, rewritten relative to the restored path, so
 `--delete` never removes what the backup deliberately left out, such as a cache.
-restic refuses includes and excludes together, so with `--path` or `--include`
-the source's excludes are dropped, and `--delete` is then refused if the source
-excludes anything; `--exclude` together with `--path` or `--include` is refused
-for the same reason.
+An absolute exclude is matched against the restored path segment by segment, so
+`/*/cache` under a source of `/data` becomes `/cache`; one that cannot be
+carried over that way, such as `/**/cache`, refuses `--delete`. restic refuses
+includes and excludes together, so with `--path` or `--include` the source's
+excludes are dropped, and `--delete` is then refused if the source excludes
+anything; `--exclude` together with `--path` or `--include` is refused for the
+same reason. `--include` is also refused beside `--path`, and on a source that is
+a single file: restic ORs includes, so it would widen what is restored, and
+deleted, beyond the path.
 
 | Target | Where `<snapshot>:/data` goes |
 | --- | --- |
@@ -250,7 +255,10 @@ whose `dbname` is not a single database, such as a superuser Secret, needs
 taken by `dumpdb cnpg` (stored as `<host>.dmp`) go through `pg_restore`; old
 ones taken by `backup-cnpg.sh` (plain SQL, stored as `<host>` with no
 extension) go through `psql`. Both run in a single transaction, so a failed
-restore leaves the database as it was.
+restore leaves the database as it was. psql would commit whatever it had read if
+the download stopped partway, so `restoredb` holds back the end of a plain dump
+until it has seen pg_dump's `dump complete` trailer, and stops psql before it
+can commit a dump that ends without it.
 
 | Flag | Targets | |
 | --- | --- | --- |
