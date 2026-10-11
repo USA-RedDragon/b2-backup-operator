@@ -957,3 +957,40 @@ func TestMigrateTakesOnlyResticsCacheForTheCache(t *testing.T) {
 		}
 	})
 }
+
+func TestMigrateAppliesGlobalAndAdvancedMountsTogether(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "      mirror:\n        existingClaim: app-mirror\n",
+		"      mirror:\n        existingClaim: app-mirror\n        globalMounts:\n          - path: /everywhere\n", 1)
+	out, err := migrate(t, body)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, out)
+	paths := make([]string, 0, len(sb.Spec.Volumes))
+	for _, v := range sb.Spec.Volumes {
+		paths = append(paths, v.ExistingClaim+":"+v.EffectiveMountPath())
+	}
+	slices.Sort(paths)
+	if !slices.Equal(paths, []string{"app-mirror:/everywhere", "app-mirror:" + mirrorPath}) {
+		t.Errorf("volumes = %v, want app-mirror at both /everywhere and /mirror, as app-template mounts it", paths)
+	}
+}
+
+func TestMigrateRefusesSubPaths(t *testing.T) {
+	t.Parallel()
+	for name, mount := range map[string]string{
+		"subPath on scratch space": "      scratch:\n        type: emptyDir\n        globalMounts:\n" +
+			"          - path: /backup\n            subPath: nested\n",
+		"subPathExpr on a claim": "      more:\n        existingClaim: app-more\n        globalMounts:\n" +
+			"          - path: /more\n            subPathExpr: $(POD_NAME)\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out, err := migrate(t, homeClusterRelease+mount)
+			if !errors.Is(err, ErrUnsupportedMount) {
+				t.Errorf("err = %v, want ErrUnsupportedMount\n%s", err, out)
+			}
+		})
+	}
+}
