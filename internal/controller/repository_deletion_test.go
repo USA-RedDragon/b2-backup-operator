@@ -449,3 +449,42 @@ func TestFinalizeReadsStatusPastAStaleCache(t *testing.T) {
 		t.Error("a finalize pass reading a cache from before provisioning left the data behind")
 	}
 }
+
+func TestAddingTheFinalizerKeepsAnotherControllersFinalizer(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	const other = "example.com/other"
+	var snapshot atomic.Pointer[b2backupv1.Repository]
+	r, c := newHarnessWithInterceptor(t, f, interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if repo, ok := obj.(*b2backupv1.Repository); ok && snapshot.Load() != nil {
+				snapshot.Load().DeepCopyInto(repo)
+				return nil
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}, prefixRepo(nil))
+	snapshot.Store(getRepo(t, c))
+	live := &b2backupv1.Repository{}
+	if err := r.APIReader.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: resticName}, live); err != nil {
+		t.Fatal(err)
+	}
+	live.Finalizers = append(live.Finalizers, other)
+	if err := c.Update(context.Background(), live); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = reconcileErr(r)
+	snapshot.Store(nil)
+	reconcileN(t, r, 1)
+
+	got := getRepo(t, c).Finalizers
+	if !slices.Contains(got, other) {
+		t.Errorf("finalizers = %v: a patch from a stale cache dropped another controller's finalizer", got)
+	}
+	if !slices.Contains(got, FinalizerName) {
+		t.Errorf("finalizers = %v, want %s added", got, FinalizerName)
+	}
+}

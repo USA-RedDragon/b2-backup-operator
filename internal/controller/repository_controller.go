@@ -155,7 +155,7 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if !controllerutil.ContainsFinalizer(&repo, FinalizerName) {
-		patch := client.MergeFrom(repo.DeepCopy())
+		patch := client.MergeFromWithOptions(repo.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		controllerutil.AddFinalizer(&repo, FinalizerName)
 		if err := r.Patch(ctx, &repo, patch); err != nil {
 			return ctrl.Result{}, err
@@ -1437,7 +1437,7 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 		return ctrl.Result{}, err
 	}
 
-	patch := client.MergeFrom(repo.DeepCopy())
+	patch := client.MergeFromWithOptions(repo.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	controllerutil.RemoveFinalizer(repo, FinalizerName)
 	return ctrl.Result{}, r.Patch(ctx, repo, patch)
 }
