@@ -52,11 +52,17 @@ func PlainDumpComplete(key string, tail []byte) bool {
 }
 
 // RestrictKey returns the key of the \restrict line at the head of a plain dump,
-// or "" when it has none.
+// or "" when it has none. pg_dump writes that line after its opening comment
+// block, before any statement, so the search stops at the first line that is
+// not a comment or blank: a COPY row can read as a \restrict line too.
 func RestrictKey(head []byte) string {
 	for line := range strings.SplitSeq(string(head), "\n") {
-		if key, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), `\restrict `); ok {
+		line = strings.TrimRight(line, "\r")
+		if key, ok := strings.CutPrefix(line, `\restrict `); ok {
 			return strings.TrimSpace(key)
+		}
+		if strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "--") {
+			return ""
 		}
 	}
 	return ""
