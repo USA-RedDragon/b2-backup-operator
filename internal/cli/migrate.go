@@ -92,6 +92,28 @@ these backups, so keep it.`,
 	return cmd
 }
 
+// repositoryURL returns the original RESTIC_REPOSITORY from --repository, or
+// from the encrypted Secret --from-secret names, which must belong to namespace.
+func (o migrateOptions) repositoryURL(namespace string, required bool) (string, error) {
+	switch {
+	case o.repository != "":
+		return o.repository, nil
+	case o.fromSecret != "":
+		url, secretNamespace, err := repositoryURLFromSecret(o.fromSecret)
+		if err != nil {
+			return "", err
+		}
+		if secretNamespace != "" && namespace != "" && secretNamespace != namespace {
+			return "", fmt.Errorf("%w: %s is a Secret in namespace %s, but the HelmRelease is in %s",
+				ErrNoRepositoryURL, o.fromSecret, secretNamespace, namespace)
+		}
+		return url, nil
+	case required:
+		return "", fmt.Errorf("%w: pass --repository or --from-secret", ErrNoRepositoryURL)
+	}
+	return "", nil
+}
+
 func runMigrate(out io.Writer, arg string, opts migrateOptions) error {
 	helmReleasePath, err := resolveHelmRelease(arg)
 	if err != nil {
@@ -102,15 +124,9 @@ func runMigrate(out io.Writer, arg string, opts migrateOptions) error {
 		return err
 	}
 
-	repoURL := opts.repository
-	switch {
-	case repoURL != "":
-	case opts.fromSecret != "":
-		if repoURL, err = repositoryURLFromSecret(opts.fromSecret); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("%w: pass --repository or --from-secret", ErrNoRepositoryURL)
+	repoURL, err := opts.repositoryURL(hr.Metadata.Namespace, true)
+	if err != nil {
+		return err
 	}
 	loc, err := parseS3Repository(repoURL)
 	if err != nil {
