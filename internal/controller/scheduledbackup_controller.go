@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"slices"
 	"strconv"
 	"time"
 
@@ -26,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -133,19 +133,24 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, r.suspendOwnCronJob(ctx, sb)
 	}
 
-	if other, tag, err := r.tagConflict(ctx, sb); err != nil {
+	if conflict, err := r.tagConflict(ctx, sb); err != nil {
 		return ctrl.Result{}, err
-	} else if other != "" {
+	} else if conflict != nil {
 		r.setCondition(sb, metav1.Condition{
 			Type:   b2backupv1.ScheduledBackupConditionReady,
 			Status: metav1.ConditionFalse,
 			Reason: reasonTagConflict,
-			Message: fmt.Sprintf("ScheduledBackup %s also backs up into Repository %s on this host, under %s; "+
+			Message: fmt.Sprintf("%s also backs up into Repository %s, under %s; "+
 				"the image groups forget by tags, so one would expire the other's snapshots. Give each source "+
-				"a tag of its own, and give a script backup a Repository of its own",
-				other, repo.Name, tag),
+				"a tag of its own, give a script backup a Repository of its own, and delete a CronJob whose "+
+				"ScheduledBackup is gone", conflict.With, repo.Name, conflict.Under),
 		})
-		return ctrl.Result{RequeueAfter: backupRequeueInterval}, r.suspendOwnCronJob(ctx, sb)
+		var suspendOther error
+		if conflict.CronJob != nil {
+			suspendOther = r.suspendCronJob(ctx, conflict.CronJob)
+		}
+		return ctrl.Result{RequeueAfter: backupRequeueInterval},
+			errors.Join(r.suspendOwnCronJob(ctx, sb), suspendOther)
 	}
 
 	if err := r.reconcileCache(ctx, sb); err != nil {
@@ -241,62 +246,65 @@ func (r *ScheduledBackupReconciler) reconcile(
 	return ctrl.Result{RequeueAfter: backupRequeueInterval}, nil
 }
 
-// tagConflict finds another ScheduledBackup writing into the same Repository
-// whose forget would reach this one's snapshots, or the other way round: one on
-// the same host with a source tag in common, or a script. What a script forgets
-// cannot be read from it, since the shell can build any restic command at run
-// time, including one with another --host, so a script backup must be the only
-// one on its Repository. Both sides of a conflict report it and stop, whichever
-// came first: the one edited into the conflict may well be the older.
+// tagConflict finds anything whose forget would reach this backup's snapshots,
+// or the other way round: see backup.FindConflict. What a script forgets cannot
+// be read from it, since the shell can build any restic command at run time,
+// including one with another --host, so a script backup must be the only one on
+// its Repository. Both sides of a conflict report it and stop, whichever came
+// first: the one edited into the conflict may well be the older.
 func (r *ScheduledBackupReconciler) tagConflict(
 	ctx context.Context, sb *b2backupv1.ScheduledBackup,
-) (string, string, error) {
-	tags := backup.SourceTags(sb.Spec.Sources)
-	script := sb.Spec.Script != ""
-	var list b2backupv1.ScheduledBackupList
-	if err := r.List(ctx, &list, client.InNamespace(sb.Namespace)); err != nil {
-		return "", "", err
+) (*backup.Conflict, error) {
+	var backups b2backupv1.ScheduledBackupList
+	if err := r.List(ctx, &backups, client.InNamespace(sb.Namespace)); err != nil {
+		return nil, err
 	}
-	for i := range list.Items {
-		other := &list.Items[i]
-		if other.Name == sb.Name || other.Spec.RepositoryRef.Name != sb.Spec.RepositoryRef.Name ||
-			!other.DeletionTimestamp.IsZero() {
-			continue
-		}
-		switch {
-		case script:
-			return other.Name, "any tag or host, which this script's restic commands may forget", nil
-		case other.Spec.Script != "":
-			return other.Name, "any tag or host, which its script's restic commands may forget", nil
-		case other.EffectiveResticHost() != sb.EffectiveResticHost():
-			continue
-		}
-		for _, tag := range backup.SourceTags(other.Spec.Sources) {
-			if slices.Contains(tags, tag) {
-				return other.Name, fmt.Sprintf("%q", tag), nil
-			}
-		}
+	managed := client.MatchingLabels{labelManagedBy: managedByValue}
+	var cronJobs batchv1.CronJobList
+	if err := r.List(ctx, &cronJobs, client.InNamespace(sb.Namespace), managed); err != nil {
+		return nil, err
 	}
-	return "", "", nil
+	return backup.FindConflict(sb, backups.Items, cronJobs.Items), nil
 }
 
-// suspendOwnCronJob stops the CronJob this ScheduledBackup owns from firing. It
-// runs whenever the CronJob cannot be brought in line with the spec: left alone,
-// it would go on backing up and forgetting under a spec that no longer exists,
-// out of sight of the tag conflict check.
+// suspendOwnCronJob stops this ScheduledBackup's CronJob from firing. It runs
+// whenever the CronJob cannot be brought in line with the spec: left alone, it
+// would go on backing up and forgetting under a spec that no longer exists, out
+// of sight of the tag conflict check. That includes a CronJob of its name that
+// the operator rendered but that lost its owner, as kubectl delete
+// --cascade=orphan leaves it: it is adopted only once the spec renders cleanly.
 func (r *ScheduledBackupReconciler) suspendOwnCronJob(ctx context.Context, sb *b2backupv1.ScheduledBackup) error {
 	var cj batchv1.CronJob
 	err := r.Get(ctx, types.NamespacedName{Namespace: sb.Namespace, Name: backup.CronJobName(sb)}, &cj)
-	if apierrors.IsNotFound(err) || (err == nil && (!metav1.IsControlledBy(&cj, sb) ||
-		(cj.Spec.Suspend != nil && *cj.Spec.Suspend))) {
+	if apierrors.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	if !metav1.IsControlledBy(&cj, sb) && !orphanedCronJob(&cj, sb) {
+		return nil
+	}
+	return r.suspendCronJob(ctx, &cj)
+}
+
+// orphanedCronJob reports whether cj is one the operator rendered for a
+// ScheduledBackup of this name that no longer owns it.
+func orphanedCronJob(cj *batchv1.CronJob, sb *b2backupv1.ScheduledBackup) bool {
+	if cj.Labels[labelManagedBy] != managedByValue {
+		return false
+	}
+	owner := metav1.GetControllerOf(cj)
+	return owner == nil || (owner.Kind == "ScheduledBackup" && owner.Name == sb.Name)
+}
+
+func (r *ScheduledBackupReconciler) suspendCronJob(ctx context.Context, cj *batchv1.CronJob) error {
+	if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
+		return nil
+	}
 	patch := client.MergeFrom(cj.DeepCopy())
 	cj.Spec.Suspend = ptr.To(true)
-	return r.Patch(ctx, &cj, patch)
+	return r.Patch(ctx, cj, patch)
 }
 
 func cronJobDrifted(current, desired *batchv1.CronJob) bool {
@@ -413,13 +421,19 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.siblingBackups),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
+		Watches(
+			&batchv1.CronJob{},
+			handler.EnqueueRequestsFromMapFunc(r.siblingBackups),
+			builder.WithPredicates(unownedOrNew()),
+		).
 		Named("scheduledbackup").
 		Complete(r)
 }
 
 // siblingBackups re-checks every other ScheduledBackup in the namespace when one
 // is created, changed or deleted, so a tag conflict an edit causes, or ends, is
-// seen by both sides at once.
+// seen by both sides at once. It does the same when a CronJob loses its owner,
+// since it may carry a forget scope the specs no longer show.
 func (r *ScheduledBackupReconciler) siblingBackups(ctx context.Context, obj client.Object) []reconcile.Request {
 	var list b2backupv1.ScheduledBackupList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
@@ -433,6 +447,17 @@ func (r *ScheduledBackupReconciler) siblingBackups(ctx context.Context, obj clie
 		}
 	}
 	return requests
+}
+
+// unownedOrNew passes CronJob events that can change what FindConflict sees
+// beyond its owner's own reconcile: a create, a delete, and an update that leaves
+// it without a controller.
+func unownedOrNew() predicate.Funcs {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return metav1.GetControllerOf(e.ObjectNew) == nil
+		},
+	}
 }
 
 func (r *ScheduledBackupReconciler) backupsForRepository(

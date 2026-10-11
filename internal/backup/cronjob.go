@@ -349,7 +349,8 @@ func BuildJobTemplate(
 	}
 
 	return batchv1.JobTemplateSpec{
-		Labels: commonLabels(sb),
+		Labels:      commonLabels(sb),
+		Annotations: map[string]string{AnnotationForgetScope: ScopeOf(sb).encode()},
 		Spec: batchv1.JobSpec{
 			TTLSecondsAfterFinished: ptr.To(ttlSecondsAfterFinished),
 
