@@ -116,6 +116,19 @@ func runSetSuspend(
 		}
 	}
 	p.printf("%s %s\n", label, past)
+	if sb := target.ScheduledBackup; target.Kind == TargetScheduledBackup && !suspend {
+		var latest b2backupv1.ScheduledBackup
+		if err := c.Get(ctx, client.ObjectKeyFromObject(sb), &latest); err != nil {
+			return errors.Join(err, p.Err())
+		}
+		hold, err := currentRestoreHold(ctx, c, &latest)
+		if err != nil {
+			return errors.Join(err, p.Err())
+		}
+		if hold != "" {
+			p.printf("! %s is still held: %s\n", label, hold)
+		}
+	}
 	return p.Err()
 }
 
@@ -135,10 +148,14 @@ func releasePartial(ctx context.Context, c client.Client, sb *b2backupv1.Schedul
 			!slices.ContainsFunc(partialTargets(other), func(e string) bool { return slices.Contains(entries, e) }) {
 			continue
 		}
+		locked := false
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			var latest b2backupv1.ScheduledBackup
 			if err := c.Get(ctx, client.ObjectKeyFromObject(other), &latest); err != nil {
 				return err
+			}
+			if locked = latest.Annotations[b2backupv1.AnnotationRestoreLock] != ""; locked {
+				return nil
 			}
 			patch := client.MergeFromWithOptions(latest.DeepCopy(), client.MergeFromWithOptimisticLock{})
 			setPartialTargets(&latest, slices.DeleteFunc(partialTargets(&latest), func(e string) bool {
@@ -149,7 +166,9 @@ func releasePartial(ctx context.Context, c client.Client, sb *b2backupv1.Schedul
 		if err != nil {
 			return released, err
 		}
-		released = append(released, other.Name)
+		if !locked {
+			released = append(released, other.Name)
+		}
 	}
 	return released, nil
 }
