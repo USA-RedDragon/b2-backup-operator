@@ -170,7 +170,9 @@ one of these:
   checked it. `qualifiedNames` watches the whole of every statement, since a
   name qualified with a database anywhere outside CREATE TABLE, a server,
   replication or account statement, or dynamic SQL would reach past the
-  staging database. `<db>__b2bk_old` is the rollback copy: never drop it
+  staging database. `sqlModes` holds the dump to an sql_mode, a client charset
+  and a default engine the filter can read the dump under; the client connects
+  with `--default-character-set=utf8mb4`. `<db>__b2bk_old` is the rollback copy: never drop it
   unless it is empty or `--drop-old` was given.
   Both are created with `mariadb.SchemaComment`, and a database by either name
   without it is never dropped (`ErrForeignSchema`).
