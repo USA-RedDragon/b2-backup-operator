@@ -3,6 +3,8 @@ version: 2
 project_name: b2bk
 
 release:
+  extra_files:
+    - glob: ./LICENSE
   github:
     owner: USA-RedDragon
     name: b2-backup-operator
@@ -40,6 +42,7 @@ archives:
       - tar.gz
     files:
       - README.md
+      - LICENSE
 
 checksum:
   name_template: checksums.txt
