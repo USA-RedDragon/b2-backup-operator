@@ -532,6 +532,10 @@ Archive it as soon as the command returns:
 b2bk env repo/prod --show-password
 ```
 
+It refuses unless the Repository is initialized and `Ready`, and its
+`spec.secretName` is the Secret it recorded in status, so it never adds a key
+to, or rewrites the Secret of, another Repository's restic repository.
+
 Any copy of the old password, such as the `passwordSecretRef` seed and its
 source in Git or SOPS, is now stale, and the command says so. Replace it with
 the new password. Until the seed holds it again, the operator keeps the

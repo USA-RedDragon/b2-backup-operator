@@ -11,6 +11,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -53,6 +54,10 @@ const archiveFlag = "--i-have-somewhere-to-archive-the-new-password"
 func initializedRepo() *b2backupv1.Repository {
 	repo := newRepo(testNS)
 	repo.Status.Initialized = true
+	repo.Status.SecretName = repo.SecretName()
+	repo.Status.Conditions = []metav1.Condition{{
+		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionTrue, Reason: "Ready",
+	}}
 	return repo
 }
 
@@ -326,5 +331,41 @@ func TestARotatedPasswordIsProtectedAtOnce(t *testing.T) {
 	if got := after.Annotations[b2backupv1.AnnotationProtectedBy]; got != string(repo.UID) {
 		t.Errorf("%s = %q, want the Repository's UID so the operator may release it later",
 			b2backupv1.AnnotationProtectedBy, got)
+	}
+}
+
+func TestRotatePasswordRefusesARepositoryThatIsNotItsOwn(t *testing.T) {
+	t.Parallel()
+	tests := map[string]func(*b2backupv1.Repository){
+		"in conflict": func(r *b2backupv1.Repository) {
+			r.Status.Conditions[0].Status, r.Status.Conditions[0].Reason = metav1.ConditionFalse, "RepositoryConflict"
+		},
+		"not Ready for any reason": func(r *b2backupv1.Repository) {
+			r.Status.Conditions[0].Status, r.Status.Conditions[0].Reason = metav1.ConditionFalse, "ReconcileFailed"
+		},
+		"with no Ready condition": func(r *b2backupv1.Repository) { r.Status.Conditions = nil },
+		"naming another Secret than status records": func(r *b2backupv1.Repository) {
+			r.Spec.SecretName = "other-credentials"
+		},
+	}
+	for name, edit := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := initializedRepo()
+			edit(repo)
+			sb := newBackup(testBackupName, testRepoName)
+			objs := []client.Object{repo, sb, credentialsSecret(repo.Status.SecretName)}
+			if repo.SecretName() != repo.Status.SecretName {
+				objs = append(objs, credentialsSecret(repo.SecretName()))
+			}
+			c := newClient(t, objs...)
+			err := runRotatePassword(context.Background(), offlineFactory(t, testStreams()), c, sb, repo)
+			if !errors.Is(err, ErrRepositoryNotUsable) {
+				t.Fatalf("error = %v, want ErrRepositoryNotUsable", err)
+			}
+			if left := tempKeySecrets(t, c); len(left) > 0 {
+				t.Errorf("a key Secret was created: %v", left)
+			}
+		})
 	}
 }
