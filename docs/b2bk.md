@@ -419,7 +419,10 @@ server, whatever it would have done. The shapes it takes are: `USE`,
 session variables a dump sets, to a literal or to the variable the dump saved
 the old value in. Only mariadb-dump and mysqldump output is supported: a dump
 from another tool, such as a MySQL 8 dump whose executable comments hold
-queries of their own, is refused rather than guessed at.
+queries of their own, is refused rather than guessed at. An executable comment whose version is
+above the oldest server `restoredb` supports may be skipped by the server
+while `restoredb` reads what is inside it, so a quote or a semicolon there is
+refused: the two would not agree on where the statement ends.
 `USE`, `CREATE DATABASE` and `DROP DATABASE` statements, which a dump taken with
 `--databases` or `--add-drop-database` has, are left out, so the dump always
 lands in the staging database and never in the database it names. A dump of
