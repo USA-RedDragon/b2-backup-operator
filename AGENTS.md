@@ -1,8 +1,7 @@
 # b2-backup-operator - AI Agent Guide
 
-A Kubernetes operator that provisions or adopts restic repositories and renders
-the CronJobs that back up into them. The storage client in `internal/borgbase`
-is the one this code was ported with; Backblaze B2 replaces it. Read the README
+A Kubernetes operator that provisions or adopts restic repositories in
+Backblaze B2 and renders the CronJobs that back up into them. Read the README
 first: it explains what the two resources are for and why the defaults are what
 they are.
 
@@ -16,7 +15,8 @@ api/v1/*_types.go              CRD schemas (+kubebuilder markers)
 api/v1/zz_generated.*          Auto-generated (DO NOT EDIT)
 internal/controller/           Reconciliation for both kinds
 internal/backup/               Rendering: CronJob, schedule, backup script
-internal/borgbase/             Storage API client, to be replaced by B2
+internal/b2/                   B2 native API client for management calls
+internal/b2/b2fake/            In-memory B2 API, used by unit tests and the e2e stub
 internal/dbtools/              Shared code for restoredb
 internal/secrets/              Restic password generation
 internal/cli/                  b2bk commands, including migrate and parity
@@ -41,21 +41,34 @@ one of these:
 - **The restic password is generated once and never rotated.** It is the
   encryption key for every snapshot. The controller refuses to invent one for a
   repository that has been recorded, initialized, or reports any usage.
-- **Adoption never creates.** A wrong `existingRepositoryID` must fail loudly
-  rather than provision an empty repository beside the real backups.
+- **Adoption never generates a password.** A path holding a restic `config`, or
+  any file version at all, gets its password from `passwordSecretRef` or not at
+  all. Prefix mode never creates a bucket, and a recorded bucket that vanished or
+  changed ID is never recreated.
+- **restic only talks to B2 over S3.** restic 0.19.1's native `b2:` backend
+  (blazer v0.7.2) retries a refused upload URL forever and hangs backups while
+  they hold locks. The native API in `internal/b2` is for management calls only.
+- **Nothing outside a Repository's own path is touched.** Deletion lists by the
+  path with a trailing `/`, the lifecycle rule is merged into the bucket's other
+  rules rather than replacing them, and stale-key cleanup matches a key name that
+  embeds the Repository's UID.
 - **`deletionPolicy` defaults to Retain**, and the credentials Secret only gets
   an ownerReference under `Delete`.
 - **The operator only writes to Secrets it created**, identified by the
   `app.kubernetes.io/managed-by` label.
-- **The API token is resolved lazily**, so a Retain deletion works without one.
+- **The B2 credentials are resolved lazily**, so a Retain deletion works without them.
+- **The per-repository key's secret is shown once.** It is written into the
+  Secret straight away and its ID recorded in status in the same pass; a key
+  that could not be saved is deleted again.
 - **Status is written with a merge patch**, never a full update: the informer
   cache lags behind the controller's own writes.
 - **The init Job is deleted a pass after success is recorded**, not in the same
   one, or the watch event races the status write.
 - **`spec.env` may not name a variable the operator sets.** A container's `env`
-  overrides its `envFrom` wholesale, so `RESTIC_REPOSITORY` or `RESTIC_PASSWORD`
-  in `spec.env` would send a backup to another repository or encrypt it under
-  another key. `buildEnv` rejects the whole set it built, plus those two;
+  overrides its `envFrom` wholesale, so `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`
+  or an `AWS_*` variable in `spec.env` would send a backup to another repository
+  or encrypt it under another key. `buildEnv` rejects the whole set it built,
+  plus the five keys of the Repository's Secret;
   `RESTIC_GROUP_BY` and `RESTIC_REST_*` stay usable because the image's restic
   wrapper -- not the operator -- reads them.
 - **The backup image's `restic` is a wrapper** ahead of the real binary on PATH.
@@ -88,6 +101,11 @@ make lint        # golangci-lint with the logcheck plugin
 golangci-lint v2.13.2 cannot read the export data of Go 1.27.2. Run
 `GOTOOLCHAIN=go1.27.1 make lint` when the local Go is newer than go.mod.
 
+Controller tests run the real `internal/b2` client against `b2fake` over
+httptest, so they exercise the HTTP layer too. A B2 call the operator starts
+making needs a handler in `b2fake`; the e2e suite fails on any call the stub
+does not recognize.
+
 Tests are standard `testing`, not Ginkgo, except the e2e suite: it is Ginkgo, and
 its `test/e2e/e2e_suite_test.go` is the only `suite_test.go` in the tree. Both it
 and the envtest CRD tests sit behind build tags (`e2e` and `envtest`), so `make
@@ -103,16 +121,22 @@ class, `[.]`, instead.
 
 ## Migration
 
-`b2bk migrate` reads an app's hand-written `resources/restic` directory and
-emits the two resources, converting a hand-jittered cron expression into the
-equivalent shorthand so the operator can jitter it instead.
+`b2bk migrate` reads an app's hand-written app-template HelmRelease (the
+`resources/restic` directories in home-cluster-flux) and emits a Prefix mode
+Repository that adopts the existing repository plus a ScheduledBackup,
+converting a hand-jittered cron expression into the equivalent shorthand so the
+operator can jitter it instead. The repository URL is only in the SOPS-encrypted
+`restic-envs`, so it comes from `--repository` or `--from-secret`.
 
-`b2bk parity` then compares the generated script, schedule and time zone
-against the original. Migrating must not silently change what gets backed up or
-how often, so any change to `internal/backup/script.go` or `schedule.go` has to
-keep parity meaningful. It normalises away only the quoting around `--exclude`
-patterns and the `--retry-lock` and `--secret-mount` flags -- the pattern is
-`ignoredFlags` in `internal/cli/develop.go` -- and compares the schedule by **cadence**,
+`b2bk parity` then compares the generated script, schedule, time zone, mounted
+claim and database Secret against the original. Migrating must not silently
+change what gets backed up or how often, so any change to
+`internal/backup/script.go` or `schedule.go` has to keep parity meaningful. It
+normalizes away only the quoting around `--exclude` patterns and the
+`--retry-lock` and `--secret-mount` flags -- the pattern is `ignoredFlags` in
+`internal/cli/develop.go` -- and reports a `backup-cnpg.sh` to `dumpdb cnpg`
+switch as its own difference, since the dump format and file name change. It
+compares the schedule by **cadence**,
 expanding both expressions over 364 days and comparing how often they fire.
 364 days is exactly 52 weeks, so every weekday fires the same number of times;
 a shorter window makes a monthly or yearly schedule fire once or not at all,

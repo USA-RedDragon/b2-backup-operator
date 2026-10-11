@@ -2,12 +2,13 @@
 
 [![Release](https://github.com/USA-RedDragon/b2-backup-operator/actions/workflows/release.yaml/badge.svg)](https://github.com/USA-RedDragon/b2-backup-operator/actions/workflows/release.yaml) [![go.mod version](https://img.shields.io/github/go-mod/go-version/USA-RedDragon/b2-backup-operator.svg)](https://github.com/USA-RedDragon/b2-backup-operator) [![License](https://badgen.net/github/license/USA-RedDragon/b2-backup-operator)](https://github.com/USA-RedDragon/b2-backup-operator/blob/main/LICENSE) [![Release](https://img.shields.io/github/release/USA-RedDragon/b2-backup-operator.svg)](https://github.com/USA-RedDragon/b2-backup-operator/releases/)
 
-A Kubernetes operator that backs up apps with [restic](https://restic.net) into Backblaze B2. Each app gets two short custom resources: a Repository that provisions the restic repository and its credentials, and a ScheduledBackup that renders the CronJob that backs up into it.
+A Kubernetes operator that backs up apps with [restic](https://restic.net) into [Backblaze B2](https://www.backblaze.com/cloud-storage). Each app gets two short custom resources: a Repository that provisions the restic repository and its credentials, and a ScheduledBackup that renders the CronJob that backs up into it.
 
 ## What it does
 
-- **Provisions or adopts** a restic repository and records which one in `status.repositoryID`, so the app-to-repository mapping is visible without decrypting anything.
-- **Generates the restic password exactly once**, writes it alongside a synthesized `RESTIC_REPOSITORY` into a Secret, and never rotates it.
+- **Provisions or adopts** a restic repository in B2, either in a bucket of its own or under a path in a shared bucket, and records the bucket and path in status, so the app-to-repository mapping is visible without decrypting anything.
+- **Gives every repository its own B2 application key**, restricted to its bucket and path, and replaces the key if it is lost or revoked.
+- **Generates the restic password exactly once**, writes it with the key and a synthesized `RESTIC_REPOSITORY` into a Secret, and never rotates it.
 - **Initializes the repository** with a one-shot Job that probes before initializing, so a genuine failure is not mistaken for success.
 - **Renders a CronJob** from a declarative backup spec: sources, retention, database credential wiring, pod affinity and cache volume are all derived.
 - **Ships `b2bk`**, a CLI and kubectl plugin that runs backups on demand, explains why one is not running, and browses and restores snapshots. See [docs/b2bk.md](docs/b2bk.md).
@@ -50,11 +51,22 @@ flux pull artifact oci://ghcr.io/usa-reddragon/b2-backup-operator-manifests:v0.1
 kubectl apply -f ./b2-backup-operator/install.yaml
 ```
 
-The operator runs in `b2-backup-operator-system`.
+The operator runs in `b2-backup-operator-system`. Before it can do anything it needs a B2 application key in a Secret there; see [B2 credentials](#b2-credentials).
 
 ## Resources
 
 ### Repository
+
+A Repository has one of two layouts, chosen by `spec.mode`:
+
+| Mode | Bucket | Path | Application key restricted to |
+| --- | --- | --- | --- |
+| `Bucket` | Its own private bucket. Created if this account does not have it, adopted if it does | Bucket root, or `spec.path` | The bucket, and `spec.path` when set |
+| `Prefix` | An existing bucket shared with other repositories. Never created or deleted by the operator | `spec.path`, default `<namespace>/<name>` | The bucket and the path |
+
+Both `mode` and `bucket` are required and cannot change once set. `path` can be set only when the Repository is created. Bucket names are global across all of B2: 6 to 63 lowercase letters, digits and dashes, starting and ending with a letter or digit, and never starting with `b2-`.
+
+A Prefix mode repository with its own bucket path, created fresh:
 
 ```yaml
 apiVersion: b2backup.mcswain.dev/v1
@@ -63,18 +75,102 @@ metadata:
   name: restic
   namespace: myapp-prod
 spec:
+  mode: Prefix
+  bucket: acme-restic
+```
+
+It lives at `acme-restic/myapp-prod/restic`. The default path is `<namespace>/<name>` rather than `<namespace>` because namespace and name together are unique in the cluster, so two Repositories in one namespace never collide by default. Set `spec.path` to put it anywhere else.
+
+A Bucket mode repository, which gets a private bucket of its own:
+
+```yaml
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: otherapp-prod
+spec:
+  mode: Bucket
+  bucket: acme-otherapp-prod-restic
+```
+
+Adopting a restic repository that already exists at `s3:https://s3.us-east-005.backblazeb2.com/acme-restic/restic/myapp-prod`:
+
+```yaml
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: myapp-prod
+spec:
+  mode: Prefix
+  bucket: acme-restic
+  path: restic/myapp-prod
   passwordSecretRef:
     name: restic-envs
     key: RESTIC_PASSWORD
 ```
 
-The operator writes the repository credentials, `RESTIC_REPOSITORY` and `RESTIC_PASSWORD`, to a Secret named `<name>-b2` unless `spec.secretName` says otherwise. It only ever writes to Secrets it created, which it marks with `app.kubernetes.io/managed-by: b2-backup-operator`.
+`b2bk migrate` writes this for an app that was backed up by hand; see [docs/b2bk.md](docs/b2bk.md).
 
-`passwordSecretRef` seeds the restic password from a Secret you keep, such as a SOPS-encrypted one in Git. The operator reads it and never writes to it, so it stays the off-cluster copy of the key that decrypts the backups. Without it the operator generates a password once and never generates another for a repository that has been recorded, initialized or reports any usage. Set it whenever the repository may already hold snapshots.
+#### The credentials Secret
 
-`deletionPolicy` defaults to `Retain`: deleting the resource leaves both the remote repository and the credentials Secret in place. Set it to `Delete` only when destroying every snapshot is what you want. Under `Delete`, the finalizer is released only once the repository is confirmed gone. Annotate the Repository with `b2backup.mcswain.dev/force-finalize=true` to release it anyway; the operator emits a `RepositoryOrphaned` warning naming the repository it left behind.
+The operator writes a Secret named `<name>-credentials`, or `spec.secretName`, with everything restic needs to reach the repository over B2's S3-compatible API:
 
-`kubectl explain repository.spec` lists the storage fields.
+| Key | Value |
+| --- | --- |
+| `RESTIC_REPOSITORY` | `s3:<endpoint>/<bucket>/<path>`, with the endpoint taken from the account |
+| `RESTIC_PASSWORD` | The restic password |
+| `AWS_ACCESS_KEY_ID` | The repository's own application key ID |
+| `AWS_SECRET_ACCESS_KEY` | The repository's own application key |
+| `AWS_DEFAULT_REGION` | The region in the endpoint, such as `us-east-005` |
+
+It only ever writes to Secrets it created, which it marks with `app.kubernetes.io/managed-by: b2-backup-operator`.
+
+restic always talks to B2 through the S3-compatible API and never through its native `b2:` backend. restic 0.19.1 pins kurin/blazer v0.7.2, whose upload path retries a B2 upload URL that refuses connections forever, which has hung backups for hours while they held their locks. The region has to be set: without it the S3 client asks B2 for the bucket location first, and on a denied answer it signs for `us-east-1`.
+
+#### The application key
+
+Each Repository gets its own application key, named `b2bk-<namespace>-<name>-<first 12 hex digits of the UID>`, restricted to its bucket, and to its path with a trailing `/` when it has one. Its capabilities are `listBuckets`, `listFiles`, `readFiles` and `writeFiles`. It has no `deleteFiles`: restic's S3 backend never names a version when it deletes, so on B2 every restic delete only hides the file, which needs `writeFiles` alone. A key without `deleteFiles` cannot destroy a file version, so whatever a leaked key hides stays recoverable with the account key until the lifecycle rule below deletes it.
+
+The key's secret half is shown only once, when the key is created, and the operator writes it into the Secret at once and records the key ID in `status.applicationKeyID`. If the Secret is lost, or the key no longer exists in B2, or its restrictions no longer match, the operator creates a new key, writes it, and then deletes every other key carrying this Repository's name. The name ends in the Repository's UID, so this never touches a key that another Repository, or another cluster sharing the account, relies on.
+
+#### The restic password
+
+`passwordSecretRef` seeds the restic password from a Secret you keep, such as a SOPS-encrypted one in Git. The operator reads it and never writes to it, so it stays the off-cluster copy of the key that decrypts the backups.
+
+Without it, the operator generates a password once, and only for a path that holds nothing. Before the repository is initialized it checks for `<path>/config` and for any file version under the path, hidden ones included. If a config exists the repository is adopted (`status.adopted`); if anything at all exists, or this Repository has written credentials before, no password is ever generated and the Repository goes `Ready=False` with reason `PasswordUnavailable` until `passwordSecretRef` is set. Set it whenever the path may already hold snapshots.
+
+#### Old file versions
+
+Because restic's deletes only hide files, a bucket keeps every pack restic has ever pruned until something deletes the hidden versions. By default the operator keeps a bucket lifecycle rule that deletes hidden files under the repository's path one day after they are hidden: scoped to `<path>/` in Prefix mode, and to the whole bucket in Bucket mode without a path.
+
+The rule is merged into the bucket's existing rules. Rules for every other prefix are left exactly as they are, and a rule on a parent prefix that already deletes hidden files at least as soon covers the repository, so no rule is added. The result is in the `LifecycleRule` condition. A rule that hides live files under the path after some days (`daysFromUploadingToHiding`) would eventually hide data that snapshots still need, so it turns the condition `False` with reason `HidesLiveFiles`.
+
+```yaml
+spec:
+  lifecycle:
+    daysFromHidingToDeleting: 7   # keep hidden versions a week; default 1
+    manage: false                 # or leave the bucket's rules alone entirely
+```
+
+A longer `daysFromHidingToDeleting` is the B2 form of append-only: B2 has no restic-server-style append-only mode, and a key without `deleteFiles` does not make one, because restic's lock removal, `forget` and `prune` all succeed by hiding. What the setting buys is a window in which anything a compromised client hid can be restored. For a hard guarantee use B2 Object Lock, which this operator does not manage.
+
+#### Usage
+
+`status.currentUsage` is the total size of the files restic can see under the path, measured at most every six hours by listing them with `b2_list_file_names`, and stopped after 200,000 files. Hidden versions still awaiting deletion are billed but not counted. When the listing stops early, or has never run, the field is empty rather than a guess. `b2bk stats` gives restic's own view.
+
+#### Deletion
+
+`deletionPolicy` defaults to `Retain`: deleting the resource leaves the data, the application key and the credentials Secret in place.
+
+Under `Delete`, deleting the Repository deletes its application key, then every file version and unfinished large file under its path, in batches, and in Prefix mode its lifecycle rule. In Bucket mode it then deletes the bucket, unless the bucket holds files outside the repository's path, in which case it leaves the bucket and emits `BucketRetained`. Nothing outside the path is ever touched. The finalizer is released only once that is done. Annotate the Repository with `b2backup.mcswain.dev/force-finalize=true` to release it anyway; the operator emits a `RepositoryOrphaned` warning naming what it left behind.
+
+#### Conflicts
+
+Two Repositories whose paths in the same bucket are equal or nested, or one of which covers the whole bucket, would write into one repository. The newer one goes `Ready=False` with reason `RepositoryConflict` and makes no B2 calls at all until the conflict is resolved.
+
+`kubectl explain repository.spec` lists every field.
 
 ### ScheduledBackup
 
@@ -123,11 +219,11 @@ So `spec.env` is refused when it names one of those. Which names are reserved de
 
 | Reserved | When |
 | --- | --- |
-| `RESTIC_REPOSITORY`, `RESTIC_PASSWORD` | Always. These come from the Repository's Secret |
+| `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` | Always. These come from the Repository's Secret |
 | `RESTIC_HOST`, `TZ` | Always. Use `spec.resticHost` and `spec.timeZone` |
 | `DB_HOST`, `DB_DATABASE`, `DB_USERNAME` | Only under the **mariadb** engine, which is where the operator sets them. A cnpg backup may set `DB_HOST` itself |
 
-The error names each offending variable and the field to use instead. It is raised at reconcile time, so a ScheduledBackup that predates this check goes `Ready=False` rather than quietly shadowing its own credentials. A CEL rule on the CRD rejects `RESTIC_REPOSITORY` and `RESTIC_PASSWORD` at admission as well: those two are unconditional, and a CEL rule cannot be relaxed later without a version bump.
+The error names each offending variable and the field to use instead. It is raised at reconcile time, so a ScheduledBackup that predates this check goes `Ready=False` rather than quietly shadowing its own credentials. A CEL rule on the CRD rejects the five names from the Repository's Secret at admission as well: they are unconditional, and a CEL rule cannot be relaxed later without a version bump.
 
 `RESTIC_GROUP_BY` and `RESTIC_REST_USERNAME`/`RESTIC_REST_PASSWORD` are deliberately **not** reserved. The operator never sets them; the image's restic wrapper reads them, and overriding them is a supported thing to do.
 
@@ -160,10 +256,35 @@ Which database pod is matched depends on the engine. mariadb selects `app.kubern
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
+| `--b2-credentials-secret` | `b2-credentials` | Secret holding the operator's B2 application key, as `name` in the operator's namespace or `namespace/name`. See below |
+| `--b2-auth-url` | `https://api.backblazeb2.com` | Where `b2_authorize_account` is called. Only tests change it |
 | `--backup-image` | `ghcr.io/usa-reddragon/b2-backup-operator-restic:<operator version>` | The image every backup pod runs. More than a list of binaries; see the contract below |
 | `--cache-storage-class` | *(none)* | StorageClass for restic cache volumes. **Cache claims request `ReadWriteMany`**, which most cluster default classes cannot satisfy; see below |
 
-`/manager --help` lists the rest, including the storage credentials.
+`/manager --help` lists the rest.
+
+### B2 credentials
+
+The operator manages buckets, keys and lifecycle rules through the B2 native API with one application key, read from the Secret named by `--b2-credentials-secret` under `B2_APPLICATION_KEY_ID` and `B2_APPLICATION_KEY`. A Repository can name a Secret of its own in its namespace with `spec.credentialsSecretRef`, with the same two keys.
+
+```sh
+kubectl -n b2-backup-operator-system create secret generic b2-credentials \
+  --from-literal=B2_APPLICATION_KEY_ID=<keyID> \
+  --from-literal=B2_APPLICATION_KEY=<applicationKey>
+```
+
+The key needs these capabilities:
+
+| Capability | Used for |
+| --- | --- |
+| `listBuckets` | Finding the bucket by name |
+| `writeBuckets` | Creating a Bucket mode bucket and keeping the lifecycle rule |
+| `deleteBuckets` | Deleting a Bucket mode bucket under `deletionPolicy: Delete`. Not needed otherwise |
+| `listKeys`, `writeKeys`, `deleteKeys` | Creating, checking and replacing each repository's own key |
+| `listFiles` | Detecting an existing repository, measuring usage, and listing what to delete |
+| `writeFiles`, `deleteFiles` | Cancelling unfinished large files and deleting file versions under `deletionPolicy: Delete`. Not needed otherwise |
+
+Backblaze documents `writeKeys` as granting full access to the account, since a key that can create keys can create one with any capability. Treat this Secret as the account itself.
 
 ### The backup image contract
 

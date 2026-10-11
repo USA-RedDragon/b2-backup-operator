@@ -73,29 +73,37 @@ and whether the most recent run actually succeeded. Names the object to fix and
 the command to run next. With no argument, checks every resource in the
 namespace. Exits non-zero if any check fails.
 
+For a repository it shows the bucket and path, checks that the credentials
+Secret holds all five keys (`RESTIC_REPOSITORY`, `RESTIC_PASSWORD`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`), that the
+key ID in it is the one the operator recorded in `status.applicationKeyID`, and
+reports a lifecycle rule problem from the `LifecycleRule` condition. `doctor`
+never calls B2 and needs no B2 credentials: whether the key still exists in B2
+is the operator's check, and it shows up as the `Ready` condition.
+
 ### `get [repositories|backups]` — `reads`
 
-Both kinds by default. Pairs usage against quota, and last-success against
-whether the schedule is suspended, so "are backups happening" is one command.
+Both kinds by default. Shows where each repository lives and how big it is, and
+last-success against whether the schedule is suspended, so "are backups
+happening" is one command.
 The argument takes any of the prefixes above without the slash, so `get sb` and
 `get repos` work as well as `get backups`.
 
 | Flag | |
 | --- | --- |
 | `-A` | Every namespace |
-| `-o wide` | Repositories add server, secret, adopted, suspended; backups add timezone and concurrency policy |
+| `-o wide` | Repositories add mode, key ID, secret, adopted, suspended; backups add timezone and concurrency policy |
 | `-o json\|yaml\|name` | Machine-readable. `json` and `yaml` wrap both kinds at once in a `v1.List` |
 
 ### `status <name>` — `reads`
 
-One resource in detail: usage against quota, the **effective** schedule with its
-timezone, conditions with reasons, and a table of recent runs with result and
-duration.
+One resource in detail: mode, bucket, path, endpoint, application key ID and
+usage with when it was measured, the **effective** schedule with its timezone,
+conditions with reasons, and a table of recent runs with result and duration.
 
-`Adopted` covers both kinds of adoption: a repository named by
-`spec.existingRepositoryID`, and one the operator found in BorgBase already
-carrying the repository name. Either way it means the snapshots predate this
-resource, so `spec.passwordSecretRef` is what makes them readable.
+`Adopted` means the operator found a restic `config` at the path before it
+initialized anything, so the snapshots predate this resource and
+`spec.passwordSecretRef` is what makes them readable.
 
 | Flag | |
 | --- | --- |
@@ -209,7 +217,7 @@ the two volume targets run `restic restore`, and `--to-database` runs
 `--to-database` restores exactly one file — the database dump the snapshot was
 taken from — so it has nothing to select within. `--path`, `--include`,
 `--exclude` and `--delete` are accepted there and then ignored; do not read a
-successful run as having honoured them.
+successful run as having honored them.
 
 `--dry-run` is not uniformly free of side effects:
 
@@ -244,8 +252,8 @@ Verifies repository structure. Metadata only by default, which is fast.
 
 Applies the ScheduledBackup's own retention policy, so a manual prune does what
 the scheduled one does. Backups already prune themselves after each run; this is
-for reclaiming space after a retention change. Refuses on an append-only
-repository.
+for reclaiming space after a retention change. On B2 the pruned packs are only
+hidden, and the bucket's lifecycle rule deletes them a day later by default.
 
 | Flag | |
 | --- | --- |
@@ -257,8 +265,9 @@ The retention policy comes from the ScheduledBackup, so a backup with no
 
 ### `stats <name>` — `reads`
 
-restic's own view of repository size, which differs from BorgBase's reported
-usage in `status` because of deduplication and compression.
+restic's own view of repository size. The usage in `status` is the size of the
+files in B2, which differs because of deduplication, compression, and packs
+restic has pruned that B2 has only hidden so far.
 
 | Flag | |
 | --- | --- |
@@ -353,11 +362,12 @@ Everything after `--` is passed through verbatim; the separator is required.
 The credentials as shell exports. Takes a Repository, or a ScheduledBackup,
 which resolves to the Repository it writes into.
 
-Redacted by default, because `RESTIC_REPOSITORY` embeds the password too: the
-password inside the URL is replaced with `***`, leaving the server and path
-readable, and anything that is not a `rest:` URL is replaced wholesale. The
-"redacted" notice goes to stderr, so stdout is still a valid script — but it
-exports `***`, so only the `--show-password` form is worth evaluating.
+Prints all five keys of the credentials Secret. `RESTIC_PASSWORD` and
+`AWS_SECRET_ACCESS_KEY` are replaced with `***` unless `--show-password` is
+passed; `RESTIC_REPOSITORY` holds no secret and is printed as it is, along with
+the key ID and region. The "redacted" notice goes to stderr, so stdout is still
+a valid script, but it exports `***`, so only the `--show-password` form is
+worth evaluating.
 
 ```sh
 eval "$(b2bk env repo/prod --show-password)"
@@ -377,16 +387,25 @@ Catches what the operator would reject at reconcile time — an unresolvable
 schedule, a source it cannot render, a missing database field — with no cluster.
 Does not run the CRD's CEL rules; the API server owns those.
 
-### `parity <generated.yaml> <helmrelease.yaml>` — `reads`
+### `parity <generated.yaml> <helmrelease.yaml | directory>` — `reads`
 
 Confirms that migrating an app does not change what gets backed up. Needs
 nothing on PATH: both sides are parsed in-process, the HelmRelease with
 `sigs.k8s.io/yaml`. `migrate` is the one command that shells out, and only to
-`sops`.
+`sops`. The second argument takes the same directory `migrate` does.
+
+It compares the rendered script, the schedule, the time zone, the claim mounted
+(name, path and read-only flag) and the database Secret.
 
 The script comparison ignores the quoting around `--exclude` patterns and the
 `--retry-lock` and `--secret-mount` flags, which the operator renders and the
-hand-written script does not. Everything else has to match.
+hand-written script does not. A cnpg dump through `backup-cnpg.sh` and one
+through `dumpdb cnpg` compare equal as commands, with `--dbname` and
+`--database` read as the same thing, but the change is then reported on its own
+line: `backup-cnpg.sh` writes plain SQL that the image's restic wrapper stores
+as `<host>`, while `dumpdb cnpg` writes pg_dump's custom format stored as
+`<host>.dmp`, which is what `b2bk restore --to-database` reads. Snapshots taken
+before the change keep the old format and name. Everything else has to match.
 
 **Schedules are compared by cadence, not verbatim.** Migration hands a
 hand-jittered expression back to the operator as a shorthand, which deliberately
@@ -399,39 +418,76 @@ distinguishable — and checked for firing equally often with the same spacing, 
 | --- | --- | --- |
 | `IDENTICAL` | 0 | Nothing moved |
 | `RESCHEDULED` + `EQUIVALENT` | 0 | The time moved, the cadence did not |
-| `SCRIPT DIFFERS` | 1 | |
+| `SCRIPT DIFFERS` | 1 | Followed by both scripts |
+| `DUMP FORMAT CHANGES` | 1 | A cnpg dump moves from `backup-cnpg.sh` to `dumpdb cnpg` |
 | `CADENCE DIFFERS` | 1 | It no longer runs as often |
 | `TIMEZONE DIFFERS` | 1 | |
+| `VOLUME DIFFERS` | 1 | Another claim, path or read-only flag |
+| `DATABASE SECRET DIFFERS` | 1 | |
 | `error: ...` | 1 | Either side could not be read or rendered |
 
 These are lines, not verdicts: a run prints every one that applies. `RESCHEDULED`
-is a note rather than a difference, so it can precede `TIMEZONE DIFFERS` on a run
+is a note rather than a difference, so it can precede a difference on a run
 that still exits 1. `IDENTICAL` and `EQUIVALENT` print only when no difference
-was found, and `SCRIPT DIFFERS` is followed by both scripts.
+was found.
 
-### `migrate <resources/restic directory>` — `reads`
+### `migrate <resources/restic directory | helmrelease.yaml>` — `reads`
 
-Converts an app's hand-written backup into operator resources, printed to
-stdout. Nothing is applied and nothing in fleet-infra is modified.
+Converts an app's hand-written backup, an app-template HelmRelease with a
+`restic` CronJob controller, into operator resources printed to stdout. Nothing
+is applied and nothing in the GitOps repository is modified.
 
-The resources are marshalled from the real API types, so the output cannot be
-shaped in a way the CRDs would reject.
+Given a directory it reads `helmrelease.yaml`, or `helm.yaml`; given a file it
+reads that. A `kustomization.yaml` beside it that sets `namespace` wins over the
+HelmRelease's own, as it does when Flux applies it. The ScheduledBackup is named
+after the HelmRelease and backs up into a Repository named `restic`, so two
+HelmReleases that share one `restic-envs` Secret, and therefore one repository,
+come out sharing one Repository.
+
+The Repository adopts the existing restic repository where it is. It is in
+Prefix mode with the bucket and path from the old `RESTIC_REPOSITORY`, or in
+Bucket mode when the repository sits at a bucket root, and it reads the
+password from `restic-envs`/`RESTIC_PASSWORD`. That URL exists only in the
+encrypted Secret, so pass it:
 
 | Flag | |
 | --- | --- |
-| `--repository-id` | Use this ID instead of decrypting `secret.yaml` |
+| `--repository` | The `s3:` URL, as it appears in `RESTIC_REPOSITORY` |
+| `--from-secret` | A SOPS-encrypted Secret to decrypt with `sops` and read `RESTIC_REPOSITORY` from, such as `<app>-restic.yaml` in the secrets repository |
 
-The BorgBase repository ID exists only inside the encrypted
-`RESTIC_REPOSITORY` value, so by default `migrate` runs `sops` to read it —
-that is where the cloud credentials for it live, and linking the sops library
-instead would add every KMS backend it supports (61MB on a 93MB binary) to read
-one field once per app. `--repository-id` skips that path entirely. Everything
-else is parsed and emitted in Go.
+`--from-secret` delegates decryption to the `sops` binary rather than linking
+the sops library, which would add every KMS backend it supports (61MB on a 93MB
+binary) to read one field once per app. A native `b2:` URL is refused: the
+operator only uses the S3-compatible API.
 
-Before applying, reduce the app's `secret.yaml` to just `RESTIC_PASSWORD`:
-`RESTIC_REPOSITORY` is synthesized by the operator and `CHECK_UUID` is no
-longer used. Do not remove `RESTIC_PASSWORD` — it is the only
-off-cluster copy of the key that decrypts these backups.
+What maps across:
+
+| HelmRelease | ScheduledBackup |
+| --- | --- |
+| `restic backup --tag=T <path>` | A `files` source, when `<path>` is inside the one claim mounted |
+| `restic backup --tag=T --stdin-from-command -- backup-cnpg.sh [--dbname=D]` | A `cnpg` source, which dumps with `dumpdb cnpg`; see `parity` for what that changes |
+| `restic backup ... -- dumpdb <engine>` | A source of that engine |
+| `restic forget --prune --keep-...` | `spec.retention` |
+| The one `existingClaim` mounted in the restic container | `spec.volume`, with the mount path and read-only flag app-template gives it |
+| The one Secret mounted | `spec.database.secretName`; a `<cluster>-app` or `<cluster>-superuser` name also sets `cnpgCluster` |
+| `defaultPodOptions.affinity` or the controller's `pod.affinity` | `spec.affinity`, verbatim |
+| Container `resources`, CronJob `timeZone` and `concurrencyPolicy` | The same fields |
+| Plain `env` values other than `TZ`, `RESTIC_HOST` and `CNPG_SECRET_PATH` | `spec.env` |
+
+A script any of whose lines cannot become sources, such as a backup with two
+tags or its own `--stdin-filename`, or a shell command that is not restic, is
+kept verbatim as `spec.script` instead, minus the preamble and `restic cache
+--cleanup` the operator adds itself. If it calls `backup-cnpg.sh`,
+`CNPG_SECRET_PATH` is pointed at the operator's database mount. b2bk's tag
+filtering does not work on a script backup.
+
+`migrate` refuses what a ScheduledBackup cannot mount: more than one claim, more
+than one Secret, an `emptyDir` or any other volume type, or a `subPath`.
+
+Once the operator reports the Repository ready, `restic-envs` only needs
+`RESTIC_PASSWORD`, and the app no longer reads `restic-b2`. Do not remove
+`RESTIC_PASSWORD`: it is the only off-cluster copy of the key that decrypts
+these backups.
 
 ## Recipes
 
@@ -482,9 +538,10 @@ b2bk resume web-files
 **Migrate an app onto the operator**
 
 ```sh
-b2bk migrate apps/snipe-it/resources/restic > generated.yaml
+b2bk migrate apps/kosync/resources/restic \
+  --from-secret ../home-cluster-secrets/kosync-restic.yaml > generated.yaml
 b2bk validate generated.yaml
-b2bk parity generated.yaml helmrelease.yaml
+b2bk parity generated.yaml apps/kosync/resources/restic
 ```
 
 ## Installing
