@@ -152,7 +152,8 @@ carry on outside the transaction.`,
 		cobrax.Env("DB_USERNAME"), cobrax.SecretFile(&mount, "username"))
 	fs.String(&password, dumpdb.FlagPassword, "p", "", "Database password",
 		cobrax.Env("DB_PASSWORD"), cobrax.SecretFile(&mount, "password"))
-	fs.Bool(&dryRun, dumpdb.FlagDryRun, "", false, "Dry run",
+	fs.Bool(&dryRun, dumpdb.FlagDryRun, "", false,
+		"Print the command and read the dump to the end without restoring it, checking a plain dump as a restore would",
 		cobrax.Env("DB_DRY_RUN"))
 
 	return cmd

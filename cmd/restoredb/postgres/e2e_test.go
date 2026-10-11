@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -288,5 +289,40 @@ func TestPostgresRefusesAMetaCommandInAKeylessDump(t *testing.T) {
 	out := refused(t, []byte(head+"SET row_security = off;\n\\connect app\n"+cut))
 	if !strings.Contains(out, "meta-command") {
 		t.Errorf("the refusal does not name the meta-command:\n%s", out)
+	}
+}
+
+// b2bk pipes restic dump into restoredb under set -o pipefail, so a dry run
+// that exits without reading its input fails the pipeline with SIGPIPE.
+func TestPostgresDryRunReadsTheWholeDump(t *testing.T) {
+	plain, _ := seed(t, "", "--clean", "--if-exists")
+	custom := dump(t, "-Fc")
+	for name, tt := range map[string]struct {
+		input string
+		ok    bool
+	}{
+		"plain":            {plain, true},
+		"custom":           {custom + strings.Repeat("\x00", 256<<10), true},
+		"plain, cut":       {plain[:len(plain)-200], false},
+		"plain, \\connect": {"\\connect app\n" + plain, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := fingerprint(t)
+			cmd := exec.Command("docker", "exec", "-i", server, "sh", "-c",
+				"set -o pipefail; cat | restoredb postgres -H 127.0.0.1 -u postgres -p "+pgPassword+
+					" -d "+appDB+" --dry-run")
+			cmd.Stdin = strings.NewReader(tt.input)
+			out, err := cmd.CombinedOutput()
+			t.Logf("output:\n%s", out)
+			if (err == nil) != tt.ok {
+				t.Errorf("err = %v, want success %t", err, tt.ok)
+			}
+			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && exitErr.ExitCode() == 141 {
+				t.Error("the pipeline died of SIGPIPE")
+			}
+			if after := fingerprint(t); after != before {
+				t.Errorf("the dry run changed the database: %s", firstDiff(before, after))
+			}
+		})
 	}
 }

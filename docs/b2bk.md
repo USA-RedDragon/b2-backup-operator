@@ -405,7 +405,7 @@ then ignored; do not read a successful run as having honored them.
 | `--to` | Lists the snapshot with `restic ls` instead of downloading it. Nothing is written |
 | `--to-new-pvc` | **Still creates the claim**, then runs `restic restore --dry-run --verbose=2` into it. The claim is left behind |
 | `--in-place` | Skips both the typed confirmation and the schedule suspension, then runs `restic restore --dry-run --verbose=2`, which lists every file it would write and delete |
-| `--to-database` | Skips the typed confirmation and passes `--dry-run` to `restoredb`. For postgres that only prints the command. For mariadb it restores into `<db>__b2bk_restore`, checks the trailer and the staged objects, prints the `RENAME TABLE` it would run and drops the staging database again. `<db>` is not changed |
+| `--to-database` | Skips the typed confirmation and passes `--dry-run` to `restoredb`. For postgres it prints the command and reads the dump to the end without connecting, so `restic dump` is not cut off, and a plain dump a real restore would stop or refuse fails the dry run too. For mariadb it restores into `<db>__b2bk_restore`, checks the trailer and the staged objects, prints the `RENAME TABLE` it would run and drops the staging database again. `<db>` is not changed |
 
 ## Maintenance
 

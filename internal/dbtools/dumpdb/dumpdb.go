@@ -24,6 +24,9 @@ const (
 type RunOpts struct {
 	Envs   []string
 	Redact []string
+	// DryRun only traces the command. When Stdin is set it is still read to
+	// the end, through Filter and Complete, so whatever writes it is not cut
+	// off and a dry run reports what a real run would refuse.
 	DryRun bool
 	Stdin  io.Reader
 
@@ -43,7 +46,7 @@ type RunOpts struct {
 
 var (
 	// ErrIncomplete is returned when Complete rejected the input.
-	ErrIncomplete = errors.New("the input ended before it was complete, so the command was stopped before it could commit")
+	ErrIncomplete = errors.New("the input ended before it was complete")
 	// ErrStopped is returned when stdin could not be read or Filter failed.
 	ErrStopped = errors.New("the command was stopped before it could commit")
 )
@@ -72,21 +75,39 @@ func RunCmd(cmd *cobra.Command, name string, args []string, opts *RunOpts) error
 	}
 	_, _ = io.WriteString(e.Stderr, trace)
 
+	filter := opts.Filter
+	if filter == nil {
+		filter = func(dst io.Writer, src io.Reader) error {
+			_, err := io.Copy(dst, src)
+			return err
+		}
+	}
 	if opts.DryRun {
-		return nil
+		if opts.Stdin == nil {
+			return nil
+		}
+		return drain(opts.Stdin, filter, opts.Complete)
 	}
 	if opts.Complete != nil {
-		filter := opts.Filter
-		if filter == nil {
-			filter = func(dst io.Writer, src io.Reader) error {
-				_, err := io.Copy(dst, src)
-				return err
-			}
-		}
 		return runGuarded(e, opts.Complete, filter)
 	}
 
 	return e.Run()
+}
+
+// drain reads a dry run's input to the end, through filter and complete as a
+// real run would, so a pipeline feeding it is not cut off and a dump that a
+// real run would stop is reported.
+func drain(in io.Reader, filter func(io.Writer, io.Reader) error, complete func([]byte) bool) error {
+	tail := &tailWriter{}
+	if err := filter(tail, in); err != nil {
+		_, _ = io.Copy(io.Discard, in)
+		return err
+	}
+	if complete != nil && !complete(tail.buf) {
+		return ErrIncomplete
+	}
+	return nil
 }
 
 func runGuarded(e *exec.Cmd, complete func(tail []byte) bool, filter func(io.Writer, io.Reader) error) error {
@@ -113,7 +134,7 @@ func runGuarded(e *exec.Cmd, complete func(tail []byte) bool, filter func(io.Wri
 		if copyErr != nil {
 			return fmt.Errorf("%w: %w", ErrStopped, copyErr)
 		}
-		return ErrIncomplete
+		return fmt.Errorf("%w, so the command was stopped before it could commit", ErrIncomplete)
 	}
 	if err := pipe.Close(); err != nil {
 		_ = e.Process.Kill()
