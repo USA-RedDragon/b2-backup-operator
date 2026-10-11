@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -11,6 +12,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
@@ -166,5 +168,26 @@ func TestAStrayIsSuspendedWhileTheOtherBackupWaitsForItsRepository(t *testing.T)
 	}
 	if !cronJobSuspended(t, c, goneCronJob) {
 		t.Error("a stray kept running because the other ScheduledBackup stopped before the conflict check")
+	}
+}
+
+func TestAStrayThatCannotBeSuspendedDoesNotStopTheOtherBackups(t *testing.T) {
+	t.Parallel()
+	errDenied := errors.New("admission webhook denied the request")
+	elsewhere := `{"repository":"elsewhere","host":"` + scheduledBackup().EffectiveResticHost() + `","tags":["db"]}`
+	r, c := backupHarness(t, initializedRepo(), scheduledBackup(), orphanCronJob(elsewhere))
+	r.Client = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{Patch: func(
+		ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption,
+	) error {
+		if obj.GetName() == goneCronJob {
+			return errDenied
+		}
+		return cl.Patch(ctx, obj, patch, opts...)
+	}})
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: resticName}); err != nil {
+		t.Fatalf("err = %v; a stray this backup does not own failed its reconcile", err)
+	}
+	if cronJobSuspended(t, c, cronJobName) {
+		t.Error("the backup's own CronJob was suspended because another CronJob could not be")
 	}
 }
