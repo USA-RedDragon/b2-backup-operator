@@ -726,7 +726,7 @@ printed with the time of day in the schedule's time zone, such as
 | `SCRIPT DOES NOT PARSE` | 1 | `bash -n` rejects the generated script, such as a `}` left over from the original's own group |
 | `SYNTAX UNCHECKED` | note | `bash` is not on PATH, so the generated script was not parsed |
 | `COMMAND DIFFERS` | 1 | The original does not run `sh -c <script>` |
-| `SHELL OPTIONS ADDED` | 1 | The operator runs every script under `set -euo pipefail`, and the original did not turn on `errexit` (with more than one command), `nounset` (with a variable) or `pipefail` (with a pipe). A failure now stops what the original ran on after it, such as the dump or the forget. `migrate` notes the same |
+| `SHELL OPTIONS ADDED` | 1 | The operator runs every script under `set -euo pipefail`, and fewer of the original's commands ran under `errexit` (a command followed by another, on a later line or after `;`), `nounset` (a command naming a variable) or `pipefail` (a command with a pipe). The options are read at each command, so a `set -eu` after the first command still counts. A failure now stops what the original ran on after it, such as the dump or the forget. `migrate` notes the same |
 | `DUMP FORMAT CHANGES` | 1 | A cnpg dump moves from `backup-cnpg.sh` to `dumpdb cnpg` |
 | `CADENCE DIFFERS` | 1 | It no longer runs as often |
 | `TIMEZONE DIFFERS` | 1 | |
