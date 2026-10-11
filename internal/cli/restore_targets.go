@@ -425,7 +425,7 @@ func restoreInPlace(
 			return err
 		}
 		if hold != nil {
-			hold.full = o.path == "" && len(o.include) == 0 && len(o.exclude) == 0 && len(src.exclude) == 0 &&
+			hold.full = o.delete && o.path == "" && len(o.include) == 0 && len(o.exclude) == 0 && len(src.exclude) == 0 &&
 				slices.Equal(slices.Sorted(slices.Values(plan.snap.Paths)), src.paths)
 			if err := hold.readyToWrite(ctx, job); err != nil {
 				return err

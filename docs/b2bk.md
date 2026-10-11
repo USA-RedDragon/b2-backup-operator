@@ -222,6 +222,13 @@ never restores somewhere it did not name.
 | `--in-place` | `DESTROYS` | Over the source claims. Held like `--to-database`, below |
 | `--to-database` | `DESTROYS` | Streams the dump back through `restoredb` |
 
+A restore pod is stopped after 12 hours, like any b2bk pod with a terminal; an
+in-place restore cut off there is a failed one, and stays held.
+
+Running backups and restores are checked by their Jobs and by their pods, since
+`b2bk cancel` and a finished restore delete a Job at once while its pod's restic
+runs on for the pod's grace period.
+
 Both overwriting targets work on every ScheduledBackup in the namespace that
 backs up the same thing: for `--in-place`, each one with one of the restored
 claims in `spec.volumes`, including claims mounted under a restored path; for
@@ -251,7 +258,8 @@ entry is recorded the hold stays: the next backup would save the partial
 restore, and retention could then keep it over good snapshots. A later restore
 that succeeds removes the entries of the claims its source's paths are on, and
 only when it restored the whole source: a snapshot holding exactly the source's
-paths, with no `--path`, `--include` or `--exclude`, of a source with no
+paths, with `--delete` so that what the failed restore left and the snapshot
+lacks is gone, with no `--path`, `--include` or `--exclude`, of a source with no
 excludes of its own, since a failed restore may have written where an exclude
 keeps the next one from going. It never removes the entry
 of a claim mounted under them, which the source may exclude, nor that of a claim
@@ -266,7 +274,8 @@ the claims or database before the first write, the restore stops before
 writing; one that comes to share them later is held by the operator all the
 same, which suspends the CronJob of any ScheduledBackup that mounts a claim or
 dumps a database another ScheduledBackup's lock or recorded entries name.
-`b2bk resume` leaves alone the entries of a ScheduledBackup a running restore
+`b2bk resume` also clears `spec.suspend`; suspend again afterwards to keep a
+schedule off. It leaves alone the entries of a ScheduledBackup a running restore
 holds, and says when another ScheduledBackup's lock or entries still hold the
 one it resumed; `b2bk resume` of that one releases it. An entry in a form other
 than `pvc/...` or `db/...`, which only a hand edit makes, holds every
