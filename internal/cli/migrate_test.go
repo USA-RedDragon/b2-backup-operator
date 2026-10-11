@@ -1373,3 +1373,19 @@ func TestMigrateTakesACacheDirTheScriptBacksUpRelativelyForData(t *testing.T) {
 		t.Errorf("err = %v, want app-mirror at /cache, backed up as ., refused\n%s", err, out)
 	}
 }
+
+func TestMigrateKeepsTwoForgetsVerbatim(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease,
+		"restic forget --prune --keep-daily=90 --keep-weekly=24 --keep-monthly=24 --keep-yearly=20\n",
+		"restic forget --prune --keep-daily=90\n                restic forget --prune --keep-weekly=24\n", 1)
+	out, err := migrate(t, body)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, out)
+	if sb.Spec.Retention != nil || !strings.Contains(sb.Spec.Script, "--keep-daily=90") ||
+		!strings.Contains(sb.Spec.Script, "--keep-weekly=24") {
+		t.Errorf("retention %+v, script %q; want both forgets kept, not one dropped", sb.Spec.Retention, sb.Spec.Script)
+	}
+}
