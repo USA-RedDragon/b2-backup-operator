@@ -29,6 +29,8 @@ const (
 )
 
 const (
+	dbAuthTag   = "db-auth"
+	authDB      = "auth"
 	schedulerDB = "schedulerdb"
 	tmpAnywhere = "**/tmp*"
 )
@@ -263,7 +265,7 @@ func TestVolumeRestoresPutFilesBackWhereTheyWere(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:   "in place",
+			name:   targetInPlace,
 			sb:     filesBackupAt(),
 			o:      restoreOptions{snapshot: latest, delete: true},
 			target: inPlaceTarget,
@@ -781,14 +783,14 @@ func TestADatabaseRestoreAmongSeveralDumpsNeedsATag(t *testing.T) {
 	withDatabase(sb)
 	sb.Spec.Sources = []b2backupv1.BackupSource{
 		{Type: b2backupv1.SourceTypeCNPG, Tag: "db-app"},
-		{Type: b2backupv1.SourceTypeCNPG, Tag: "db-auth"},
+		{Type: b2backupv1.SourceTypeCNPG, Tag: dbAuthTag},
 	}
-	_, err := (&restoreOptions{database: "auth"}).databaseSource(sb)
+	_, err := (&restoreOptions{database: authDB}).databaseSource(sb)
 	if !errors.Is(err, ErrNoDatabase) || !strings.Contains(err.Error(), "db-app, db-auth") {
 		t.Errorf("err = %v, want --tag asked for, listing both dumps", err)
 	}
-	src, err := (&restoreOptions{tag: "db-auth", database: "auth"}).databaseSource(sb)
-	if err != nil || src.tag != "db-auth" || src.database != "auth" {
+	src, err := (&restoreOptions{tag: dbAuthTag, database: authDB}).databaseSource(sb)
+	if err != nil || src.tag != dbAuthTag || src.database != authDB {
 		t.Errorf("source = %+v, %v; want the db-auth dump into auth", src, err)
 	}
 }

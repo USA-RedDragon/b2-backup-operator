@@ -24,6 +24,8 @@ import (
 // ScheduledBackup.
 var ErrRestoreRunning = errors.New("another restore is running")
 
+const restoreResumeTrue = "true"
+
 // restoreLock is a ScheduledBackup held by one overwriting restore: the
 // AnnotationRestoreLock annotation names it, and the schedule is suspended.
 type restoreLock struct {
@@ -69,9 +71,9 @@ func acquireRestoreLock(
 	latest.Annotations[b2backupv1.AnnotationRestoreLock] = lock.id
 	if !latest.Spec.Suspend {
 		latest.Spec.Suspend = true
-		latest.Annotations[b2backupv1.AnnotationRestoreResume] = "true"
+		latest.Annotations[b2backupv1.AnnotationRestoreResume] = restoreResumeTrue
 	}
-	lock.suspended = latest.Annotations[b2backupv1.AnnotationRestoreResume] == "true"
+	lock.suspended = latest.Annotations[b2backupv1.AnnotationRestoreResume] == restoreResumeTrue
 	if err := c.Patch(ctx, &latest, patch); err != nil {
 		if apierrors.IsConflict(err) {
 			return nil, fmt.Errorf("%w: scheduledbackup/%s changed while it was being locked; try again",
@@ -102,7 +104,7 @@ func (l *restoreLock) release(good bool) (bool, error) {
 		}
 		patch := client.MergeFromWithOptions(latest.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		delete(latest.Annotations, b2backupv1.AnnotationRestoreLock)
-		if good && latest.Annotations[b2backupv1.AnnotationRestoreResume] == "true" {
+		if good && latest.Annotations[b2backupv1.AnnotationRestoreResume] == restoreResumeTrue {
 			delete(latest.Annotations, b2backupv1.AnnotationRestoreResume)
 			latest.Spec.Suspend = false
 			resumed = true
@@ -187,7 +189,7 @@ func activeBackup(ctx context.Context, c client.Client, sb *b2backupv1.Scheduled
 		if owner := metav1.GetControllerOf(job); owner != nil && slices.Contains(owners, owner.UID) {
 			return job.Name, nil
 		}
-		if job.Labels["app.kubernetes.io/managed-by"] != runner.ManagedByValue || !ownedBy(job, sb.UID) {
+		if job.Labels[labelManagedBy] != runner.ManagedByValue || !ownedBy(job, sb.UID) {
 			continue
 		}
 		if purpose, ok := job.Labels[runner.LabelPurpose]; !ok || slices.Contains(writingPurposes, purpose) {

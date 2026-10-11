@@ -160,7 +160,7 @@ func TestRotatePasswordKeepsTheOldKeyWhenResticKeyAddFails(t *testing.T) {
 	if created == nil {
 		t.Fatal("no temporary key Secret was created")
 	}
-	if created.Labels["app.kubernetes.io/managed-by"] != runner.ManagedByValue {
+	if created.Labels[labelManagedBy] != runner.ManagedByValue {
 		t.Errorf("temporary key Secret labels = %v, want the managed-by label so cleanup finds it",
 			created.Labels)
 	}

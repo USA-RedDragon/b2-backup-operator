@@ -54,7 +54,7 @@ func TestPruneRefusesABackupInATagConflict(t *testing.T) {
 
 func TestUnlockRemoveAllRefusesWhileAnythingUsesTheRepository(t *testing.T) {
 	t.Parallel()
-	running := func(fx currentFixture, name string, owner metav1.OwnerReference, labels map[string]string) *batchv1.Job {
+	running := func(name string, owner metav1.OwnerReference, labels map[string]string) *batchv1.Job {
 		return &batchv1.Job{Namespace: testNS, Name: name, Labels: labels, OwnerReferences: []metav1.OwnerReference{owner}}
 	}
 	tests := []struct {
@@ -62,16 +62,16 @@ func TestUnlockRemoveAllRefusesWhileAnythingUsesTheRepository(t *testing.T) {
 		job  func(fx currentFixture) *batchv1.Job
 	}{
 		{"a scheduled backup", func(fx currentFixture) *batchv1.Job {
-			return running(fx, "web-files-backup-1", metav1.OwnerReference{APIVersion: "batch/v1", Kind: "CronJob",
+			return running("web-files-backup-1", metav1.OwnerReference{APIVersion: "batch/v1", Kind: "CronJob",
 				Name: fx.cj.Name, UID: fx.cj.UID, Controller: ptr.To(true)}, nil)
 		}},
 		{"a b2bk download", func(fx currentFixture) *batchv1.Job {
-			return running(fx, "web-files-b2bk-download-x", metav1.OwnerReference{APIVersion: b2backupv1.GroupVersion.String(),
+			return running("web-files-b2bk-download-x", metav1.OwnerReference{APIVersion: b2backupv1.GroupVersion.String(),
 				Kind: kindScheduledBackup, Name: fx.sb.Name, UID: fx.sb.UID},
-				map[string]string{"app.kubernetes.io/managed-by": runner.ManagedByValue, runner.LabelPurpose: purposeDownload})
+				map[string]string{labelManagedBy: runner.ManagedByValue, runner.LabelPurpose: purposeDownload})
 		}},
 		{"another backup's Job on the same repository", func(fx currentFixture) *batchv1.Job {
-			return running(fx, "other-manual-1", metav1.OwnerReference{APIVersion: b2backupv1.GroupVersion.String(),
+			return running("other-manual-1", metav1.OwnerReference{APIVersion: b2backupv1.GroupVersion.String(),
 				Kind: kindScheduledBackup, Name: "other", UID: "uid-sb-other", Controller: ptr.To(true)}, nil)
 		}},
 	}
@@ -83,7 +83,7 @@ func TestUnlockRemoveAllRefusesWhileAnythingUsesTheRepository(t *testing.T) {
 			other.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: "other"}}
 			c := newClient(t, fx.objects(other, tt.job(fx))...)
 			cmd := newUnlockCommand(factoryWithClient(t, c))
-			cmd.SetArgs([]string{subjectBackup, "--remove-all", "--yes"})
+			cmd.SetArgs([]string{subjectBackup, "--remove-all", flagYes})
 			cmd.SilenceUsage, cmd.SilenceErrors = true, true
 			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "is running") {
 				t.Errorf("err = %v, want --remove-all refused while a Job may hold a live lock", err)

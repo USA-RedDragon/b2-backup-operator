@@ -54,7 +54,7 @@ type restoreTarget struct {
 
 func overwritingTargets() []restoreTarget {
 	return []restoreTarget{
-		{"in place", filesAtData, "restic restore", func(ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup) error {
+		{targetInPlace, filesAtData, "restic restore", func(ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup) error {
 			return restoreInPlace(ctx, f, c, sb, &restoreOptions{snapshot: latest, yes: true})
 		}},
 		{"to the database", cnpgOnly, "restoredb", func(ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup) error {
@@ -111,7 +111,7 @@ func TestOverwritingRestoresRefuseWhileABackupOrRestoreRuns(t *testing.T) {
 	b2bkJob := func(sb *b2backupv1.ScheduledBackup, purpose string) *batchv1.Job {
 		job := &batchv1.Job{
 			Namespace: testNS, Name: "web-files-b2bk-" + purpose + "-zzzzz",
-			Labels: map[string]string{"app.kubernetes.io/managed-by": runner.ManagedByValue},
+			Labels: map[string]string{labelManagedBy: runner.ManagedByValue},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: b2backupv1.GroupVersion.String(), Kind: kindScheduledBackup, Name: sb.Name, UID: sb.UID,
 			}},
@@ -173,7 +173,7 @@ func TestADownloadDoesNotHoldOffAnOverwritingRestore(t *testing.T) {
 	fx := currentBackup(t, cnpgOnly)
 	download := &batchv1.Job{
 		Namespace: testNS, Name: "web-files-b2bk-download-zzzzz",
-		Labels: map[string]string{"app.kubernetes.io/managed-by": runner.ManagedByValue, runner.LabelPurpose: purposeDownload},
+		Labels: map[string]string{labelManagedBy: runner.ManagedByValue, runner.LabelPurpose: purposeDownload},
 		OwnerReferences: []metav1.OwnerReference{{
 			APIVersion: b2backupv1.GroupVersion.String(), Kind: kindScheduledBackup, Name: fx.sb.Name, UID: fx.sb.UID,
 		}},

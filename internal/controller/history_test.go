@@ -211,7 +211,7 @@ func TestHistoryIgnoresForeignJobs(t *testing.T) {
 	stranger := &batchv1.Job{
 		Namespace: testNS, Name: "someone-elses",
 		OwnerReferences: []metav1.OwnerReference{{
-			APIVersion: "batch/v1", Kind: "CronJob",
+			APIVersion: "batch/v1", Kind: kindCronJob,
 			Name: "other", UID: "uid-stranger", Controller: ptr.To(true),
 		}},
 		Status: batchv1.JobStatus{Succeeded: 1},
