@@ -713,3 +713,24 @@ func TestManualJobNameSuffixLongerThanTheBudget(t *testing.T) {
 		t.Errorf("manualJobName = %q, want %q", got, suffix)
 	}
 }
+
+func TestSchedulingConstraintsReachThePod(t *testing.T) {
+	t.Parallel()
+	toleration := corev1.Toleration{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "backup",
+		Effect: corev1.TaintEffectNoSchedule}
+	sb := testBackup(func(sb *b2backupv1.ScheduledBackup) {
+		sb.Spec.NodeSelector = map[string]string{"kubernetes.io/arch": "amd64"}
+		sb.Spec.Tolerations = []corev1.Toleration{toleration}
+		sb.Spec.PriorityClassName = "backups"
+	})
+	cj, err := BuildCronJob(sb, testRepo(), testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := cj.Spec.JobTemplate.Spec.Template.Spec
+	if pod.NodeSelector["kubernetes.io/arch"] != "amd64" || len(pod.Tolerations) != 1 ||
+		pod.Tolerations[0] != toleration || pod.PriorityClassName != "backups" {
+		t.Errorf("nodeSelector %v, tolerations %v, priorityClassName %q; want the spec's",
+			pod.NodeSelector, pod.Tolerations, pod.PriorityClassName)
+	}
+}

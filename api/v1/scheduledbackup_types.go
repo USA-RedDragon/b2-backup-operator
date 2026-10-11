@@ -361,6 +361,20 @@ type ScheduledBackupSpec struct {
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 
+	// NodeSelector limits the backup pod to nodes carrying these labels.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations let the backup pod run on nodes with matching taints.
+	// +listType=atomic
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// PriorityClassName is the backup pod's priority class.
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty"`
+
 	// PodSecurityContext for the backup pod.
 	// +optional
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
