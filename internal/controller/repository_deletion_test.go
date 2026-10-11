@@ -343,3 +343,48 @@ func TestTheAccountIsRecordedAndChecked(t *testing.T) {
 		t.Errorf("Ready = %+v, want %s", cond, reasonAccountMismatch)
 	}
 }
+
+func TestDataLeftForAnotherRepositoryKeepsItsPassword(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	bucket := f.AddBucket(sharedBucket)
+	r, c := newHarness(t, f, prefixRepo(func(r *b2backupv1.Repository) {
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+	}))
+	reconcileN(t, r, 2)
+	f.PutFile(bucket.BucketID, myappPath+"/config", 1)
+	if err := c.Create(context.Background(), prefixRepo(func(r *b2backupv1.Repository) {
+		r.Name, r.UID = "nested", "uid-nested"
+		r.Spec.Path = myappPath + "/nested"
+	})); err != nil {
+		t.Fatal(err)
+	}
+	nested := &b2backupv1.Repository{}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: "nested"}, nested); err != nil {
+		t.Fatal(err)
+	}
+	base := nested.DeepCopy()
+	nested.Status = b2backupv1.RepositoryStatus{
+		BucketID: bucket.BucketID, BucketName: sharedBucket, Path: myappPath + "/nested",
+	}
+	if err := c.Status().Patch(context.Background(), nested, client.MergeFrom(base)); err != nil {
+		t.Fatal(err)
+	}
+
+	deleteRepo(t, c)
+	reconcileUntilGone(t, r, c)
+	if !hasEvent(recordedEvents(t, r), "DataRetained") {
+		t.Fatal("precondition: the data should have been retained")
+	}
+	if n := len(f.FileNames(bucket.BucketID)); n != 1 {
+		t.Fatalf("%d files left, want 1", n)
+	}
+	secret := getSecret(t, c, credsSecretName)
+	if owner := metav1.GetControllerOf(secret); owner != nil {
+		t.Errorf("the Secret is still controlled by %s, so garbage collection takes the password of retained data",
+			owner.Name)
+	}
+	if !slices.Contains(secret.Finalizers, SecretFinalizer) {
+		t.Error("the only copy of the password for retained data lost its finalizer")
+	}
+}
