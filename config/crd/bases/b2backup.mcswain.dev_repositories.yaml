@@ -183,7 +183,8 @@ spec:
               secretName:
                 description: |-
                   SecretName overrides the name of the Secret the operator writes credentials to.
-                  Defaults to <name>-credentials.
+                  Defaults to <name>-credentials. It cannot be changed once the Repository
+                  exists: backups, restores and key rotation all read the Secret by name.
                 maxLength: 253
                 type: string
               suspend:
@@ -323,6 +324,12 @@ spec:
         - message: path cannot be added, changed or removed once the Repository exists
           rule: has(self.spec.path) == has(oldSelf.spec.path) && (!has(self.spec.path)
             || self.spec.path == oldSelf.spec.path)
+        - message: secretName cannot be changed once the Repository exists; it may
+            only be set to or cleared from the default <name>-credentials
+          rule: '(has(self.spec.secretName) && size(self.spec.secretName) > 0 ? self.spec.secretName
+            : self.metadata.name + ''-credentials'') == (has(oldSelf.spec.secretName)
+            && size(oldSelf.spec.secretName) > 0 ? oldSelf.spec.secretName : oldSelf.metadata.name
+            + ''-credentials'')'
         - message: secretName must not be the passwordSecretRef Secret; the operator
             never writes to the seed
           rule: '!has(self.spec.passwordSecretRef) || !has(self.spec.secretName) ||
