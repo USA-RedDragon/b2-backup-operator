@@ -138,7 +138,8 @@ type RepositorySpec struct {
 	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
 
 	// SecretName overrides the name of the Secret the operator writes credentials to.
-	// Defaults to <name>-credentials.
+	// Defaults to <name>-credentials. It cannot be changed once the Repository
+	// exists: backups, restores and key rotation all read the Secret by name.
 	// +kubebuilder:validation:MaxLength=253
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
@@ -223,6 +224,7 @@ type RepositoryStatus struct {
 // +kubebuilder:printcolumn:name="Usage",type="string",JSONPath=".status.currentUsage"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:validation:XValidation:rule="has(self.spec.path) == has(oldSelf.spec.path) && (!has(self.spec.path) || self.spec.path == oldSelf.spec.path)",message="path cannot be added, changed or removed once the Repository exists"
+// +kubebuilder:validation:XValidation:rule="(has(self.spec.secretName) && size(self.spec.secretName) > 0 ? self.spec.secretName : self.metadata.name + '-credentials') == (has(oldSelf.spec.secretName) && size(oldSelf.spec.secretName) > 0 ? oldSelf.spec.secretName : oldSelf.metadata.name + '-credentials')",message="secretName cannot be changed once the Repository exists; it may only be set to or cleared from the default <name>-credentials"
 // +kubebuilder:validation:XValidation:rule="!has(self.spec.passwordSecretRef) || !has(self.spec.secretName) || self.spec.secretName != self.spec.passwordSecretRef.name",message="secretName must not be the passwordSecretRef Secret; the operator never writes to the seed"
 // +kubebuilder:validation:XValidation:rule="!has(self.spec.credentialsSecretRef) || !has(self.spec.secretName) || self.spec.secretName != self.spec.credentialsSecretRef.name",message="secretName must not be the credentialsSecretRef Secret; the operator never writes to it"
 type Repository struct {

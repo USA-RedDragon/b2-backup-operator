@@ -476,7 +476,8 @@ func TestCRDRejectsUnparseableRetryLock(t *testing.T) {
 }
 
 const (
-	pathImmutable = "path cannot be added, changed or removed"
+	pathImmutable       = "path cannot be added, changed or removed"
+	secretNameImmutable = "secretName cannot be changed"
 
 	fieldMode   = "mode"
 	fieldBucket = "bucket"
@@ -584,6 +585,31 @@ func TestCRDRepositoryLocationIsImmutable(t *testing.T) {
 			create:  func(r *b2backupv1.Repository) { r.Spec.Path = "" },
 			update:  func(r *b2backupv1.Repository) { r.Spec.Path = "immutable/added" },
 			wantErr: pathImmutable,
+		},
+		{
+			name:    "changing secretName",
+			create:  func(r *b2backupv1.Repository) { r.Spec.SecretName = "first-credentials" },
+			update:  func(r *b2backupv1.Repository) { r.Spec.SecretName = "second-credentials" },
+			wantErr: secretNameImmutable,
+		},
+		{
+			name:    "setting secretName to another Secret",
+			update:  func(r *b2backupv1.Repository) { r.Spec.SecretName = credsSecretName },
+			wantErr: secretNameImmutable,
+		},
+		{
+			name:    "removing a secretName that is not the default",
+			create:  func(r *b2backupv1.Repository) { r.Spec.SecretName = "first-credentials" },
+			update:  func(r *b2backupv1.Repository) { r.Spec.SecretName = "" },
+			wantErr: secretNameImmutable,
+		},
+		{name: "setting secretName to the default", update: func(r *b2backupv1.Repository) {
+			r.Spec.SecretName = r.Name + "-credentials"
+		}},
+		{
+			name:   "removing a secretName that is the default",
+			create: func(r *b2backupv1.Repository) { r.Spec.SecretName = r.Name + "-credentials" },
+			update: func(r *b2backupv1.Repository) { r.Spec.SecretName = "" },
 		},
 		{name: "an unrelated field", update: func(r *b2backupv1.Repository) { r.Spec.Suspend = true }},
 		{name: "the lifecycle rule", update: func(r *b2backupv1.Repository) {

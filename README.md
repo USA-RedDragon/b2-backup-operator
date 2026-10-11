@@ -115,7 +115,7 @@ spec:
 
 #### The credentials Secret
 
-The operator writes a Secret named `<name>-credentials`, or `spec.secretName`, with everything restic needs to reach the repository over B2's S3-compatible API:
+The operator writes a Secret named `<name>-credentials`, or `spec.secretName`, with everything restic needs to reach the repository over B2's S3-compatible API. `spec.secretName` cannot be changed once the Repository exists, other than to or from the default: backups, restores and key rotation all find the repository through that Secret, and a name pointed at another Repository's Secret would send them to its repository.
 
 | Key | Value |
 | --- | --- |

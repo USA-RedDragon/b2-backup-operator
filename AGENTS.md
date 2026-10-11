@@ -87,6 +87,9 @@ one of these:
   (`protected-by`, `released-by` annotations), and never takes over a Secret
   carrying it for another Repository or another `RESTIC_REPOSITORY`: it stops
   at `SecretHoldsRetainedPassword` before recording anything in status.
+- **`spec.secretName` is immutable** (a CEL transition rule on the effective
+  name): a name edited to another Repository's Secret would back up into, and
+  forget in, that Repository's restic repository.
 - **The operator only writes to Secrets it created**, identified by the
   `app.kubernetes.io/managed-by` label.
 - **The B2 credentials are resolved lazily**, so a Retain deletion works without them.
