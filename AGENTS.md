@@ -60,7 +60,11 @@ one of these:
 - **Delete removes only a repository this Repository opened.**
   `deletionProven` requires `status.initialized`, which only a succeeded init
   Job of its own sets (created the repository, or read its config with this
-  Repository's password); otherwise `DeletionNotProven`.
+  Repository's password); otherwise `DeletionNotProven`. "Of its own" means
+  the Job whose UID the operator recorded in `status.initJobUID` when it
+  created it, carrying the managed-by label: anyone who can create Jobs can
+  forge an ownerReference, and a Job named `<name>-init` without that UID is
+  deleted and replaced.
 - **Status is not trusted to scope deletion.** `deletionScope` requires
   `status.bucketName == spec.bucket`, `status.path == EffectivePath()` and a
   non-empty Prefix path, and `deleteRemote` re-reads the bucket and checks its

@@ -602,3 +602,69 @@ func TestDeleteNeverRemovesARepositoryItNeverOpened(t *testing.T) {
 		})
 	}
 }
+
+func forgedInitJob(t *testing.T, c client.Client) {
+	t.Helper()
+	repo := getRepo(t, c)
+	job := &batchv1.Job{
+		Name: resticName + initJobSuffix, Namespace: testNS,
+		Labels: map[string]string{labelManagedBy: managedByValue},
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: b2backupv1.GroupVersion.String(), Kind: "Repository", Name: resticName,
+			UID: repo.UID, Controller: ptr.To(true),
+		}},
+	}
+	if err := c.Create(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	job.Status.Succeeded = 1
+	if err := c.Status().Update(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOnlyTheInitJobTheOperatorCreatedProvesAnything(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		forge func(*testing.T, *RepositoryReconciler, client.Client)
+	}{
+		{"a forged Job in place of the operator's", func(t *testing.T, r *RepositoryReconciler, c client.Client) {
+			reconcileN(t, r, 1)
+			if err := c.Delete(context.Background(), initJob(t, c)); err != nil {
+				t.Fatal(err)
+			}
+			forgedInitJob(t, c)
+		}},
+		{"a forged Job before the operator's", func(t *testing.T, _ *RepositoryReconciler, c client.Client) {
+			forgedInitJob(t, c)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeB2(t)
+			bucket := f.AddBucket(sharedBucket)
+			f.PutFile(bucket.BucketID, configPath(myappPath), 1)
+			f.PutFile(bucket.BucketID, myappPrefix+"data/x", 1)
+			r, c := newHarness(t, f, prefixRepo(func(r *b2backupv1.Repository) {
+				r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+				usePasswordSeed(r)
+			}), seedSecretFixture())
+			tt.forge(t, r, c)
+			for range 3 {
+				_ = reconcileErr(r)
+			}
+			if getRepo(t, c).Status.Initialized {
+				t.Fatal("a Job the operator did not create marked the repository initialized")
+			}
+			deleteRepo(t, c)
+			for range 3 {
+				_ = reconcileErr(r)
+			}
+			if n := len(f.FileNames(bucket.BucketID)); n != 2 {
+				t.Errorf("%d files left, want 2", n)
+			}
+		})
+	}
+}

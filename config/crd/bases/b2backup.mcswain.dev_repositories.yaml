@@ -285,6 +285,11 @@ spec:
               endpoint:
                 description: Endpoint is the S3-compatible endpoint restic talks to.
                 type: string
+              initJobUID:
+                description: |-
+                  InitJobUID is the UID of the init Job the operator created. Only that Job's
+                  success marks the repository initialized.
+                type: string
               initialized:
                 description: Initialized reports whether restic init has completed.
                 type: boolean

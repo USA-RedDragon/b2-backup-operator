@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -98,6 +99,7 @@ func newHarnessWithInterceptor(
 		WithScheme(scheme).
 		WithObjects(all...).
 		WithStatusSubresource(&b2backupv1.Repository{}, &batchv1.Job{}).
+		WithInterceptorFuncs(interceptor.Funcs{Create: assignUID}).
 		Build()
 	c := interceptor.NewClient(managerCacheView(t, raw, scheme), funcs)
 
@@ -169,4 +171,13 @@ func managerCacheView(t *testing.T, c client.WithWatch, scheme *runtime.Scheme) 
 			return apimeta.SetList(list, items)
 		},
 	})
+}
+
+// assignUID gives a created object a UID, as the API server does and the fake
+// client does not.
+func assignUID(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+	if obj.GetUID() == "" {
+		obj.SetUID(uuid.NewUUID())
+	}
+	return c.Create(ctx, obj, opts...)
 }
