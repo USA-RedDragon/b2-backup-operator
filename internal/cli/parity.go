@@ -849,6 +849,10 @@ func compareScripts(r *parityReport, o, g parityView, tags []string) {
 	if !slices.Equal(o.shell, g.shell) {
 		r.differ("COMMAND DIFFERS: original runs %q, generated %q", o.shell, g.shell)
 	}
+	if added := shellOptionsAdded(o.script, g.script); len(added) > 0 {
+		r.differ("SHELL OPTIONS ADDED: %s; the generated script runs under set -euo pipefail, so a failing command, "+
+			"unset variable or failing pipe stage stops what follows it, which the original ran on", strings.Join(added, ", "))
+	}
 	generatedScript, generatedDumps, scoped := normalizeRendered(g.script, tags)
 	originalScript, originalDumps := normalizeScript(o.script)
 	if generatedScript != originalScript {

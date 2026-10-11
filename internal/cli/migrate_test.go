@@ -1389,3 +1389,15 @@ func TestMigrateKeepsTwoForgetsVerbatim(t *testing.T) {
 		t.Errorf("retention %+v, script %q; want both forgets kept, not one dropped", sb.Spec.Retention, sb.Spec.Script)
 	}
 }
+
+func TestMigrateNotesTheShellOptionsTheOperatorAdds(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "                exec > >(ts '%H:%M:%S') 2>&1\n                set -eu\n", "", 1)
+	_, migrateOut, parityOut, err := migrateAndParity(t, body, migrateOptions{repository: sopsRepoURL})
+	if !strings.Contains(migrateOut, "# shell: ") {
+		t.Errorf("no note that set -e is added:\n%s", migrateOut)
+	}
+	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(parityOut, "SHELL OPTIONS ADDED: errexit") {
+		t.Errorf("parity = %v, want errexit reported:\n%s", err, parityOut)
+	}
+}
