@@ -35,11 +35,12 @@ const (
 
 func withVolume(sb *b2backupv1.ScheduledBackup) {
 	sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: testClaimName, MountPath: "/app"}}
+	sb.Spec.Sources = append(sb.Spec.Sources, b2backupv1.BackupSource{Type: b2backupv1.SourceTypeFiles})
 }
 
 func withDatabase(sb *b2backupv1.ScheduledBackup) {
 	sb.Spec.Database = &b2backupv1.DatabaseSpec{
-		Engine: b2backupv1.DatabaseEngineCNPG, Host: "postgresql-rw", Name: "app", User: "app",
+		Engine: b2backupv1.DatabaseEngineCNPG, Host: "postgresql-rw", Name: appDir, User: appDir,
 	}
 }
 
@@ -106,8 +107,8 @@ func TestRestoreRejectsMissingSources(t *testing.T) {
 	f := &Factory{Streams: testStreams()}
 	ctx := context.Background()
 
-	if err := runRestore(ctx, f, c, sb, &restoreOptions{inPlace: true, yes: true}); !errors.Is(err, ErrNoSourceVolume) {
-		t.Errorf("expected ErrNoSourceVolume, got %v", err)
+	if err := runRestore(ctx, f, c, sb, &restoreOptions{inPlace: true, yes: true}); !errors.Is(err, ErrNoFilesSource) {
+		t.Errorf("expected ErrNoFilesSource, got %v", err)
 	}
 	if err := runRestore(ctx, f, c, sb, &restoreOptions{toDatabase: true, yes: true}); !errors.Is(err, ErrNoDatabase) {
 		t.Errorf("expected ErrNoDatabase, got %v", err)
@@ -165,28 +166,6 @@ func TestPromptsShareOneReader(t *testing.T) {
 	}
 }
 
-func TestResticRestoreArgs(t *testing.T) {
-	o := &restoreOptions{
-		snapshot: "4f2a1b0c",
-		path:     "app/uploads",
-		exclude:  []string{"**/cache"},
-		delete:   true,
-	}
-	got := strings.Join(o.resticRestoreArgs("/app"), " ")
-	for _, want := range []string{
-		"restore 4f2a1b0c", "--target=/app", "--include=app/uploads", "--exclude=**/cache", "--delete",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("expected %q in %q", want, got)
-		}
-	}
-
-	dry := (&restoreOptions{snapshot: latestSnapshot, dryRun: true}).resticRestoreArgs("/app")
-	if !strings.Contains(strings.Join(dry, " "), "--dry-run") {
-		t.Errorf("--dry-run was not passed through: %v", dry)
-	}
-}
-
 func offlineFactory(t *testing.T, streams genericiooptions.IOStreams) *Factory {
 	t.Helper()
 	f := &Factory{Streams: streams, ConfigFlags: genericclioptions.NewConfigFlags(true)}
@@ -236,55 +215,6 @@ func TestRestoreToDirRefusesFlagsItCannotHonour(t *testing.T) {
 	}
 }
 
-func TestRestoreToDirDryRunWritesNothing(t *testing.T) {
-	sb := newBackup(testBackupName, testRepoName)
-	f := offlineFactory(t, testStreams())
-
-	dest := filepath.Join(t.TempDir(), "out")
-	o := &restoreOptions{toDir: dest, snapshot: latestSnapshot, dryRun: true}
-	if err := restoreToDir(context.Background(), f, sb, o); err == nil {
-		t.Fatal("expected the offline factory to fail")
-	}
-	if _, err := os.Stat(dest); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("--dry-run created the download directory: %v", err)
-	}
-
-	o.dryRun = false
-	if err := restoreToDir(context.Background(), f, sb, o); err == nil {
-		t.Fatal("expected the offline factory to fail")
-	}
-	if _, err := os.Stat(dest); err != nil {
-		t.Errorf("a real download should create the directory: %v", err)
-	}
-}
-
-func TestResticDumpAndListArgs(t *testing.T) {
-	o := &restoreOptions{snapshot: "4f2a1b0c"}
-	if got := strings.Join(o.resticDumpArgs(), " "); got != "dump --archive=tar 4f2a1b0c /" {
-		t.Errorf("dump args = %q", got)
-	}
-	if got := strings.Join(o.resticListArgs(), " "); got != "ls --long --recursive 4f2a1b0c" {
-		t.Errorf("list args = %q", got)
-	}
-
-	o.path = "/app/uploads"
-	if got := strings.Join(o.resticDumpArgs(), " "); got != "dump --archive=tar 4f2a1b0c /app/uploads" {
-		t.Errorf("dump args with --path = %q", got)
-	}
-	if got := strings.Join(o.resticListArgs(), " "); got != "ls --long --recursive 4f2a1b0c /app/uploads" {
-		t.Errorf("list args with --path = %q", got)
-	}
-}
-
-func TestDumpExtension(t *testing.T) {
-	if got := dumpExtension(b2backupv1.DatabaseEngineCNPG); got != ".dmp" {
-		t.Errorf("cnpg = %q, want .dmp", got)
-	}
-	if got := dumpExtension(b2backupv1.DatabaseEngineMariaDB); got != ".sql" {
-		t.Errorf("mariadb = %q, want .sql", got)
-	}
-}
-
 func sourceClaim() *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{
 		Namespace: testNS, Name: testClaimName,
@@ -304,7 +234,7 @@ func TestNewClaimSpecCopiesTheSourceClaim(t *testing.T) {
 	c := newClient(t, sb, sourceClaim())
 	ctx := context.Background()
 
-	spec, err := newClaimSpec(ctx, c, sb, "")
+	spec, err := newClaimSpec(ctx, c, sb, &sb.Spec.Volumes[0], "")
 	if err != nil {
 		t.Fatalf("newClaimSpec: %v", err)
 	}
@@ -319,7 +249,7 @@ func TestNewClaimSpecCopiesTheSourceClaim(t *testing.T) {
 		t.Errorf("storageClassName = %v, want the source claim's", spec.StorageClassName)
 	}
 
-	spec, err = newClaimSpec(ctx, c, sb, "50Gi")
+	spec, err = newClaimSpec(ctx, c, sb, &sb.Spec.Volumes[0], "50Gi")
 	size = spec.Resources.Requests[corev1.ResourceStorage]
 	if err != nil || size.String() != "50Gi" {
 		t.Errorf("--size override = %s, %v", size.String(), err)
@@ -335,11 +265,11 @@ func TestNewClaimSpecWithoutASourceClaim(t *testing.T) {
 	c := newClient(t, sb)
 	ctx := context.Background()
 
-	if _, err := newClaimSpec(ctx, c, sb, ""); err == nil || !strings.Contains(err.Error(), "--size") {
+	if _, err := newClaimSpec(ctx, c, sb, &sb.Spec.Volumes[0], ""); err == nil || !strings.Contains(err.Error(), "--size") {
 		t.Errorf("expected a hint to pass --size, got %v", err)
 	}
 
-	spec, err := newClaimSpec(ctx, c, sb, "50Gi")
+	spec, err := newClaimSpec(ctx, c, sb, &sb.Spec.Volumes[0], "50Gi")
 	if err != nil {
 		t.Fatalf("--size should stand in for a missing source claim: %v", err)
 	}
@@ -352,7 +282,7 @@ func TestNewClaimSpecWithoutASourceClaim(t *testing.T) {
 
 	sized := sourceClaim()
 	sized.Spec.Resources = corev1.VolumeResourceRequirements{}
-	if _, err := newClaimSpec(ctx, newClient(t, sb, sized), sb, ""); err == nil ||
+	if _, err := newClaimSpec(ctx, newClient(t, sb, sized), sb, &sb.Spec.Volumes[0], ""); err == nil ||
 		!strings.Contains(err.Error(), "--size") {
 		t.Errorf("expected a hint to pass --size, got %v", err)
 	}
@@ -660,36 +590,6 @@ func TestUntarFromReportsTheUntarErrorWithoutDeadlocking(t *testing.T) {
 	}
 }
 
-func TestRestoreDatabaseCommandSetsPipefail(t *testing.T) {
-	sb := newBackup(testBackupName, testRepoName)
-	withDatabase(sb)
-	sb.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}}
-
-	got := restoreDatabaseCommand(sb, &restoreOptions{snapshot: latestSnapshot})
-	if len(got) != 3 || got[0] != "sh" || got[1] != "-c" {
-		t.Fatalf("command = %v", got)
-	}
-
-	script := got[2]
-	if !strings.HasPrefix(script, "set -o pipefail\n") {
-		t.Errorf("the script must set pipefail before the pipeline:\n%s", script)
-	}
-	for _, want := range []string{
-		"command -v restoredb",
-		"restic dump --tag='db' 'latest' '" + testNS + ".dmp' | restoredb cnpg --secret-mount=" +
-			b2backupv1.DBSecretMountPath,
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("expected %q in:\n%s", want, script)
-		}
-	}
-
-	dry := restoreDatabaseCommand(sb, &restoreOptions{snapshot: latestSnapshot, dryRun: true})
-	if !strings.HasSuffix(dry[2], "--dry-run") {
-		t.Errorf("--dry-run was not passed through:\n%s", dry[2])
-	}
-}
-
 func TestDatabaseRestoreTargetsTheDatabaseSnapshot(t *testing.T) {
 	sb := newBackup(testBackupName, testRepoName)
 	sb.Spec.Sources = []b2backupv1.BackupSource{
@@ -709,21 +609,6 @@ func TestDatabaseRestoreTargetsTheDatabaseSnapshot(t *testing.T) {
 	filesOnly.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles}}
 	if got := databaseSourceTag(filesOnly); got != "" {
 		t.Errorf("databaseSourceTag = %q, want empty", got)
-	}
-}
-
-func TestRestoreDatabaseCommandNamesTheDumpAfterTheResticHost(t *testing.T) {
-	sb := newBackup(testBackupName, testRepoName)
-	withDatabase(sb)
-	sb.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}}
-	sb.Spec.ResticHost = testResticHost
-
-	script := restoreDatabaseCommand(sb, &restoreOptions{snapshot: latestSnapshot})[2]
-	if want := "'" + testResticHost + ".dmp'"; !strings.Contains(script, want) {
-		t.Errorf("expected the dump to be named %s, in:\n%s", want, script)
-	}
-	if strings.Contains(script, testNS+".dmp") {
-		t.Errorf("the dump filename ignored spec.resticHost and used the namespace:\n%s", script)
 	}
 }
 

@@ -20,12 +20,15 @@ var (
 	ErrNoRestoreDB    = errors.New("the backup image has no restoredb")
 	ErrNoDatabase     = errors.New("this backup has no database")
 	ErrNoSourceVolume = errors.New("this backup has no source volume")
+	ErrNoFilesSource  = errors.New("this backup has no files source to restore")
+	ErrWrongSnapshot  = errors.New("the snapshot is not one this source took")
 )
 
 const restoreMountPath = "/restore"
 
 type restoreOptions struct {
 	snapshot string
+	tag      string
 
 	inPlace    bool
 	toNewPVC   string
@@ -86,6 +89,18 @@ func newRestoreCommand(f *Factory) *cobra.Command {
   --in-place          write back over the backup's source volume
   --to-database       stream the dump back into the database
 
+Every target restores the latest snapshot this backup took of the source,
+matched by its tag, its host and its exact paths, unless --snapshot names one.
+A named snapshot must carry the source's tag and paths under the source's own,
+so a database dump is never restored over files or files into a database.
+Files go back where they were backed up from: restic records absolute paths,
+and each one is restored as <snapshot>:<path> into that same path.
+
+--tag picks the source when a backup has several files sources, and the dump
+when a script backup has no database source.
+
+--path is a file or directory inside the snapshot, absolute or relative to the
+source path. --include and --exclude patterns are relative to the source path.
 --to downloads with restic dump, which selects with --path alone, so
 --include, --exclude and --delete are refused rather than ignored there.
 
@@ -111,7 +126,8 @@ targets and exits, so a script never restores somewhere it did not name.
 		},
 	}
 
-	cmd.Flags().StringVar(&o.snapshot, "snapshot", "latest", "Snapshot to restore")
+	cmd.Flags().StringVar(&o.snapshot, "snapshot", latest, "Snapshot to restore")
+	cmd.Flags().StringVar(&o.tag, "tag", "", "Restore the source with this tag")
 	cmd.Flags().BoolVar(&o.inPlace, "in-place", false, "Restore over the backup's source volume")
 	cmd.Flags().StringVar(&o.toNewPVC, "to-new-pvc", "", "Restore into a new claim of this name")
 	cmd.Flags().BoolVar(&o.toDatabase, "to-database", false, "Restore the dump into the database")
@@ -157,10 +173,10 @@ func runRestore(
 
 func availableTargets(sb *b2backupv1.ScheduledBackup) []string {
 	targets := []string{"--to DIR (download to this machine)"}
-	if len(sb.Spec.Volumes) > 0 {
+	if claims := sourceClaims(sb); len(claims) > 0 {
 		targets = append(targets,
 			"--to-new-pvc NAME (a fresh claim, for inspection)",
-			fmt.Sprintf("--in-place (overwrite pvc/%s)", sb.Spec.Volumes[0].ExistingClaim))
+			fmt.Sprintf("--in-place (overwrite %s)", strings.Join(claims, ", ")))
 	}
 	if sb.Spec.Database != nil {
 		targets = append(targets, "--to-database (overwrite the live database)")
@@ -242,43 +258,4 @@ func confirm(f *Factory, skip bool, what, name string) error {
 		return fmt.Errorf("%w: %s was not changed", ErrNotConfirmed, what)
 	}
 	return nil
-}
-
-func (o *restoreOptions) dumpPath() string {
-	if o.path == "" {
-		return "/"
-	}
-	return o.path
-}
-
-func (o *restoreOptions) resticDumpArgs() []string {
-	return []string{"dump", "--archive=tar", o.snapshot, o.dumpPath()}
-}
-
-func (o *restoreOptions) resticListArgs() []string {
-	argv := []string{"ls", "--long", "--recursive", o.snapshot}
-	if o.path != "" {
-		argv = append(argv, o.path)
-	}
-	return argv
-}
-
-func (o *restoreOptions) resticRestoreArgs(target string) []string {
-	argv := []string{"restore", o.snapshot, "--target=" + target}
-	if o.path != "" {
-		argv = append(argv, "--include="+o.path)
-	}
-	for _, p := range o.include {
-		argv = append(argv, "--include="+p)
-	}
-	for _, p := range o.exclude {
-		argv = append(argv, "--exclude="+p)
-	}
-	if o.delete {
-		argv = append(argv, "--delete")
-	}
-	if o.dryRun {
-		argv = append(argv, "--dry-run", "--verbose")
-	}
-	return argv
 }
