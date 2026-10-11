@@ -37,8 +37,9 @@ stored routines or events is refused before the live database is touched.
 The user needs ALL on <database>` + StagingSuffix + ` and <database>` + OldSuffix + `,
 and ALTER, DROP, CREATE and INSERT on the database itself.
 
---dry-run restores into the staging database, checks it, and drops it again
-without swapping.`,
+--dry-run restores into the staging database, checks it, has the server parse
+the RENAME TABLE as a prepared statement without running it, and drops the
+staging database again without swapping.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := fs.Resolve(); err != nil {
 				return err

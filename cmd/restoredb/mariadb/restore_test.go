@@ -223,6 +223,11 @@ func TestRestoreDryRunNeverSwaps(t *testing.T) {
 	if !strings.Contains(out, "the swap would run: RENAME TABLE") {
 		t.Errorf("output:\n%s", out)
 	}
+	want := PrepareStatement("RENAME TABLE `app`.`extra` TO `app__b2bk_old`.`extra`, `app`.`t` TO `app__b2bk_old`.`t`, " +
+		"`app__b2bk_restore`.`t` TO `app`.`t`")
+	if !f.ran(want) {
+		t.Errorf("the server was not asked to prepare the swap: %q", f.execs)
+	}
 }
 
 func TestFilterRefusesADatabaseLineLongerThanItsBuffer(t *testing.T) {

@@ -26,6 +26,8 @@ const (
 	appDB        = "app"
 	stagingDB    = appDB + mariadb.StagingSuffix
 	oldDB        = appDB + mariadb.OldSuffix
+	argDropOld   = "--drop-old"
+	argDryRun    = "--dry-run"
 )
 
 var server string
@@ -264,7 +266,7 @@ func TestMariaDBRestoreSwapsAllTablesAtOnce(t *testing.T) {
 	})
 
 	t.Run("--drop-old drops the replaced tables", func(t *testing.T) {
-		if _, err := restore(t, backup, "--drop-old"); err != nil {
+		if _, err := restore(t, backup, argDropOld); err != nil {
 			t.Fatalf("restore: %v", err)
 		}
 		if got := fingerprint(t, appDB); got != want {
@@ -351,7 +353,7 @@ func TestMariaDBKeepsADatabasesDumpOutOfTheNamedDatabase(t *testing.T) {
 	t.Run("the dump restores into the database given", func(t *testing.T) {
 		want := fingerprint(t, appDB)
 		sql(t, "CREATE DATABASE app2; CREATE TABLE app2.junk (id INT)")
-		cmdArgs := []string{"-d", "app2", "--drop-old"}
+		cmdArgs := []string{"-d", "app2", argDropOld}
 		out, err := restore(t, named, cmdArgs...)
 		if err != nil {
 			t.Fatalf("restore: %v", err)
@@ -381,7 +383,7 @@ func TestMariaDBDryRunDropsStagingWithoutSwapping(t *testing.T) {
 	backup, _ := seed(t)
 	sql(t, "CREATE DATABASE app__b2bk_restore; CREATE TABLE app__b2bk_restore.leftover (id INT)")
 	before := fingerprint(t, appDB)
-	out, err := restore(t, backup, "--dry-run")
+	out, err := restore(t, backup, argDryRun)
 	if err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
@@ -393,7 +395,7 @@ func TestMariaDBDryRunDropsStagingWithoutSwapping(t *testing.T) {
 	}
 	assertNoStaging(t)
 
-	refused(t, backup[:len(backup)/2], mariadb.ErrIncomplete, "--dry-run")
+	refused(t, backup[:len(backup)/2], mariadb.ErrIncomplete, argDryRun)
 }
 
 func TestMariaDBRestoreUserPrivileges(t *testing.T) {
@@ -412,7 +414,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, LOCK TABLES, R
 
 	sql(t, "GRANT ALL ON `app\\_\\_b2bk\\_restore`.* TO 'limited'@'%';\n"+
 		"GRANT ALL ON `app\\_\\_b2bk\\_old`.* TO 'limited'@'%';")
-	if _, err := restore(t, backup, slices.Concat(as, []string{"--drop-old"})...); err != nil {
+	if _, err := restore(t, backup, slices.Concat(as, []string{argDropOld})...); err != nil {
 		t.Fatalf("restore with the documented grants: %v", err)
 	}
 	if fingerprint(t, appDB) != want {
@@ -454,6 +456,32 @@ func TestMariaDBSwapGivesUpOnAHeldLock(t *testing.T) {
 	out := refused(t, backup, nil)
 	if !strings.Contains(out, "Lock wait timeout exceeded") {
 		t.Errorf("the swap did not time out on the lock:\n%s", out)
+	}
+	assertNoStaging(t)
+}
+
+// One RENAME TABLE names every table four times. With hundreds of tables it is
+// longer than the 128 KiB Linux allows a single argument, so it must not be
+// passed to the client on its command line.
+func TestMariaDBSwapsManyTables(t *testing.T) {
+	sql(t, seedSQL)
+	var create strings.Builder
+	for i := range 700 {
+		name := fmt.Sprintf("table_with_a_rather_long_name_number_%04d", i)
+		fmt.Fprintf(&create, "CREATE TABLE app.%s (id INT PRIMARY KEY); INSERT INTO app.%s VALUES (%d);\n", name, name, i)
+	}
+	sql(t, create.String())
+	want := fingerprint(t, appDB)
+	backup := dump(t)
+	sql(t, mutateSQL)
+
+	for _, args := range [][]string{{argDryRun}, {argDropOld}} {
+		if _, err := restore(t, backup, args...); err != nil {
+			t.Fatalf("restore %v: %v", args, err)
+		}
+	}
+	if got := fingerprint(t, appDB); got != want {
+		t.Error("app does not match the backup")
 	}
 	assertNoStaging(t)
 }
