@@ -1453,3 +1453,16 @@ func TestMigrateNotesAnErrexitThatEndedWithItsGroup(t *testing.T) {
 		t.Errorf("no note that the rest of the script now runs under set -e:\n%s", out)
 	}
 }
+
+func TestMigrateNotesWhatTheOperatorAddsToBackupAndForget(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "restic backup --tag=mirror /mirror", "restic backup /mirror", 1)
+	body = strings.Replace(body, "restic forget --prune --keep-daily=90", "restic forget --keep-daily=90", 1)
+	out, err := migrate(t, body)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !strings.Contains(out, "# prune: ") || !strings.Contains(out, "# tags: ") {
+		t.Errorf("want notes that forget now prunes and that the untagged backup is now tagged files:\n%s", out)
+	}
+}
