@@ -470,6 +470,8 @@ func TestALostSecretGetsANewKeyAndTheOldOneIsDeleted(t *testing.T) {
 	f := newFakeB2(t)
 	f.AddBucket(sharedBucket)
 	r, c := newHarness(t, f, prefixRepo(usePasswordSeed), seedSecretFixture())
+	now := time.Now()
+	r.Now = func() time.Time { return now }
 	reconcileN(t, r, 1)
 	oldKey := getRepo(t, c).Status.ApplicationKeyID
 	succeedInitJob(t, c)
@@ -484,6 +486,7 @@ func TestALostSecretGetsANewKeyAndTheOldOneIsDeleted(t *testing.T) {
 	if len(ownKeys(f)) != 2 {
 		t.Error("the old key was deleted in the same pass, cutting off a backup still running with it")
 	}
+	now = now.Add(staleKeyGrace)
 	reconcileN(t, r, 1)
 	keys := ownKeys(f)
 	if len(keys) != 1 || keys[0].ApplicationKeyID != newKey {
@@ -523,8 +526,11 @@ func TestStaleKeysOfThisRepositoryAreDeletedAndOthersAreNot(t *testing.T) {
 	handmade := f.AddKey("my-laptop", "", "")
 
 	r, c := newHarness(t, f, repo)
+	now := time.Now()
+	r.Now = func() time.Time { return now }
 	reconcileN(t, r, 1)
 	succeedInitJob(t, c)
+	now = now.Add(staleKeyGrace)
 	reconcileN(t, r, 1)
 
 	ids := make([]string, 0, len(f.Keys()))

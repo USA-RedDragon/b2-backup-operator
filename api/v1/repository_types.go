@@ -204,8 +204,9 @@ type RepositoryStatus struct {
 	UsageTime *metav1.Time `json:"usageTime,omitempty"`
 
 	// KeyRotationTime is when the application key in the credentials Secret was
-	// last replaced. Superseded keys are deleted once no Job that started before
-	// it is still running, or 24 hours after it at the latest.
+	// last replaced. Superseded keys are deleted no sooner than 10 minutes after
+	// it, once no Job that started before it is still running, or 24 hours
+	// after it at the latest.
 	// +optional
 	KeyRotationTime *metav1.Time `json:"keyRotationTime,omitempty"`
 
