@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -43,7 +45,7 @@ const (
 var (
 	preambleLines  = []string{"exec > >(ts '%H:%M:%S') 2>&1", "set -eu"}
 	postambleLine  = "restic cache --cleanup"
-	handledEnvVars = []string{"TZ", "RESTIC_HOST", cnpgSecretPathEnv}
+	handledEnvVars = []string{"TZ", envResticHost, cnpgSecretPathEnv}
 )
 
 type migrateOptions struct {
@@ -226,7 +228,7 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 			original, sb.Spec.Schedule))
 	}
 
-	claim, dbSecret, err := mountedVolumes(hr, sb)
+	mounts, dbSecret, err := mountedVolumes(hr, container, sb)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +236,7 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 		return nil, err
 	}
 
-	parsed, err := parseBackupScript(script, claim)
+	parsed, err := parseBackupScript(script, mounts)
 	var unstructured *notStructuredError
 	switch {
 	case errors.As(err, &unstructured):
@@ -281,7 +283,7 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 		sb.Spec.Database = db
 	}
 
-	if sb.Spec.Affinity == nil && sb.Spec.Volume != nil {
+	if sb.Spec.Affinity == nil && len(sb.Spec.Volumes) > 0 {
 		m.notes = append(m.notes, fmt.Sprintf(
 			"affinity: the HelmRelease sets none. The operator requires the backup pod on the\n"+
 				"node of a pod labelled app.kubernetes.io/name=%s, so the claim can attach;\n"+
@@ -307,11 +309,9 @@ func migratedRepository(namespace string, loc s3Location) *b2backupv1.Repository
 	}
 }
 
-func mountedVolumes(hr *helmRelease, sb *b2backupv1.ScheduledBackup) (*hrVolume, *hrVolume, error) {
-	volumes := hr.volumes()
-
-	var claims, secretVolumes, others []hrVolume
-	for _, v := range volumes {
+func mountedVolumes(hr *helmRelease, container hrContainer, sb *b2backupv1.ScheduledBackup) ([]hrVolume, *hrVolume, error) {
+	var claims, secretVolumes, scratch, others []hrVolume
+	for _, v := range hr.volumes() {
 		switch {
 		case v.key == "cache" && v.kind != volumeSecret:
 			p := hr.Spec.Values.Persistence[v.key]
@@ -320,6 +320,8 @@ func mountedVolumes(hr *helmRelease, sb *b2backupv1.ScheduledBackup) (*hrVolume,
 			claims = append(claims, v)
 		case v.kind == volumeSecret:
 			secretVolumes = append(secretVolumes, v)
+		case v.kind == volumeEmptyDir:
+			scratch = append(scratch, v)
 		default:
 			others = append(others, v)
 		}
@@ -335,38 +337,74 @@ func mountedVolumes(hr *helmRelease, sb *b2backupv1.ScheduledBackup) (*hrVolume,
 			}
 			parts = append(parts, fmt.Sprintf("%s (%s at %s)", v.key, kind, v.path))
 		}
-		return nil, nil, fmt.Errorf("%w: %s; a ScheduledBackup mounts one existing claim, "+
+		return nil, nil, fmt.Errorf("%w: %s; a ScheduledBackup mounts existing claims, one emptyDir, "+
 			"one database Secret and its cache", ErrUnsupportedMount, strings.Join(parts, ", "))
-	case len(claims) > 1:
-		return nil, nil, fmt.Errorf("%w (%s); a ScheduledBackup mounts one volume, so migrate cannot "+
-			"choose between them", ErrMultipleClaims, volumeKeys(claims))
+	case len(scratch) > 1:
+		return nil, nil, fmt.Errorf("%w: %s are all emptyDirs; a ScheduledBackup mounts one scratch space",
+			ErrUnsupportedMount, volumeKeys(scratch))
 	case len(secretVolumes) > 1:
 		return nil, nil, fmt.Errorf("%w (%s); a ScheduledBackup mounts one database secret, so migrate "+
 			"cannot choose between them", ErrMultipleDBSecrets, volumeKeys(secretVolumes))
 	}
 
-	var claim, secret *hrVolume
-	if len(claims) == 1 {
-		claim = &claims[0]
+	workingDir := path.Clean(cmpOr(container.WorkingDir, "/"))
+	slices.SortStableFunc(claims, func(a, b hrVolume) int {
+		return boolOrder(path.Clean(a.path) != workingDir, path.Clean(b.path) != workingDir)
+	})
+	for _, claim := range claims {
 		if claim.subPath != "" {
 			return nil, nil, fmt.Errorf("%w: %s mounts subPath %s", ErrUnsupportedMount, claim.key, claim.subPath)
 		}
-		volume := &b2backupv1.VolumeSpec{ExistingClaim: claim.name, ReadOnly: claim.readOnly}
-		if claim.path != "/"+claim.name {
-			volume.MountPath = claim.path
+		volume := b2backupv1.VolumeSpec{ExistingClaim: claim.name, ReadOnly: claim.readOnly}
+		if path.Clean(claim.path) != "/"+claim.name {
+			volume.MountPath = path.Clean(claim.path)
 		}
-		sb.Spec.Volume = volume
+		sb.Spec.Volumes = append(sb.Spec.Volumes, volume)
 	}
+	if len(scratch) == 1 {
+		sc := &b2backupv1.ScratchSpec{MountPath: path.Clean(scratch[0].path)}
+		if raw := hr.Spec.Values.Persistence[scratch[0].key].SizeLimit; raw != "" {
+			q, err := resource.ParseQuantity(raw)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s sizeLimit %q: %w", scratch[0].key, raw, err)
+			}
+			sc.SizeLimit = &q
+		}
+		sb.Spec.Scratch = sc
+	}
+	if workingDir != sb.EffectiveWorkingDir() {
+		sb.Spec.WorkingDir = workingDir
+	}
+
+	mounts := append(slices.Clone(claims), scratch...)
+	var secret *hrVolume
 	if len(secretVolumes) == 1 {
 		secret = &secretVolumes[0]
 	}
-	return claim, secret, nil
+	return mounts, secret, nil
+}
+
+func cmpOr(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+func boolOrder(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case !a:
+		return -1
+	}
+	return 1
 }
 
 func migrateEnv(container hrContainer, sb *b2backupv1.ScheduledBackup) error {
 	for _, name := range sortedKeys(container.Env) {
 		value := container.Env[name]
-		if name == "RESTIC_HOST" {
+		if name == envResticHost {
 			if host, ok := value.(string); ok {
 				sb.Spec.ResticHost = host
 				continue
@@ -423,7 +461,7 @@ type parsedScript struct {
 	dumpChanged bool
 }
 
-func parseBackupScript(script string, claim *hrVolume) (parsedScript, error) {
+func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
 	var parsed parsedScript
 
 	for _, line := range joinContinuations(scriptBody(script)) {
@@ -438,8 +476,13 @@ func parseBackupScript(script string, claim *hrVolume) (parsedScript, error) {
 			if err != nil {
 				return parsed, err
 			}
-			if source.Type == b2backupv1.SourceTypeFiles && !underClaim(source.Path, claim) {
-				return parsed, notStructured("%q backs up a path outside the mounted claim", line)
+			if source.Type == b2backupv1.SourceTypeFiles {
+				for _, p := range source.Paths {
+					if !underMount(p, mounts) {
+						return parsed, notStructured("%q backs up %s, which is not an absolute path on a mounted "+
+							"claim or emptyDir", line, p)
+					}
+				}
 			}
 			if engine != "" {
 				parsed.engine = engine
@@ -460,14 +503,18 @@ func parseBackupScript(script string, claim *hrVolume) (parsedScript, error) {
 	return parsed, nil
 }
 
-func underClaim(path string, claim *hrVolume) bool {
-	if claim == nil {
+func underMount(p string, mounts []hrVolume) bool {
+	if !path.IsAbs(p) {
 		return false
 	}
-	if !strings.HasPrefix(path, "/") {
-		return true
+	p = path.Clean(p)
+	for _, m := range mounts {
+		dir := path.Clean(m.path)
+		if p == dir || strings.HasPrefix(p, dir+"/") {
+			return true
+		}
 	}
-	return path == claim.path || strings.HasPrefix(path, strings.TrimSuffix(claim.path, "/")+"/")
+	return false
 }
 
 func scriptBody(script string) string {
@@ -509,11 +556,11 @@ func parseBackupLine(args []string) (b2backupv1.BackupSource, b2backupv1.Databas
 	}
 
 	source.Type = b2backupv1.SourceTypeFiles
-	path, excludes, err := parseFileArgs(args[2:])
+	paths, excludes, err := parseFileArgs(args[2:])
 	if err != nil {
 		return source, "", false, err
 	}
-	source.Path = path
+	source.Paths = paths
 	source.Exclude = excludes
 	return source, "", false, nil
 }
@@ -533,8 +580,8 @@ func unknownFlags(args []string) []string {
 	return out
 }
 
-func parseFileArgs(args []string) (string, []string, error) {
-	var path string
+func parseFileArgs(args []string) ([]string, []string, error) {
+	var paths []string
 	var excludes []string
 
 	for i := 0; i < len(args); i++ {
@@ -544,7 +591,7 @@ func parseFileArgs(args []string) (string, []string, error) {
 		}
 		if args[i] == "--exclude" {
 			if i+1 >= len(args) {
-				return "", nil, fmt.Errorf("%w: --exclude has no pattern", ErrExcludeCount)
+				return nil, nil, fmt.Errorf("%w: --exclude has no pattern", ErrExcludeCount)
 			}
 			i++
 			excludes = append(excludes, args[i])
@@ -554,15 +601,15 @@ func parseFileArgs(args []string) (string, []string, error) {
 			if strings.HasPrefix(args[i], "--tag=") {
 				continue
 			}
-			return "", nil, notStructured("restic backup is passed %s", args[i])
+			return nil, nil, notStructured("restic backup is passed %s", args[i])
 		}
-		if path != "" {
-			return "", nil, notStructured("restic backup is given %s and %s", path, args[i])
-		}
-		path = args[i]
+		paths = append(paths, args[i])
+	}
+	if len(paths) == 0 {
+		return nil, nil, notStructured("restic backup is given no path")
 	}
 
-	return path, excludes, nil
+	return paths, excludes, nil
 }
 
 func parseDumpCommand(args []string) (b2backupv1.DatabaseEngine, string, bool, error) {

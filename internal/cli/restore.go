@@ -157,10 +157,10 @@ func runRestore(
 
 func availableTargets(sb *b2backupv1.ScheduledBackup) []string {
 	targets := []string{"--to DIR (download to this machine)"}
-	if sb.Spec.Volume != nil {
+	if len(sb.Spec.Volumes) > 0 {
 		targets = append(targets,
 			"--to-new-pvc NAME (a fresh claim, for inspection)",
-			fmt.Sprintf("--in-place (overwrite pvc/%s)", sb.Spec.Volume.ExistingClaim))
+			fmt.Sprintf("--in-place (overwrite pvc/%s)", sb.Spec.Volumes[0].ExistingClaim))
 	}
 	if sb.Spec.Database != nil {
 		targets = append(targets, "--to-database (overwrite the live database)")

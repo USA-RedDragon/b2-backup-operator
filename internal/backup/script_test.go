@@ -40,7 +40,7 @@ func TestRender(t *testing.T) {
 					{Type: b2backupv1.SourceTypeCNPG},
 					{
 						Type:    b2backupv1.SourceTypeFiles,
-						Path:    "app",
+						Paths:   []string{"app"},
 						Exclude: []string{"**/temp*", "app/export-logs"},
 					},
 				},
@@ -49,7 +49,7 @@ func TestRender(t *testing.T) {
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
-restic backup --retry-lock=5m0s --tag=files app \
+restic backup --retry-lock=5m0s --tag=files /data/app \
   --exclude='**/temp*' \
   --exclude='app/export-logs'
 restic forget --prune --retry-lock=5m0s --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
@@ -87,7 +87,7 @@ restic cache --cleanup
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb --secret-mount=/var/run/secrets/b2backup/database -- --skip-ssl
-restic backup --retry-lock=5m0s --tag=files . \
+restic backup --retry-lock=5m0s --tag=files /data \
   --exclude='dumps'
 restic forget --prune --retry-lock=5m0s --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
@@ -118,7 +118,7 @@ restic cache --cleanup
 			},
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
-restic backup --retry-lock=5m0s --tag=files .
+restic backup --retry-lock=5m0s --tag=files /data
 restic forget --prune --retry-lock=5m0s --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
@@ -133,6 +133,26 @@ restic cache --cleanup
 set -eu
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 restic forget --prune --retry-lock=5m0s --keep-hourly=28 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
+restic cache --cleanup
+`,
+		},
+		{
+			name: "several paths on several volumes in one snapshot",
+			spec: b2backupv1.ScheduledBackupSpec{
+				Volumes: []b2backupv1.VolumeSpec{
+					{ExistingClaim: "config", MountPath: dataMount}, {ExistingClaim: "blobs"},
+				},
+				Sources: []b2backupv1.BackupSource{
+					{Type: b2backupv1.SourceTypeFiles, Paths: []string{dataMount, "/blobs"}},
+					{Type: b2backupv1.SourceTypeFiles, Tag: "server", Paths: []string{"sub/../server"}},
+				},
+				Retention: dailyRetention(),
+			},
+			want: `exec > >(ts '%H:%M:%S') 2>&1
+set -eu
+restic backup --retry-lock=5m0s --tag=files /data /blobs
+restic backup --retry-lock=5m0s --tag=server /data/server
+restic forget --prune --retry-lock=5m0s --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
 		},
@@ -165,7 +185,10 @@ restic cache --cleanup
 			if tt.spec.RetryLock == nil {
 				tt.spec.RetryLock = &metav1.Duration{Duration: 5 * time.Minute}
 			}
-			got, err := Render(&tt.spec)
+			if tt.spec.Volumes == nil {
+				tt.spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "data"}}
+			}
+			got, err := Render(&b2backupv1.ScheduledBackup{Spec: tt.spec})
 			if err != nil {
 				t.Fatalf("Render() error = %v", err)
 			}
@@ -177,20 +200,20 @@ restic cache --cleanup
 }
 
 func TestRenderUnknownSourceType(t *testing.T) {
-	_, err := Render(&b2backupv1.ScheduledBackupSpec{
+	_, err := Render(withSpec(b2backupv1.ScheduledBackupSpec{
 		Sources: []b2backupv1.BackupSource{{Type: "nope"}},
-	})
+	}))
 	if err == nil {
 		t.Fatal("Render() expected an error for an unknown source type")
 	}
 }
 
 func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
-	got, err := Render(&b2backupv1.ScheduledBackupSpec{
+	got, err := Render(withSpec(b2backupv1.ScheduledBackupSpec{
 		Sources: []b2backupv1.BackupSource{
 			{Type: b2backupv1.SourceTypeFiles, Exclude: []string{`it's; rm -rf /`}},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
@@ -209,7 +232,7 @@ func TestRetryLockIsAppliedToLockingCommands(t *testing.T) {
 		Retention: hourlyRetention(),
 		RetryLock: &metav1.Duration{Duration: 90 * time.Second},
 	}
-	got, err := Render(&spec)
+	got, err := Render(&b2backupv1.ScheduledBackup{Spec: spec})
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
@@ -231,7 +254,7 @@ func TestRetryLockCanBeDisabled(t *testing.T) {
 			Retention: hourlyRetention(),
 			RetryLock: d,
 		}
-		got, err := Render(&spec)
+		got, err := Render(&b2backupv1.ScheduledBackup{Spec: spec})
 		if err != nil {
 			t.Fatalf("Render() error = %v", err)
 		}
@@ -242,29 +265,34 @@ func TestRetryLockCanBeDisabled(t *testing.T) {
 }
 
 func TestOrdinaryPathsRenderUnquoted(t *testing.T) {
-	got, err := Render(&b2backupv1.ScheduledBackupSpec{
+	got, err := Render(withSpec(b2backupv1.ScheduledBackupSpec{
 		Sources: []b2backupv1.BackupSource{
-			{Type: b2backupv1.SourceTypeFiles, Path: "app/storage"},
+			{Type: b2backupv1.SourceTypeFiles, Paths: []string{"app/storage"}},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
-	if !strings.Contains(got, "--tag=files app/storage\n") {
+	if !strings.Contains(got, "--tag=files /data/app/storage\n") {
 		t.Errorf("Render() quoted an ordinary path:\n%s", got)
 	}
 }
 
 func TestPathWithSpaceIsQuoted(t *testing.T) {
-	got, err := Render(&b2backupv1.ScheduledBackupSpec{
+	got, err := Render(withSpec(b2backupv1.ScheduledBackupSpec{
 		Sources: []b2backupv1.BackupSource{
-			{Type: b2backupv1.SourceTypeFiles, Path: "app/user uploads"},
+			{Type: b2backupv1.SourceTypeFiles, Paths: []string{"app/user uploads"}},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
-	if !strings.Contains(got, `--tag=files 'app/user uploads'`) {
+	if !strings.Contains(got, `--tag=files '/data/app/user uploads'`) {
 		t.Errorf("Render() did not quote a path with a space:\n%s", got)
 	}
+}
+
+func withSpec(spec b2backupv1.ScheduledBackupSpec) *b2backupv1.ScheduledBackup {
+	spec.Volumes = append(spec.Volumes, b2backupv1.VolumeSpec{ExistingClaim: "data"})
+	return &b2backupv1.ScheduledBackup{Spec: spec}
 }

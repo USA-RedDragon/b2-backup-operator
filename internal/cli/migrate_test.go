@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -122,7 +123,7 @@ func TestShorthandScheduleKeepsUnevenHourSteps(t *testing.T) {
 }
 
 func TestMigrateEmitsAScheduleValidateAccepts(t *testing.T) {
-	out, err := migrate(t, helmReleaseWith("0 */5 * * *", oneClaim, "restic backup /data"))
+	out, err := migrate(t, helmReleaseWith("0 */5 * * *", oneClaim, backupData))
 	if err != nil {
 		t.Fatalf("migrate: %v\n%s", err, out)
 	}
@@ -149,20 +150,29 @@ func TestMigrateEmitsAScheduleValidateAccepts(t *testing.T) {
 	}
 }
 
-func TestMigrateRefusesTwoPersistentClaims(t *testing.T) {
-	persistence := `      data:
-        existingClaim: app-data
-      uploads:
+func TestMigrateMountsEveryClaim(t *testing.T) {
+	t.Parallel()
+	persistence := `      uploads:
         existingClaim: app-uploads
+      data:
+        existingClaim: app-data
 `
-	out, err := migrate(t, helmReleaseWith("36 * * * *", persistence, "restic backup /data"))
-	if !errors.Is(err, ErrMultipleClaims) {
-		t.Fatalf("expected ErrMultipleClaims, got %v\n%s", err, out)
+	script := "restic backup --tag=server /data\nrestic backup --tag=uploads /uploads\n" +
+		"restic forget --prune --keep-daily=7"
+	out, err := migrate(t, helmReleaseWith("36 * * * *", persistence, script))
+	if err != nil {
+		t.Fatalf("migrate: %v\n%s", err, out)
 	}
-	for _, want := range []string{"data", "uploads"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("expected %q named in %q", want, err)
-		}
+	_, sb := migrated(t, out)
+	if len(sb.Spec.Volumes) != 2 || sb.Spec.Volumes[0].ExistingClaim != "app-data" ||
+		sb.Spec.Volumes[1].ExistingClaim != "app-uploads" {
+		t.Errorf("volumes = %+v, want app-data, the working directory's claim, first", sb.Spec.Volumes)
+	}
+	if sb.Spec.WorkingDir != "" {
+		t.Errorf("workingDir = %q, want it left to the default, /data", sb.Spec.WorkingDir)
+	}
+	if len(sb.Spec.Sources) != 2 || sb.Spec.Sources[1].Paths[0] != "/uploads" {
+		t.Errorf("sources = %+v", sb.Spec.Sources)
 	}
 }
 
@@ -182,7 +192,7 @@ func TestMigrateRefusesTwoDatabaseSecrets(t *testing.T) {
 }
 
 func TestMigrateKeepsASingleClaim(t *testing.T) {
-	out, err := migrate(t, helmReleaseWith("36 * * * *", oneClaim, "restic backup /data"))
+	out, err := migrate(t, helmReleaseWith("36 * * * *", oneClaim, backupData))
 	if err != nil {
 		t.Fatalf("migrate: %v\n%s", err, out)
 	}
@@ -192,7 +202,7 @@ func TestMigrateKeepsASingleClaim(t *testing.T) {
 }
 
 func TestParseBackupLineReadsSpaceSeparatedExcludes(t *testing.T) {
-	const wantPath = "/data"
+	const wantPath = dataDir
 	bothExcludes := []string{"cache", "tmp"}
 
 	tests := []struct {
@@ -228,8 +238,8 @@ func TestParseBackupLineReadsSpaceSeparatedExcludes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseBackupLine(%q) error = %v", tt.line, err)
 			}
-			if source.Path != wantPath {
-				t.Errorf("path = %q, want %q", source.Path, wantPath)
+			if len(source.Paths) != 1 || source.Paths[0] != wantPath {
+				t.Errorf("paths = %q, want %q", source.Paths, wantPath)
 			}
 			if strings.Join(source.Exclude, ",") != strings.Join(tt.wantExcl, ",") {
 				t.Errorf("exclude = %v, want %v", source.Exclude, tt.wantExcl)
@@ -245,8 +255,20 @@ func TestParseBackupLineRefusesADanglingExclude(t *testing.T) {
 	}
 }
 
-func TestMigrateMountsTheClaimTheScriptBacksUp(t *testing.T) {
+func TestMigrateKeepsARelativePathAsAScript(t *testing.T) {
+	t.Parallel()
 	out, err := migrate(t, helmReleaseWith("36 * * * *", oneClaim, "restic backup ."))
+	if err != nil {
+		t.Fatalf("migrate: %v\n%s", err, out)
+	}
+	_, sb := migrated(t, out)
+	if sb.Spec.Sources != nil || !strings.Contains(sb.Spec.Script, "restic backup .") {
+		t.Errorf("a relative path became a source; restic stores it with another tree layout: %+v", sb.Spec)
+	}
+}
+
+func TestMigrateMountsTheClaimTheScriptBacksUp(t *testing.T) {
+	out, err := migrate(t, helmReleaseWith("36 * * * *", oneClaim, backupData))
 	if err != nil {
 		t.Fatalf("migrate: %v\n%s", err, out)
 	}
@@ -259,12 +281,11 @@ func TestMigrateMountsTheClaimTheScriptBacksUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sb.Spec.Volume == nil {
-		t.Fatal("no volume was emitted")
+	if len(sb.Spec.Volumes) != 1 {
+		t.Fatalf("volumes = %+v, want one", sb.Spec.Volumes)
 	}
-	if sb.Spec.Volume.ExistingClaim != "app-data" || sb.Spec.Volume.MountPath != "/data" {
-		t.Errorf("mounted %q at %q, want app-data at /data",
-			sb.Spec.Volume.ExistingClaim, sb.Spec.Volume.MountPath)
+	if v := sb.Spec.Volumes[0]; v.ExistingClaim != "app-data" || v.MountPath != dataDir {
+		t.Errorf("mounted %q at %q, want app-data at /data", v.ExistingClaim, v.MountPath)
 	}
 	if len(sb.Spec.Sources) != 1 || sb.Spec.Sources[0].Type != b2backupv1.SourceTypeFiles {
 		t.Fatalf("unexpected sources %+v", sb.Spec.Sources)
@@ -365,14 +386,18 @@ func TestMigrateAdoptsTheExistingRepositoryInPrefixMode(t *testing.T) {
 		t.Errorf("namespaces %q and %q, want the kustomization's myapp", repo.Namespace, sb.Namespace)
 	}
 
-	if v := sb.Spec.Volume; v == nil || v.ExistingClaim != "app-mirror" || v.MountPath != mirrorPath || !v.ReadOnly {
-		t.Errorf("volume = %+v, want app-mirror read-only at /mirror", v)
+	if v := sb.Spec.Volumes; len(v) != 1 || v[0].ExistingClaim != "app-mirror" || v[0].MountPath != mirrorPath ||
+		!v[0].ReadOnly {
+		t.Errorf("volumes = %+v, want app-mirror read-only at /mirror", v)
+	}
+	if sb.Spec.WorkingDir != "/" {
+		t.Errorf("workingDir = %q, want the HelmRelease's /", sb.Spec.WorkingDir)
 	}
 	if db := sb.Spec.Database; db == nil || db.Engine != b2backupv1.DatabaseEngineCNPG || db.SecretName != "postgresql-app" {
 		t.Errorf("database = %+v, want cnpg from postgresql-app", db)
 	}
 	if len(sb.Spec.Sources) != 2 || sb.Spec.Sources[0].Type != b2backupv1.SourceTypeCNPG ||
-		sb.Spec.Sources[1].Path != mirrorPath {
+		len(sb.Spec.Sources[1].Paths) != 1 || sb.Spec.Sources[1].Paths[0] != mirrorPath {
 		t.Errorf("sources = %+v", sb.Spec.Sources)
 	}
 	if r := sb.Spec.Retention; r == nil || *r.Daily != 90 || *r.Yearly != 20 {
@@ -398,7 +423,7 @@ func TestMigrateMountPathMatchesAppTemplate(t *testing.T) {
 		t.Fatalf("migrate: %v\n%s", err, buf.String())
 	}
 	_, sb := migrated(t, buf.String())
-	if got := sb.Spec.Volume.EffectiveMountPath(); got != mirrorPath {
+	if got := sb.Spec.Volumes[0].EffectiveMountPath(); got != mirrorPath {
 		t.Errorf("mount path = %q, want /mirror, after the persistence key", got)
 	}
 }
@@ -472,15 +497,31 @@ func TestMigrateKeepsAnInexpressibleScriptVerbatim(t *testing.T) {
 	}
 }
 
-func TestMigrateRefusesAnEmptyDir(t *testing.T) {
+func TestMigrateTurnsAnEmptyDirIntoScratchSpace(t *testing.T) {
+	t.Parallel()
 	body := homeClusterRelease + `      scratch:
         type: emptyDir
+        sizeLimit: 2Gi
         globalMounts:
           - path: /backup
 `
-	err := runMigrate(&bytes.Buffer{}, writeHomeClusterRelease(t, body), migrateOptions{repository: sopsRepoURL})
-	if !errors.Is(err, ErrUnsupportedMount) || !strings.Contains(err.Error(), "/backup") {
-		t.Fatalf("err = %v, want ErrUnsupportedMount naming /backup", err)
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, writeHomeClusterRelease(t, body), migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, buf.String())
+	if sc := sb.Spec.Scratch; sc == nil || sc.MountPath != backupDir || sc.SizeLimit == nil || sc.SizeLimit.String() != "2Gi" {
+		t.Errorf("scratch = %+v, want 2Gi at /backup", sc)
+	}
+
+	twice := body + `      more:
+        type: emptyDir
+        globalMounts:
+          - path: /more
+`
+	err := runMigrate(&bytes.Buffer{}, writeHomeClusterRelease(t, twice), migrateOptions{repository: sopsRepoURL})
+	if !errors.Is(err, ErrUnsupportedMount) {
+		t.Errorf("err = %v, want two emptyDirs refused", err)
 	}
 }
 
@@ -540,13 +581,13 @@ func TestMigrateThenParityOnAHomeClusterRelease(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runParity(&out, generated, dir)
+	err := runParity(&out, generated, dir, migrateOptions{repository: sopsRepoURL})
 	if !errors.Is(err, ErrParityDiffers) {
 		t.Fatalf("parity = %v, want the dump change reported\n%s", err, out.String())
 	}
 	got := out.String()
 	if !strings.Contains(got, "DUMP FORMAT CHANGES") || strings.Contains(got, "SCRIPT DIFFERS") ||
-		strings.Contains(got, "VOLUME DIFFERS") || strings.Contains(got, "DATABASE SECRET DIFFERS") {
+		strings.Contains(got, volumeDiffers) || strings.Contains(got, "DATABASE SECRET DIFFERS") {
 		t.Errorf("want only the dump change, got:\n%s", got)
 	}
 	if !strings.Contains(got, "RESCHEDULED") {
@@ -569,10 +610,109 @@ func TestMigrateThenParityOnAVerbatimScriptIsEquivalent(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runParity(&out, generated, dir); err != nil {
+	if err := runParity(&out, generated, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
 		t.Fatalf("parity: %v\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "EQUIVALENT") {
+	if !strings.Contains(out.String(), verdictEquivalent) {
 		t.Errorf("want EQUIVALENT:\n%s", out.String())
+	}
+}
+
+func TestMigrateTheShapesTheHomeClusterUses(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		workingDir  string
+		persistence string
+		script      string
+		check       func(t *testing.T, sb *b2backupv1.ScheduledBackup)
+	}{
+		{
+			name:       "two claims, two sources",
+			workingDir: dataDir,
+			persistence: `      data:
+        existingClaim: minecraft
+      filebrowser:
+        existingClaim: filebrowser
+`,
+			script: "restic backup --tag=server /data\nrestic backup --tag=filebrowser /filebrowser\n" +
+				"restic forget --prune --keep-daily=90",
+			check: func(t *testing.T, sb *b2backupv1.ScheduledBackup) {
+				if len(sb.Spec.Volumes) != 2 || len(sb.Spec.Sources) != 2 || sb.Spec.Sources[1].Tag != filebrowserTag {
+					t.Errorf("spec = %+v", sb.Spec)
+				}
+			},
+		},
+		{
+			name:       "two claims in one snapshot",
+			workingDir: dataDir,
+			persistence: `      data:
+        existingClaim: config
+      blobs:
+        existingClaim: blobs
+`,
+			script: "restic backup --tag=files /data /blobs\nrestic forget --prune --keep-daily=90",
+			check: func(t *testing.T, sb *b2backupv1.ScheduledBackup) {
+				if len(sb.Spec.Sources) != 1 || !slices.Equal(sb.Spec.Sources[0].Paths, []string{dataDir, blobsDir}) {
+					t.Errorf("sources = %+v, want one snapshot of both paths", sb.Spec.Sources)
+				}
+				if sb.Spec.Volumes[0].ExistingClaim != "config" {
+					t.Errorf("volumes = %+v, want the working directory's claim first", sb.Spec.Volumes)
+				}
+			},
+		},
+		{
+			name:       "a staged copy in an emptyDir",
+			workingDir: backupDir,
+			persistence: `      data:
+        existingClaim: wx
+        globalMounts:
+          - path: /data
+            readOnly: true
+      backup:
+        type: emptyDir
+        globalMounts:
+          - path: /backup
+`,
+			script: "sqlite3 -readonly -bail /data/wx.db \".backup /backup/wx.db\"\n" +
+				"restic backup --tag=sqlite /backup/wx.db\nrestic forget --prune --keep-daily=90",
+			check: func(t *testing.T, sb *b2backupv1.ScheduledBackup) {
+				if sb.Spec.Script == "" || sb.Spec.Scratch == nil || sb.Spec.Scratch.MountPath != backupDir ||
+					sb.Spec.WorkingDir != backupDir || !sb.Spec.Volumes[0].ReadOnly {
+					t.Errorf("spec = %+v", sb.Spec)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			body := strings.Replace(helmReleaseWith("44 0 * * *", tt.persistence, tt.script+"\nrestic cache --cleanup"),
+				"workingDir: /data", "workingDir: "+tt.workingDir, 1)
+			body = strings.Replace(body, "                set -eu\n", "                exec > >(ts '%H:%M:%S') 2>&1\n"+
+				"                set -eu\n", 1)
+			body = strings.Replace(body, "            command:\n", "            env:\n              TZ: America/Chicago\n"+
+				"              RESTIC_HOST:\n                fieldRef:\n                  fieldPath: metadata.namespace\n"+
+				"            command:\n", 1)
+			dir := writeMigrationDir(t, body)
+			var buf bytes.Buffer
+			if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+				t.Fatalf("migrate: %v\n%s", err, buf.String())
+			}
+			_, sb := migrated(t, buf.String())
+			tt.check(t, sb)
+
+			generated := filepath.Join(t.TempDir(), "generated.yaml")
+			if err := os.WriteFile(generated, buf.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := runParity(&out, generated, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+				t.Fatalf("parity: %v\n%s", err, out.String())
+			}
+			if !strings.Contains(out.String(), verdictEquivalent) {
+				t.Errorf("want EQUIVALENT:\n%s", out.String())
+			}
+		})
 	}
 }

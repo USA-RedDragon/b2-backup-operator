@@ -4,6 +4,7 @@ package backup
 import (
 	"fmt"
 	"maps"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -101,6 +102,94 @@ const (
 	// TriggerManual is the LabelTrigger value for a triggered backup.
 	TriggerManual = "manual"
 )
+
+const (
+	// DataVolumePrefix starts the pod volume name of every claim in spec.volumes.
+	DataVolumePrefix = "data-"
+	// ScratchVolume is the pod volume name of spec.scratch.
+	ScratchVolume = "scratch"
+)
+
+// DataVolumeName returns the pod volume name of spec.volumes[i].
+func DataVolumeName(i int) string { return DataVolumePrefix + strconv.Itoa(i) }
+
+// MountFor returns the claim in spec.volumes holding p, the longest mount path
+// that contains it, or nil when p is on scratch space or on no volume at all.
+func MountFor(sb *b2backupv1.ScheduledBackup, p string) *b2backupv1.VolumeSpec {
+	var best *b2backupv1.VolumeSpec
+	bestLen := -1
+	for i := range sb.Spec.Volumes {
+		v := &sb.Spec.Volumes[i]
+		if m := v.EffectiveMountPath(); under(p, m) && len(m) > bestLen {
+			best, bestLen = v, len(m)
+		}
+	}
+	if sc := sb.Spec.Scratch; sc != nil {
+		if m := path.Clean(sc.MountPath); under(p, m) && len(m) > bestLen {
+			return nil
+		}
+	}
+	return best
+}
+
+func under(p, dir string) bool {
+	return p == dir || dir == "/" || strings.HasPrefix(p, dir+"/")
+}
+
+// ValidateMounts checks that no two mounts share a path, that none is a path the
+// operator mounts itself, and that every files source path lies on a volume or
+// the scratch space.
+func ValidateMounts(sb *b2backupv1.ScheduledBackup) error {
+	seen := map[string]string{
+		cacheMountPath:               "the restic cache",
+		b2backupv1.DBSecretMountPath: "the database Secret",
+	}
+	claim := func(p, what string) error {
+		p = path.Clean(p)
+		if p == "/" {
+			return fmt.Errorf("%s cannot be mounted at /", what)
+		}
+		if other, taken := seen[p]; taken {
+			return fmt.Errorf("%s and %s are both mounted at %s", what, other, p)
+		}
+		seen[p] = what
+		return nil
+	}
+	for i := range sb.Spec.Volumes {
+		v := &sb.Spec.Volumes[i]
+		if err := claim(v.EffectiveMountPath(), "claim "+v.ExistingClaim); err != nil {
+			return err
+		}
+	}
+	if sc := sb.Spec.Scratch; sc != nil {
+		if err := claim(sc.MountPath, "the scratch space"); err != nil {
+			return err
+		}
+	}
+
+	workingDir := sb.EffectiveWorkingDir()
+	for _, src := range sb.Spec.Sources {
+		if src.Type != b2backupv1.SourceTypeFiles {
+			continue
+		}
+		for _, p := range src.ResolvedPaths(workingDir) {
+			if !onMount(sb, p) {
+				return fmt.Errorf("files source %q backs up %s, which is on none of spec.volumes or spec.scratch",
+					src.EffectiveTag(), p)
+			}
+		}
+	}
+	return nil
+}
+
+func onMount(sb *b2backupv1.ScheduledBackup, p string) bool {
+	for i := range sb.Spec.Volumes {
+		if under(p, sb.Spec.Volumes[i].EffectiveMountPath()) {
+			return true
+		}
+	}
+	return sb.Spec.Scratch != nil && under(p, path.Clean(sb.Spec.Scratch.MountPath))
+}
 
 // CacheName returns the name of the restic cache PVC.
 func CacheName(sb *b2backupv1.ScheduledBackup) string { return sb.Name + "-cache" }
@@ -209,7 +298,10 @@ func BuildJobTemplate(
 	repo *b2backupv1.Repository,
 	cfg Config,
 ) (batchv1.JobTemplateSpec, error) {
-	script, err := Render(&sb.Spec)
+	if err := ValidateMounts(sb); err != nil {
+		return batchv1.JobTemplateSpec{}, err
+	}
+	script, err := Render(sb)
 	if err != nil {
 		return batchv1.JobTemplateSpec{}, err
 	}
@@ -235,11 +327,9 @@ func BuildJobTemplate(
 		Env:             env,
 		EnvFrom:         []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{Name: repo.SecretName()}}},
 		VolumeMounts:    mounts,
+		WorkingDir:      sb.EffectiveWorkingDir(),
 		Resources:       resources(sb),
 		SecurityContext: containerSecurityContext(sb),
-	}
-	if sb.Spec.Volume != nil {
-		container.WorkingDir = sb.Spec.Volume.EffectiveMountPath()
 	}
 
 	return batchv1.JobTemplateSpec{
@@ -462,17 +552,27 @@ func buildVolumes(sb *b2backupv1.ScheduledBackup) ([]corev1.Volume, []corev1.Vol
 		})
 	}
 
-	if v := sb.Spec.Volume; v != nil {
+	for i := range sb.Spec.Volumes {
+		v := &sb.Spec.Volumes[i]
+		name := DataVolumeName(i)
 		volumes = append(volumes, corev1.Volume{
-			Name: "data",
+			Name: name,
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 				ClaimName: v.ExistingClaim,
 				ReadOnly:  v.ReadOnly,
 			},
 		})
 		mounts = append(mounts, corev1.VolumeMount{
-			Name: "data", MountPath: v.EffectiveMountPath(), ReadOnly: v.ReadOnly,
+			Name: name, MountPath: v.EffectiveMountPath(), ReadOnly: v.ReadOnly,
 		})
+	}
+
+	if sc := sb.Spec.Scratch; sc != nil {
+		volumes = append(volumes, corev1.Volume{
+			Name:     ScratchVolume,
+			EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: sc.SizeLimit},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: ScratchVolume, MountPath: path.Clean(sc.MountPath)})
 	}
 
 	return volumes, mounts
@@ -483,7 +583,7 @@ func buildAffinity(sb *b2backupv1.ScheduledBackup) *corev1.Affinity {
 		return sb.Spec.Affinity
 	}
 
-	if sb.Spec.Volume != nil {
+	if len(sb.Spec.Volumes) > 0 {
 		return appAffinity(sb.Namespace)
 	}
 

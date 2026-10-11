@@ -70,6 +70,7 @@ type hrPersistence struct {
 	Name           string                          `json:"name"`
 	ExistingClaim  string                          `json:"existingClaim"`
 	StorageClass   string                          `json:"storageClass"`
+	SizeLimit      string                          `json:"sizeLimit"`
 	GlobalMounts   []hrMount                       `json:"globalMounts"`
 	AdvancedMounts map[string]map[string][]hrMount `json:"advancedMounts"`
 }
@@ -81,8 +82,9 @@ type hrMount struct {
 }
 
 const (
-	volumeClaim  = "persistentVolumeClaim"
-	volumeSecret = "secret"
+	volumeClaim    = "persistentVolumeClaim"
+	volumeSecret   = "secret"
+	volumeEmptyDir = "emptyDir"
 )
 
 type hrVolume struct {
@@ -179,6 +181,21 @@ func (c hrContainer) env(name string) string {
 	default:
 		return ""
 	}
+}
+
+// resticHost returns the host the container's snapshots are recorded under.
+func (c hrContainer) resticHost(namespace string) (string, error) {
+	value, ok := c.Env[envResticHost]
+	switch {
+	case !ok:
+		return "(the pod's hostname)", nil
+	case isNamespaceFieldRef(value):
+		return namespace, nil
+	}
+	if host, ok := value.(string); ok {
+		return host, nil
+	}
+	return "", fmt.Errorf("%w: RESTIC_HOST is neither a string nor the namespace", ErrUnsupportedEnv)
 }
 
 func (hr *helmRelease) volumes() []hrVolume {

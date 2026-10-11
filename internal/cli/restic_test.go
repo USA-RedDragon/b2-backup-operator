@@ -29,7 +29,7 @@ func TestSourceTags(t *testing.T) {
 	}
 
 	got := sourceTags(sb)
-	want := []string{"db", "files", testDBTag}
+	want := []string{"db", filesTag, testDBTag}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("sourceTags = %v, want %v", got, want)
 	}
@@ -115,7 +115,7 @@ func TestSnapshotTagArgs(t *testing.T) {
 
 func TestSnapshotTagArgsRefusesAScriptBackup(t *testing.T) {
 	sb := newBackup(testBackupName, testRepoName)
-	sb.Spec.Script = "restic backup /data"
+	sb.Spec.Script = backupData
 
 	_, err := snapshotTagArgs(sb)
 	if !errors.Is(err, errUnknownSourceTags) {
@@ -241,7 +241,7 @@ func TestSnapshotsCommandHostFlagAndTagFiltering(t *testing.T) {
 
 func TestSnapshotsCommandStillRefusesAScriptBackup(t *testing.T) {
 	sb := newBackup(testBackupName, testRepoName)
-	sb.Spec.Script = "restic backup /data"
+	sb.Spec.Script = backupData
 
 	if _, err := snapshotsCommand(sb, &snapshotsOptions{}); !errors.Is(err, errUnknownSourceTags) {
 		t.Fatalf("expected errUnknownSourceTags, got %v", err)

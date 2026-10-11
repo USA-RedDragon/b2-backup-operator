@@ -16,7 +16,7 @@ func TestCronJobUsesBuildJobTemplate(t *testing.T) {
 	}{
 		{name: "defaults"},
 		{name: "with a volume", mutate: func(sb *b2backupv1.ScheduledBackup) {
-			sb.Spec.Volume = &b2backupv1.VolumeSpec{ExistingClaim: "app-data"}
+			sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "app-data"}}
 			sb.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles}}
 		}},
 		{name: "with a database", mutate: func(sb *b2backupv1.ScheduledBackup) {

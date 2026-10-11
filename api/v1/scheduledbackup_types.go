@@ -1,8 +1,11 @@
 package v1
 
 import (
+	"path"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -49,7 +52,7 @@ const (
 )
 
 // BackupSource is one thing to back up on each run.
-// +kubebuilder:validation:XValidation:rule="self.type == 'files' ? (!has(self.database) && !has(self.extraArgs)) : (!has(self.path) && !has(self.exclude))",message="path and exclude are only valid for files sources; database and extraArgs only for database sources"
+// +kubebuilder:validation:XValidation:rule="self.type == 'files' ? (!has(self.database) && !has(self.extraArgs)) : (!has(self.paths) && !has(self.exclude))",message="paths and exclude are only valid for files sources; database and extraArgs only for database sources"
 type BackupSource struct {
 	// Type is the kind of data this source backs up.
 	// +required
@@ -61,9 +64,17 @@ type BackupSource struct {
 	// +optional
 	Tag string `json:"tag,omitempty"`
 
-	// Path is the directory to back up, relative to the volume mount. Files sources only.
+	// Paths are the files or directories to back up in one snapshot, each
+	// absolute or relative to the working directory, and each on one of
+	// spec.volumes or spec.scratch. restic records them as absolute paths, which
+	// is where b2bk restore puts them back. Defaults to the working directory.
+	// Files sources only.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=1024
+	// +listType=atomic
 	// +optional
-	Path string `json:"path,omitempty"`
+	Paths []string `json:"paths,omitempty"`
 
 	// Exclude is a list of restic exclude patterns. Files sources only.
 	// +optional
@@ -89,12 +100,19 @@ func (s BackupSource) EffectiveTag() string {
 	return "db"
 }
 
-// EffectivePath returns the path to back up.
-func (s BackupSource) EffectivePath() string {
-	if s.Path != "" {
-		return s.Path
+// ResolvedPaths returns the source's paths made absolute against workingDir.
+func (s BackupSource) ResolvedPaths(workingDir string) []string {
+	if len(s.Paths) == 0 {
+		return []string{path.Clean(workingDir)}
 	}
-	return "."
+	out := make([]string, 0, len(s.Paths))
+	for _, p := range s.Paths {
+		if !path.IsAbs(p) {
+			p = path.Join(workingDir, p)
+		}
+		out = append(out, path.Clean(p))
+	}
+	return out
 }
 
 // Retention is how many snapshots restic forget keeps.
@@ -188,10 +206,15 @@ func (d *DatabaseSpec) EffectiveCNPGCluster() string {
 // VolumeSpec is an existing PVC to mount into the backup container.
 type VolumeSpec struct {
 	// ExistingClaim is the name of the PersistentVolumeClaim to mount.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	// +required
 	ExistingClaim string `json:"existingClaim"`
 
-	// MountPath is where to mount the claim. Defaults to /<existingClaim>.
+	// MountPath is where to mount the claim. Defaults to /<existingClaim>. Each
+	// volume needs a mount path of its own.
+	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:Pattern=`^/.+`
 	// +kubebuilder:validation:XValidation:rule="self != '/cache'",message="mountPath must not be /cache, which is where the restic cache volume is mounted"
 	// +optional
 	MountPath string `json:"mountPath,omitempty"`
@@ -204,9 +227,23 @@ type VolumeSpec struct {
 // EffectiveMountPath returns where the volume is mounted.
 func (v *VolumeSpec) EffectiveMountPath() string {
 	if v.MountPath != "" {
-		return v.MountPath
+		return path.Clean(v.MountPath)
 	}
 	return "/" + v.ExistingClaim
+}
+
+// ScratchSpec is an empty directory mounted for the backup to stage files in.
+type ScratchSpec struct {
+	// MountPath is where the empty directory is mounted.
+	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:Pattern=`^/.+`
+	// +kubebuilder:validation:XValidation:rule="self != '/cache'",message="mountPath must not be /cache, which is where the restic cache volume is mounted"
+	// +required
+	MountPath string `json:"mountPath"`
+
+	// SizeLimit caps how much the directory may hold.
+	// +optional
+	SizeLimit *resource.Quantity `json:"sizeLimit,omitempty"`
 }
 
 // CacheSpec is the PVC backing restic's cache.
@@ -296,9 +333,24 @@ type ScheduledBackupSpec struct {
 	// +optional
 	Database *DatabaseSpec `json:"database,omitempty"`
 
-	// Volume is the PVC to mount. Required by files sources.
+	// Volumes are the existing claims to mount. Files sources back up paths on them.
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=atomic
 	// +optional
-	Volume *VolumeSpec `json:"volume,omitempty"`
+	Volumes []VolumeSpec `json:"volumes,omitempty"`
+
+	// Scratch is an empty directory for a script to stage files in before
+	// backing them up, such as a consistent copy of a SQLite database.
+	// +optional
+	Scratch *ScratchSpec `json:"scratch,omitempty"`
+
+	// WorkingDir is the backup container's working directory, which relative
+	// files source paths are resolved against. Defaults to the first volume's
+	// mount path, then the scratch mount path, then /.
+	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:Pattern=`^/`
+	// +optional
+	WorkingDir string `json:"workingDir,omitempty"`
 
 	// Cache configures restic's cache volume.
 	// +optional
@@ -430,7 +482,7 @@ type BackupRun struct {
 // +kubebuilder:printcolumn:name="Suspended",type="boolean",JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:validation:XValidation:rule="has(self.spec.sources) != has(self.spec.script)",message="exactly one of spec.sources or spec.script must be set"
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.sources) || !self.spec.sources.exists(s, s.type == 'files') || has(self.spec.volume)",message="a files source needs spec.volume; without it restic would back up the container's own filesystem"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.sources) || !self.spec.sources.exists(s, s.type == 'files') || has(self.spec.volumes) || has(self.spec.scratch)",message="a files source needs spec.volumes or spec.scratch; without them restic would back up the container's own filesystem"
 type ScheduledBackup struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -442,6 +494,19 @@ type ScheduledBackup struct {
 
 	// +optional
 	Status ScheduledBackupStatus `json:"status,omitzero"`
+}
+
+// EffectiveWorkingDir returns the backup container's working directory.
+func (s *ScheduledBackup) EffectiveWorkingDir() string {
+	switch {
+	case s.Spec.WorkingDir != "":
+		return path.Clean(s.Spec.WorkingDir)
+	case len(s.Spec.Volumes) > 0:
+		return s.Spec.Volumes[0].EffectiveMountPath()
+	case s.Spec.Scratch != nil:
+		return path.Clean(s.Spec.Scratch.MountPath)
+	}
+	return "/"
 }
 
 // EffectiveResticHost returns the host recorded on this backup's snapshots.

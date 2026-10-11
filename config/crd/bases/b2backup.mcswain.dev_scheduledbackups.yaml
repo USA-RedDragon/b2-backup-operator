@@ -1613,6 +1613,30 @@ spec:
                 description: Schedule is a cron expression, or a shorthand such as
                   @daily or @every 6h.
                 type: string
+              scratch:
+                description: |-
+                  Scratch is an empty directory for a script to stage files in before
+                  backing them up, such as a consistent copy of a SQLite database.
+                properties:
+                  mountPath:
+                    description: MountPath is where the empty directory is mounted.
+                    maxLength: 1024
+                    pattern: ^/.+
+                    type: string
+                    x-kubernetes-validations:
+                    - message: mountPath must not be /cache, which is where the restic
+                        cache volume is mounted
+                      rule: self != '/cache'
+                  sizeLimit:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: SizeLimit caps how much the directory may hold.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                required:
+                - mountPath
+                type: object
               script:
                 description: Script is a shell script to run instead of sources. Mutually
                   exclusive with sources.
@@ -1638,10 +1662,20 @@ spec:
                       items:
                         type: string
                       type: array
-                    path:
-                      description: Path is the directory to back up, relative to the
-                        volume mount. Files sources only.
-                      type: string
+                    paths:
+                      description: |-
+                        Paths are the files or directories to back up in one snapshot, each
+                        absolute or relative to the working directory, and each on one of
+                        spec.volumes or spec.scratch. restic records them as absolute paths, which
+                        is where b2bk restore puts them back. Defaults to the working directory.
+                        Files sources only.
+                      items:
+                        maxLength: 1024
+                        minLength: 1
+                        type: string
+                      maxItems: 16
+                      type: array
+                      x-kubernetes-list-type: atomic
                     tag:
                       description: Tag is the restic tag for this source's snapshots.
                         Defaults to "files" or "db".
@@ -1659,10 +1693,10 @@ spec:
                   - type
                   type: object
                   x-kubernetes-validations:
-                  - message: path and exclude are only valid for files sources; database
+                  - message: paths and exclude are only valid for files sources; database
                       and extraArgs only for database sources
                     rule: 'self.type == ''files'' ? (!has(self.database) && !has(self.extraArgs))
-                      : (!has(self.path) && !has(self.exclude))'
+                      : (!has(self.paths) && !has(self.exclude))'
                 minItems: 1
                 type: array
               successfulJobsHistoryLimit:
@@ -1678,27 +1712,47 @@ spec:
                 default: America/Chicago
                 description: TimeZone the schedule is interpreted in.
                 type: string
-              volume:
-                description: Volume is the PVC to mount. Required by files sources.
-                properties:
-                  existingClaim:
-                    description: ExistingClaim is the name of the PersistentVolumeClaim
-                      to mount.
-                    type: string
-                  mountPath:
-                    description: MountPath is where to mount the claim. Defaults to
-                      /<existingClaim>.
-                    type: string
-                    x-kubernetes-validations:
-                    - message: mountPath must not be /cache, which is where the restic
-                        cache volume is mounted
-                      rule: self != '/cache'
-                  readOnly:
-                    description: ReadOnly mounts the claim read-only.
-                    type: boolean
-                required:
-                - existingClaim
-                type: object
+              volumes:
+                description: Volumes are the existing claims to mount. Files sources
+                  back up paths on them.
+                items:
+                  description: VolumeSpec is an existing PVC to mount into the backup
+                    container.
+                  properties:
+                    existingClaim:
+                      description: ExistingClaim is the name of the PersistentVolumeClaim
+                        to mount.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    mountPath:
+                      description: |-
+                        MountPath is where to mount the claim. Defaults to /<existingClaim>. Each
+                        volume needs a mount path of its own.
+                      maxLength: 1024
+                      pattern: ^/.+
+                      type: string
+                      x-kubernetes-validations:
+                      - message: mountPath must not be /cache, which is where the
+                          restic cache volume is mounted
+                        rule: self != '/cache'
+                    readOnly:
+                      description: ReadOnly mounts the claim read-only.
+                      type: boolean
+                  required:
+                  - existingClaim
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: atomic
+              workingDir:
+                description: |-
+                  WorkingDir is the backup container's working directory, which relative
+                  files source paths are resolved against. Defaults to the first volume's
+                  mount path, then the scratch mount path, then /.
+                maxLength: 1024
+                pattern: ^/
+                type: string
             required:
             - repositoryRef
             - schedule
@@ -1847,10 +1901,10 @@ spec:
         x-kubernetes-validations:
         - message: exactly one of spec.sources or spec.script must be set
           rule: has(self.spec.sources) != has(self.spec.script)
-        - message: a files source needs spec.volume; without it restic would back
-            up the container's own filesystem
+        - message: a files source needs spec.volumes or spec.scratch; without them
+            restic would back up the container's own filesystem
           rule: '!has(self.spec.sources) || !self.spec.sources.exists(s, s.type ==
-            ''files'') || has(self.spec.volume)'
+            ''files'') || has(self.spec.volumes) || has(self.spec.scratch)'
     served: true
     storage: true
     subresources:

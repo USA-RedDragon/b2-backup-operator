@@ -9,6 +9,14 @@ import (
 
 const (
 	testNS         = "prod"
+	dataDir        = "/data"
+	blobsDir       = "/blobs"
+	backupDir      = "/backup"
+	filesTag       = "files"
+	serverTag      = "server"
+	filebrowserTag = "filebrowser"
+	appDir         = "app"
+	backupData     = "restic backup /data"
 	testRepoName   = "store"
 	testBackupName = "web-files"
 	testKeyID      = "0055aa00000000000000000001"
