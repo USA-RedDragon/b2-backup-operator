@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -25,6 +27,7 @@ var (
 	ErrUnsupportedMount      = errors.New("the restic container mounts a volume a ScheduledBackup cannot")
 	ErrUnsupportedCommand    = errors.New("the restic container does not run sh -c <script>")
 	ErrUnsupportedController = errors.New("the HelmRelease runs something a ScheduledBackup cannot")
+	ErrUnsupportedValues     = errors.New("the HelmRelease sets something migrate cannot carry over")
 )
 
 const resticController = "restic"
@@ -37,29 +40,55 @@ type helmRelease struct {
 		Namespace string `json:"namespace"`
 	} `json:"metadata"`
 	Spec struct {
-		Values struct {
-			DefaultPodOptions struct {
-				Affinity        *corev1.Affinity           `json:"affinity"`
-				SecurityContext *corev1.PodSecurityContext `json:"securityContext"`
-			} `json:"defaultPodOptions"`
-			Controllers map[string]hrController  `json:"controllers"`
-			Persistence map[string]hrPersistence `json:"persistence"`
-		} `json:"values"`
+		Chart *struct {
+			Spec struct {
+				Chart string `json:"chart"`
+			} `json:"spec"`
+		} `json:"chart"`
+		ChartRef *struct {
+			Name string `json:"name"`
+		} `json:"chartRef"`
+		ValuesFrom    []any           `json:"valuesFrom"`
+		PostRenderers []any           `json:"postRenderers"`
+		RawValues     json.RawMessage `json:"values"`
+
+		Values hrValues `json:"-"`
 	} `json:"spec"`
 }
 
+// hrValues is every app-template value migrate reads. Values are decoded
+// strictly against it, so a key it does not know is refused, not dropped.
+type hrValues struct {
+	DefaultPodOptions hrPodOptions             `json:"defaultPodOptions"`
+	Controllers       map[string]hrController  `json:"controllers"`
+	Persistence       map[string]hrPersistence `json:"persistence"`
+}
+
+type hrPodOptions struct {
+	Affinity                     *corev1.Affinity           `json:"affinity"`
+	SecurityContext              *corev1.PodSecurityContext `json:"securityContext"`
+	NodeSelector                 map[string]string          `json:"nodeSelector"`
+	Tolerations                  []corev1.Toleration        `json:"tolerations"`
+	PriorityClassName            string                     `json:"priorityClassName"`
+	Labels                       map[string]string          `json:"labels"`
+	AutomountServiceAccountToken *bool                      `json:"automountServiceAccountToken"`
+}
+
 type hrController struct {
-	Enabled *bool  `json:"enabled"`
-	Type    string `json:"type"`
-	CronJob struct {
-		Schedule          string `json:"schedule"`
-		ConcurrencyPolicy string `json:"concurrencyPolicy"`
-		TimeZone          string `json:"timeZone"`
+	Enabled     *bool             `json:"enabled"`
+	Type        string            `json:"type"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
+	CronJob     struct {
+		Schedule                string `json:"schedule"`
+		ConcurrencyPolicy       string `json:"concurrencyPolicy"`
+		TimeZone                string `json:"timeZone"`
+		Suspend                 bool   `json:"suspend"`
+		TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished"`
+		SuccessfulJobsHistory   *int32 `json:"successfulJobsHistory"`
+		FailedJobsHistory       *int32 `json:"failedJobsHistory"`
 	} `json:"cronjob"`
-	Pod struct {
-		Affinity        *corev1.Affinity           `json:"affinity"`
-		SecurityContext *corev1.PodSecurityContext `json:"securityContext"`
-	} `json:"pod"`
+	Pod            hrPodOptions           `json:"pod"`
 	Containers     map[string]hrContainer `json:"containers"`
 	InitContainers map[string]hrContainer `json:"initContainers"`
 }
@@ -85,8 +114,22 @@ type hrContainer struct {
 	WorkingDir      string                       `json:"workingDir"`
 	Resources       *corev1.ResourceRequirements `json:"resources"`
 	SecurityContext *corev1.SecurityContext      `json:"securityContext"`
+	EnvFrom         []hrEnvFrom                  `json:"envFrom"`
 
 	Env map[string]any `json:"env"`
+}
+
+type hrEnvFrom struct {
+	Secret       string    `json:"secret"`
+	SecretRef    *hrEnvRef `json:"secretRef"`
+	ConfigMap    string    `json:"configMap"`
+	ConfigMapRef *hrEnvRef `json:"configMapRef"`
+	Prefix       string    `json:"prefix"`
+}
+
+type hrEnvRef struct {
+	Name     string `json:"name"`
+	Optional *bool  `json:"optional"`
 }
 
 type hrPersistence struct {
@@ -95,6 +138,9 @@ type hrPersistence struct {
 	Name           string                          `json:"name"`
 	ExistingClaim  string                          `json:"existingClaim"`
 	StorageClass   string                          `json:"storageClass"`
+	AccessMode     string                          `json:"accessMode"`
+	Size           string                          `json:"size"`
+	Retain         *bool                           `json:"retain"`
 	SizeLimit      string                          `json:"sizeLimit"`
 	GlobalMounts   []hrMount                       `json:"globalMounts"`
 	AdvancedMounts map[string]map[string][]hrMount `json:"advancedMounts"`
@@ -148,8 +194,44 @@ func readHelmRelease(path string) (*helmRelease, error) {
 	if err := yaml.Unmarshal(raw, &hr); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
+	if err := hr.decodeValues(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	hr.Metadata.Namespace = releaseNamespace(path, hr.Metadata.Namespace)
 	return &hr, nil
+}
+
+// decodeValues reads spec.values strictly, after checking that nothing but
+// spec.values and the app-template chart decides what the release renders.
+func (hr *helmRelease) decodeValues() error {
+	spec := hr.Spec
+	switch {
+	case len(spec.ValuesFrom) > 0:
+		return fmt.Errorf("%w: spec.valuesFrom adds values migrate cannot see", ErrUnsupportedValues)
+	case len(spec.PostRenderers) > 0:
+		return fmt.Errorf("%w: spec.postRenderers change what the chart renders", ErrUnsupportedValues)
+	case spec.Chart != nil && spec.Chart.Spec.Chart != appTemplateChart:
+		return fmt.Errorf("%w: the chart is %s, not %s", ErrUnsupportedValues, spec.Chart.Spec.Chart, appTemplateChart)
+	case spec.ChartRef != nil && spec.ChartRef.Name != appTemplateChart:
+		return fmt.Errorf("%w: the chart is %s, not %s", ErrUnsupportedValues, spec.ChartRef.Name, appTemplateChart)
+	}
+	if len(spec.RawValues) == 0 {
+		return nil
+	}
+	var generic any
+	if err := json.Unmarshal(spec.RawValues, &generic); err != nil {
+		return err
+	}
+	if where := findTemplate("values", generic); where != "" {
+		return fmt.Errorf("%w: %s holds a Helm template, which app-template would expand", ErrUnsupportedValues, where)
+	}
+	d := json.NewDecoder(bytes.NewReader(spec.RawValues))
+	d.DisallowUnknownFields()
+	d.UseNumber()
+	if err := d.Decode(&hr.Spec.Values); err != nil {
+		return fmt.Errorf("%w: spec.values: %w", ErrUnsupportedValues, err)
+	}
+	return nil
 }
 
 // releaseNamespace is the namespace a HelmRelease file is applied in.
@@ -234,18 +316,40 @@ func (c hrController) runsResticInit() bool {
 	return script == "restic init" || script == "restic init || true"
 }
 
-func (hr *helmRelease) affinity() *corev1.Affinity {
-	if a := hr.Spec.Values.Controllers[resticController].Pod.Affinity; a != nil {
-		return a
+// podOptions is the restic pod's options: the controller's pod value of each
+// wins over defaultPodOptions, as under app-template's default overwrite strategy.
+func (hr *helmRelease) podOptions() hrPodOptions {
+	def := hr.Spec.Values.DefaultPodOptions
+	pod := hr.Spec.Values.Controllers[resticController].Pod
+	out := def
+	if pod.Affinity != nil {
+		out.Affinity = pod.Affinity
 	}
-	return hr.Spec.Values.DefaultPodOptions.Affinity
+	if pod.SecurityContext != nil {
+		out.SecurityContext = pod.SecurityContext
+	}
+	if len(pod.NodeSelector) > 0 {
+		out.NodeSelector = pod.NodeSelector
+	}
+	if len(pod.Tolerations) > 0 {
+		out.Tolerations = pod.Tolerations
+	}
+	if pod.PriorityClassName != "" {
+		out.PriorityClassName = pod.PriorityClassName
+	}
+	if len(pod.Labels) > 0 {
+		out.Labels = pod.Labels
+	}
+	if pod.AutomountServiceAccountToken != nil {
+		out.AutomountServiceAccountToken = pod.AutomountServiceAccountToken
+	}
+	return out
 }
 
+func (hr *helmRelease) affinity() *corev1.Affinity { return hr.podOptions().Affinity }
+
 func (hr *helmRelease) podSecurityContext() *corev1.PodSecurityContext {
-	if sc := hr.Spec.Values.Controllers[resticController].Pod.SecurityContext; sc != nil {
-		return sc
-	}
-	return hr.Spec.Values.DefaultPodOptions.SecurityContext
+	return hr.podOptions().SecurityContext
 }
 
 type hrImage struct {
@@ -295,8 +399,12 @@ func (c hrContainer) env(name string) string {
 	switch value := v.(type) {
 	case string:
 		return value
-	case int, int64, float64, bool:
-		return fmt.Sprint(value)
+	case json.Number, bool:
+		s, err := helmString(value)
+		if err != nil {
+			return ""
+		}
+		return s
 	default:
 		return ""
 	}

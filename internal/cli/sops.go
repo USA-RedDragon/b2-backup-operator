@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
@@ -39,37 +40,51 @@ type decryptedSecret struct {
 // measured at 61MB on top of a 93MB binary, for one field read once per app
 // during a one-time migration. It is also the only step needing the operator's
 // own decryption keys, which the sops binary already manages.
-func repositoryURLFromSecret(file string) (string, string, error) {
+func repositoryURLFromSecret(file string) (string, error) {
+	secret, err := decryptSecret(file)
+	if err != nil {
+		return "", err
+	}
+	value := secret.values()["RESTIC_REPOSITORY"]
+	if value == "" {
+		return "", fmt.Errorf("%w: %s has no RESTIC_REPOSITORY", ErrNoRepositoryURL, file)
+	}
+	return value, nil
+}
+
+func decryptSecret(file string) (*decryptedSecret, error) {
 	if _, err := os.Stat(file); err != nil {
-		return "", "", fmt.Errorf("reading the encrypted Secret: %w; pass --repository to supply the URL directly", err)
+		return nil, fmt.Errorf("reading the encrypted Secret: %w; pass --repository to supply the URL directly", err)
 	}
 	if _, err := exec.LookPath("sops"); err != nil {
-		return "", "", fmt.Errorf("%w: install sops, or pass --repository", ErrSopsUnavailable)
+		return nil, fmt.Errorf("%w: install sops, or pass --repository", ErrSopsUnavailable)
 	}
 
 	plaintext, err := exec.Command("sops", "--decrypt", file).Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return "", "", fmt.Errorf("decrypting %s: %w: %s",
+			return nil, fmt.Errorf("decrypting %s: %w: %s",
 				file, err, strings.TrimSpace(string(exitErr.Stderr)))
 		}
-		return "", "", fmt.Errorf("decrypting %s: %w", file, err)
+		return nil, fmt.Errorf("decrypting %s: %w", file, err)
 	}
 
 	var secret decryptedSecret
 	if err := yaml.Unmarshal(plaintext, &secret); err != nil {
-		return "", "", fmt.Errorf("parsing the decrypted %s: %w", file, err)
+		return nil, fmt.Errorf("parsing the decrypted %s: %w", file, err)
 	}
+	return &secret, nil
+}
 
-	value := secret.StringData["RESTIC_REPOSITORY"]
-	if value == "" {
-		value = string(secret.Data["RESTIC_REPOSITORY"])
+// values merges the Secret's data and stringData, as the API server does.
+func (s *decryptedSecret) values() map[string]string {
+	out := map[string]string{}
+	for k, v := range s.Data {
+		out[k] = string(v)
 	}
-	if value == "" {
-		return "", "", fmt.Errorf("%w: %s has no RESTIC_REPOSITORY", ErrNoRepositoryURL, file)
-	}
-	return value, secret.Metadata.Namespace, nil
+	maps.Copy(out, s.StringData)
+	return out
 }
 
 type s3Location struct {
