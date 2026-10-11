@@ -462,8 +462,10 @@ func TestBackupPodSecurityDefaults(t *testing.T) {
 		t.Fatal("no container securityContext")
 	}
 	if container.Capabilities == nil ||
-		!slices.Contains(container.Capabilities.Drop, corev1.Capability("ALL")) {
-		t.Errorf("capabilities = %v, want ALL dropped", container.Capabilities)
+		!slices.Contains(container.Capabilities.Drop, dropAll) ||
+		!slices.Equal(container.Capabilities.Add, []corev1.Capability{"DAC_OVERRIDE"}) {
+		t.Errorf("capabilities = %v, want ALL dropped and only DAC_OVERRIDE, to read any file, added",
+			container.Capabilities)
 	}
 	if container.AllowPrivilegeEscalation == nil || *container.AllowPrivilegeEscalation {
 		t.Error("privilege escalation should be forbidden")
@@ -499,7 +501,7 @@ func TestContainerSecurityContextOverride(t *testing.T) {
 	sb := testBackup(func(s *b2backupv1.ScheduledBackup) {
 		s.Spec.ContainerSecurityContext = &corev1.SecurityContext{
 			ReadOnlyRootFilesystem: ptr.To(true),
-			Capabilities:           &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			Capabilities:           &corev1.Capabilities{Drop: []corev1.Capability{dropAll}},
 		}
 	})
 	c := containerOf(t, sb, testConfig())
@@ -707,7 +709,7 @@ func TestManualJobNameFitsTheBudget(t *testing.T) {
 
 func TestManualJobNameSuffixLongerThanTheBudget(t *testing.T) {
 	suffix := "-manual-" + strings.Repeat("z", maxManualJobName)
-	if got := manualJobName("app", suffix); got != suffix {
+	if got := manualJobName(appDir, suffix); got != suffix {
 		t.Errorf("manualJobName = %q, want %q", got, suffix)
 	}
 }

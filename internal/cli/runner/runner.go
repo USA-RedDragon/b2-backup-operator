@@ -97,7 +97,17 @@ type Options struct {
 
 	ExtraVolumes []corev1.Volume
 	ExtraMounts  []corev1.VolumeMount
+
+	// Restore adds the capabilities restic restore needs to put files back as
+	// root with their owners, modes and times: RestoreCapabilities.
+	Restore bool
 }
+
+// RestoreCapabilities are what restic restore needs, as root, to recreate files
+// owned by other users: chown them, write into their directories, and set their
+// modes, setgid bits and times. All are allowed by the baseline Pod Security
+// Standard; the restricted one allows none, and rejects the pod.
+var RestoreCapabilities = []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID"}
 
 var idleCommand = []string{"sleep", "infinity"}
 
@@ -150,6 +160,10 @@ func (r *Runner) Build(
 	if !opts.MountDatabase {
 		spec.Template.Spec.Volumes = filterVolumes(spec.Template.Spec.Volumes, dbVolume)
 		container.VolumeMounts = filterMounts(container.VolumeMounts, dbVolume)
+	}
+
+	if opts.Restore {
+		addCapabilities(container, RestoreCapabilities)
 	}
 
 	spec.Template.Spec.Volumes = append(spec.Template.Spec.Volumes, opts.ExtraVolumes...)
@@ -228,6 +242,21 @@ func dropData(pod *corev1.PodSpec, container *corev1.Container) {
 		pod.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = nil
 		if pod.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution == nil {
 			pod.Affinity.PodAffinity = nil
+		}
+	}
+}
+
+func addCapabilities(container *corev1.Container, add []corev1.Capability) {
+	if container.SecurityContext == nil {
+		container.SecurityContext = &corev1.SecurityContext{}
+	}
+	if container.SecurityContext.Capabilities == nil {
+		container.SecurityContext.Capabilities = &corev1.Capabilities{}
+	}
+	caps := container.SecurityContext.Capabilities
+	for _, c := range add {
+		if !slices.Contains(caps.Add, c) {
+			caps.Add = append(caps.Add, c)
 		}
 	}
 }

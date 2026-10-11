@@ -464,9 +464,52 @@ func containerSecurityContext(sb *b2backupv1.ScheduledBackup) *corev1.SecurityCo
 	}
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(false),
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+			Add:  []corev1.Capability{BackupCapability},
+		},
 	}
 }
+
+// ReadsEveryFile reports whether a container running with these security contexts
+// can read every file on a claim, whatever its owner and mode: it runs as root
+// and keeps DAC_OVERRIDE or DAC_READ_SEARCH. A nil container context is the
+// runtime's default capability set, which includes DAC_OVERRIDE.
+func ReadsEveryFile(pod *corev1.PodSecurityContext, container *corev1.SecurityContext) bool {
+	uid := int64(0)
+	if pod != nil && pod.RunAsUser != nil {
+		uid = *pod.RunAsUser
+	}
+	if container != nil && container.RunAsUser != nil {
+		uid = *container.RunAsUser
+	}
+	if uid != 0 {
+		return false
+	}
+	if container == nil || container.Capabilities == nil {
+		return true
+	}
+	caps := container.Capabilities
+	for _, c := range []corev1.Capability{"DAC_OVERRIDE", "DAC_READ_SEARCH"} {
+		if slices.Contains(caps.Add, c) {
+			return true
+		}
+	}
+	return !slices.Contains(caps.Drop, "ALL") && !slices.Contains(caps.Drop, "DAC_OVERRIDE")
+}
+
+// EffectiveSecurityContexts returns the pod and container security contexts a
+// backup runs with.
+func EffectiveSecurityContexts(sb *b2backupv1.ScheduledBackup) (*corev1.PodSecurityContext, *corev1.SecurityContext) {
+	return podSecurityContext(sb), containerSecurityContext(sb)
+}
+
+// BackupCapability lets the backup, which runs as root, read every file on the
+// claims it mounts, as the app's own runtime-default container could. Without
+// it a directory another user owns with mode 0700 is left out of the snapshot.
+// DAC_READ_SEARCH would do, but the baseline Pod Security Standard does not
+// allow it; DAC_OVERRIDE it does.
+const BackupCapability corev1.Capability = "DAC_OVERRIDE"
 
 func buildEnv(sb *b2backupv1.ScheduledBackup) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{

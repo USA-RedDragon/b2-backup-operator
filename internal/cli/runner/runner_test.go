@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -710,5 +711,33 @@ func TestPreflightPassesWithTheKeyPresent(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("preflight should pass once the key exists: %v", err)
+	}
+}
+
+func TestOnlyRestoreJobsGetTheRestoreCapabilities(t *testing.T) {
+	t.Parallel()
+	r, sb := fixture(t, nil)
+	tests := []struct {
+		name string
+		opts Options
+		want []corev1.Capability
+	}{
+		{"a backup's own capability", Options{Command: testCommand}, []corev1.Capability{backup.BackupCapability}},
+		{"a restore", Options{Command: testCommand, Restore: true},
+			[]corev1.Capability{"DAC_OVERRIDE", "CHOWN", "FOWNER", "FSETID"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			job, err := r.Build(context.Background(), sb, tt.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sc := containerOf(t, job).SecurityContext
+			if sc == nil || sc.Capabilities == nil || !slices.Equal(sc.Capabilities.Add, tt.want) ||
+				!slices.Contains(sc.Capabilities.Drop, "ALL") {
+				t.Errorf("capabilities = %+v, want %v added to ALL dropped", sc.Capabilities, tt.want)
+			}
+		})
 	}
 }

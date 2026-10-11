@@ -36,7 +36,8 @@ type helmRelease struct {
 	Spec struct {
 		Values struct {
 			DefaultPodOptions struct {
-				Affinity *corev1.Affinity `json:"affinity"`
+				Affinity        *corev1.Affinity           `json:"affinity"`
+				SecurityContext *corev1.PodSecurityContext `json:"securityContext"`
 			} `json:"defaultPodOptions"`
 			Controllers map[string]hrController  `json:"controllers"`
 			Persistence map[string]hrPersistence `json:"persistence"`
@@ -51,15 +52,17 @@ type hrController struct {
 		TimeZone          string `json:"timeZone"`
 	} `json:"cronjob"`
 	Pod struct {
-		Affinity *corev1.Affinity `json:"affinity"`
+		Affinity        *corev1.Affinity           `json:"affinity"`
+		SecurityContext *corev1.PodSecurityContext `json:"securityContext"`
 	} `json:"pod"`
 	Containers map[string]hrContainer `json:"containers"`
 }
 
 type hrContainer struct {
-	Command    []string                     `json:"command"`
-	WorkingDir string                       `json:"workingDir"`
-	Resources  *corev1.ResourceRequirements `json:"resources"`
+	Command         []string                     `json:"command"`
+	WorkingDir      string                       `json:"workingDir"`
+	Resources       *corev1.ResourceRequirements `json:"resources"`
+	SecurityContext *corev1.SecurityContext      `json:"securityContext"`
 
 	Env map[string]any `json:"env"`
 }
@@ -159,6 +162,13 @@ func (hr *helmRelease) affinity() *corev1.Affinity {
 		return a
 	}
 	return hr.Spec.Values.DefaultPodOptions.Affinity
+}
+
+func (hr *helmRelease) podSecurityContext() *corev1.PodSecurityContext {
+	if sc := hr.Spec.Values.Controllers[resticController].Pod.SecurityContext; sc != nil {
+		return sc
+	}
+	return hr.Spec.Values.DefaultPodOptions.SecurityContext
 }
 
 func (c hrContainer) script() (string, error) {

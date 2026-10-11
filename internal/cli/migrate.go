@@ -208,11 +208,13 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 		APIVersion: b2backupv1.SchemeGroupVersion.String(), Kind: "ScheduledBackup",
 		Namespace: namespace, Name: name,
 		Spec: b2backupv1.ScheduledBackupSpec{
-			RepositoryRef: corev1.LocalObjectReference{Name: migratedName},
-			Schedule:      shorthandSchedule(controller.CronJob.Schedule),
-			TimeZone:      controller.CronJob.TimeZone,
-			Resources:     container.Resources,
-			Affinity:      hr.affinity(),
+			RepositoryRef:            corev1.LocalObjectReference{Name: migratedName},
+			Schedule:                 shorthandSchedule(controller.CronJob.Schedule),
+			TimeZone:                 controller.CronJob.TimeZone,
+			Resources:                container.Resources,
+			Affinity:                 hr.affinity(),
+			PodSecurityContext:       hr.podSecurityContext(),
+			ContainerSecurityContext: container.SecurityContext,
 		},
 	}
 	m.backup = sb

@@ -730,3 +730,34 @@ func TestMigrateTheShapesTheHomeClusterUses(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrateCarriesSecurityContextsAndParityChecksReadAccess(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "            workingDir: /\n", `            workingDir: /
+            securityContext:
+              runAsUser: 1000
+`, 1)
+	dir := writeHomeClusterRelease(t, body)
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, buf.String())
+	if sc := sb.Spec.ContainerSecurityContext; sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != 1000 {
+		t.Errorf("containerSecurityContext = %+v, want the HelmRelease's", sc)
+	}
+
+	generated := filepath.Join(t.TempDir(), "generated.yaml")
+	dropped := strings.Replace(buf.String(), "spec:\n  affinity:", "spec:\n  affinity:", 1)
+	dropped = strings.Replace(dropped, "  containerSecurityContext:\n    runAsUser: 1000\n",
+		"  containerSecurityContext:\n    capabilities:\n      drop: [ALL]\n", 1)
+	if err := os.WriteFile(generated, []byte(dropped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := writeHomeClusterRelease(t, homeClusterRelease)
+	var out bytes.Buffer
+	err := runParity(&out, generated, original, migrateOptions{repository: sopsRepoURL})
+	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "READ ACCESS DIFFERS") {
+		t.Errorf("a backup that can no longer read every file passed parity: %v\n%s", err, out.String())
+	}
+}
