@@ -69,15 +69,15 @@ func TestRenameStatement(t *testing.T) {
 			name:     "tables on both sides",
 			current:  []string{"b", "a"},
 			incoming: []string{"a", "b"},
-			want: "RENAME TABLE `app`.`a` TO `old`.`a`, `stg`.`a` TO `app`.`a`, " +
-				"`app`.`b` TO `old`.`b`, `stg`.`b` TO `app`.`b`",
+			want: "RENAME TABLE `app`.`a` TO `old`.`a`, `app`.`b` TO `old`.`b`, " +
+				"`stg`.`a` TO `app`.`a`, `stg`.`b` TO `app`.`b`",
 		},
 		{
 			name:     "a live-only table moves out, a staging-only table moves in",
 			current:  []string{"extra", "keep"},
 			incoming: []string{"gone", "keep"},
-			want: "RENAME TABLE `app`.`extra` TO `old`.`extra`, `stg`.`gone` TO `app`.`gone`, " +
-				"`app`.`keep` TO `old`.`keep`, `stg`.`keep` TO `app`.`keep`",
+			want: "RENAME TABLE `app`.`extra` TO `old`.`extra`, `app`.`keep` TO `old`.`keep`, " +
+				"`stg`.`gone` TO `app`.`gone`, `stg`.`keep` TO `app`.`keep`",
 		},
 		{
 			name:     "an empty live database",
@@ -110,13 +110,15 @@ func TestRenameStatement(t *testing.T) {
 	}
 }
 
-// Each table is moved out of live before its namesake moves in, which is the
-// order MariaDB needs within one RENAME TABLE.
+// Every live table is moved out before any staged table moves in: MariaDB
+// applies the parts in order, and a foreign key name must stay unique in live.
 func TestRenameStatementMovesOutBeforeIn(t *testing.T) {
 	t.Parallel()
-	got := RenameStatement("app", "stg", "old", []string{"t"}, []string{"t"})
-	if strings.Index(got, "`app`.`t` TO") > strings.Index(got, "TO `app`.`t`") {
-		t.Errorf("the live table must move out first: %s", got)
+	got := RenameStatement("app", "stg", "old", []string{"b", "a"}, []string{"a", "c"})
+	want := "RENAME TABLE `app`.`a` TO `old`.`a`, `app`.`b` TO `old`.`b`, `stg`.`a` TO `app`.`a`, " +
+		"`stg`.`c` TO `app`.`c`"
+	if got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
 	}
 }
 

@@ -159,7 +159,8 @@ one of these:
   restores into `<db>__b2bk_restore` with the dump's `USE` and `CREATE
   DATABASE` statements left out, checks the `-- Dump completed` trailer, and only
   then moves every table with one multi-table `RENAME TABLE`, which MariaDB
-  applies atomically. MariaDB refuses to move views and tables with triggers
+  applies atomically, every live table out before any staged one in, since a
+  foreign key name must stay unique in the live database. MariaDB refuses to move views and tables with triggers
   across databases, so those are refused up front. The dump is split into
   statements by `clientLexer`, a copy of the client's own rules (`add_line` in
   `client/mysql.cc`), and each statement is held back until `classify` has
