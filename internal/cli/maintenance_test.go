@@ -20,7 +20,7 @@ func TestPruneIsScopedToTheBackupsOwnSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "forget --prune --host=" + testResticHost + " --tag=db --tag=server --keep-daily=7"
+	want := "forget --prune --host=" + testResticHost + " --group-by=tags --tag=db --tag=server --keep-daily=7"
 	if got := strings.Join(argv, " "); got != want {
 		t.Errorf("argv = %q, want %q", got, want)
 	}

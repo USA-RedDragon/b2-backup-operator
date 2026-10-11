@@ -145,7 +145,7 @@ func pruneArgs(sb *b2backupv1.ScheduledBackup, keep []string) ([]string, error) 
 		return nil, fmt.Errorf("scheduledbackup/%s runs a script and has no source tags to scope forget to; "+
 			"run restic forget with --tag yourself through b2bk exec %s", sb.Name, sb.Name)
 	}
-	argv := []string{"forget", "--prune", "--host=" + sb.EffectiveResticHost()}
+	argv := []string{"forget", "--prune", "--host=" + sb.EffectiveResticHost(), backup.ForgetGroupFlag}
 	for _, tag := range tags {
 		argv = append(argv, "--tag="+tag)
 	}
