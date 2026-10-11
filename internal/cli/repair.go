@@ -25,7 +25,7 @@ var ErrNotInitialized = errors.New("repository is not initialized")
 
 func newReinitCommand(f *Factory) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "reinit <repository>",
+		Use:     "reinit REPOSITORY",
 		Short:   "Re-run repository initialization",
 		GroupID: GroupLifecycle,
 		Long: `Make the operator run restic init again.
@@ -42,7 +42,7 @@ operator may delete, so only the operator writes it.
 This does not touch the repository's contents. The init Job probes with
 restic cat config first, and restic init refuses a repository that already
 holds a config.`,
-		Args: argCount(1, 1, "name"),
+		Args: f.requiredName(repositoriesOnly, "starts the repository's initialization over"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {
@@ -87,7 +87,7 @@ func newRotatePasswordCommand(f *Factory) *cobra.Command {
 	var archived bool
 
 	cmd := &cobra.Command{
-		Use:     "rotate-password <repository>",
+		Use:     "rotate-password REPOSITORY",
 		Short:   "Add a new restic encryption key",
 		GroupID: GroupLifecycle,
 		Long: `Rotate the restic encryption password.
@@ -104,7 +104,7 @@ The password is the only thing that can decrypt this repository. If the Secret
 is lost and the password was not archived off-cluster, every snapshot is
 unreadable forever -- which is why this refuses to run without the flag saying
 you have somewhere to put it.`,
-		Args: argCount(1, 1, "name"),
+		Args: f.requiredName(anyKind, "changes the key that decrypts the repository"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !archived {
 				return errors.New(

@@ -25,7 +25,8 @@ func newResumeCommand(f *Factory) *cobra.Command {
 }
 
 func newSuspendResumeCommand(f *Factory, suspend bool) *cobra.Command {
-	verb, past, use, argCheck := "resume", "resumed", "resume <name>", argCount(1, 1, "name")
+	verb, past, use, argCheck := "resume", "resumed", "resume NAME",
+		f.requiredName(anyKind, "can release a ScheduledBackup held after a failed restore")
 	long := `Clear spec.suspend so the operator reconciles the resource again.
 
 It also releases a ScheduledBackup held after a failed restore, so it needs a

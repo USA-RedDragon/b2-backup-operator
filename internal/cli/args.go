@@ -102,6 +102,51 @@ func (f *Factory) nameArg(cmd *cobra.Command, args []string, kinds nameKinds) (s
 	return arg, nil
 }
 
+// requiredName wants exactly one name, for a command that can destroy data and
+// so never picks one on its own; does says why. Without a name, the error lists
+// the candidates in the namespace when it can read them.
+func (f *Factory) requiredName(kinds nameKinds, does string) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) == 1 {
+			return nil
+		}
+		if len(args) > 1 {
+			return usageError(cmd, countProblem(1, 1, "name", len(args)))
+		}
+		msg := fmt.Sprintf("%s needs a name, even when there is only one, since it %s: %s",
+			cmd.Name(), does, usageLine(cmd))
+		return &sentinelError{ErrUsage, msg + f.candidates(cmd, kinds)}
+	}
+}
+
+// candidates lists what the namespace holds of kinds, or nothing when that
+// cannot be read.
+func (f *Factory) candidates(cmd *cobra.Command, kinds nameKinds) string {
+	c, err := f.Client()
+	if err != nil {
+		return ""
+	}
+	ns, err := f.Namespace()
+	if err != nil {
+		return ""
+	}
+	backups, repos, err := namesIn(cmd.Context(), c, ns, kinds)
+	if err != nil {
+		return ""
+	}
+	names := make([]string, 0, len(backups)+len(repos))
+	for _, name := range backups {
+		names = append(names, string(TargetScheduledBackup)+"/"+name)
+	}
+	for _, name := range repos {
+		names = append(names, string(TargetRepository)+"/"+name)
+	}
+	if len(names) == 0 {
+		return fmt.Sprintf("\nnamespace %q has no %s", ns, kinds.noun())
+	}
+	return fmt.Sprintf("\nnamespace %q has:\n%s", ns, listNames(names))
+}
+
 // execArgs wants at most one name, then --, then the command.
 func execArgs(cmd *cobra.Command, args []string) error {
 	dash := cmd.ArgsLenAtDash()

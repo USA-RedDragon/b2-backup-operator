@@ -17,14 +17,14 @@ import (
 
 func newCancelCommand(f *Factory) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "cancel <name>",
+		Use:     "cancel NAME",
 		Short:   "Stop the backup that is currently running",
 		GroupID: GroupRun,
 		Long: `Delete the Job of any backup currently in flight.
 
 restic leaves a lock behind when it is killed mid-run. If the next backup then
 reports a stale lock, clear it with: b2bk unlock REPOSITORY`,
-		Args: argCount(1, 1, "name"),
+		Args: f.requiredName(backupsOnly, "kills a running backup"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

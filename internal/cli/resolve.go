@@ -181,8 +181,9 @@ type nameKinds struct {
 }
 
 var (
-	anyKind     = nameKinds{backups: true, repositories: true}
-	backupsOnly = nameKinds{backups: true}
+	anyKind          = nameKinds{backups: true, repositories: true}
+	backupsOnly      = nameKinds{backups: true}
+	repositoriesOnly = nameKinds{repositories: true}
 )
 
 func (k nameKinds) noun() string {

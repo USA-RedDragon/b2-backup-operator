@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli"
@@ -24,6 +26,8 @@ const (
 	argsNS     = "apps"
 	cmdStatus  = "status"
 	cmdSuspend = "suspend"
+	cmdPrune   = "prune"
+	cmdUnlock  = "unlock"
 	argsApp01  = "app-01"
 	usingApp01 = "using " + "scheduledbackup/" + argsApp01 + "\n"
 )
@@ -189,6 +193,71 @@ func TestNoNameUsesTheOnlyOneInTheNamespace(t *testing.T) {
 			}
 			if ran != tt.wantRun {
 				t.Errorf("ran for %q, want %q", ran, tt.wantRun)
+			}
+		})
+	}
+}
+
+var errForbidden = errors.New("forbidden")
+
+func TestDestructiveCommandsNeedANameEvenForTheOnlyOne(t *testing.T) {
+	t.Parallel()
+	listed := "namespace \"apps\" has:\n  scheduledbackup/app-01"
+	both := listed + "\n  repository/vault"
+	tests := []struct {
+		args     []string
+		objs     []client.Object
+		denyList bool
+		want     []string
+	}{
+		{args: []string{cmdRestore, "--to", "x"}, objs: argsBackups(1),
+			want: []string{"restore needs a name, even when there is only one, since it can overwrite live data: " +
+				"b2bk restore NAME\n" + listed}},
+		{args: []string{cmdPrune, "--yes"}, objs: argsBackups(1),
+			want: []string{"prune needs a name", "deletes snapshots: b2bk prune NAME\n" + listed}},
+		{args: []string{cmdUnlock}, objs: argsBackups(1), want: []string{"b2bk unlock NAME\n" + both}},
+		{args: []string{"rotate-password", "--i-have-somewhere-to-archive-the-new-password"}, objs: argsBackups(1),
+			want: []string{"b2bk rotate-password REPOSITORY\n" + both}},
+		{args: []string{"reinit"}, objs: argsBackups(1),
+			want: []string{"b2bk reinit REPOSITORY\nnamespace \"apps\" has:\n  repository/vault"}},
+		{args: []string{"cancel"}, objs: argsBackups(1), want: []string{"b2bk cancel NAME\n" + listed}},
+		{args: []string{"resume"}, objs: argsBackups(1), want: []string{"b2bk resume NAME\n" + both}},
+		{args: []string{cmdRestore}, want: []string{"b2bk restore NAME\n" + `namespace "apps" has no ScheduledBackup`}},
+		{args: []string{cmdRestore}, objs: argsBackups(1), denyList: true, want: []string{"b2bk restore NAME"}},
+		{args: []string{cmdRestore, "a", "b"}, objs: argsBackups(1),
+			want: []string{"restore takes exactly one name, got 2: b2bk restore NAME"}},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s %t", strings.Join(tt.args, " "), tt.denyList), func(t *testing.T) {
+			t.Parallel()
+			b := argsClientBuilder(t, tt.objs...)
+			if tt.denyList {
+				b = b.WithInterceptorFuncs(interceptor.Funcs{
+					List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+						return errForbidden
+					},
+				})
+			}
+			var errOut bytes.Buffer
+			f := cli.NewTestFactoryIn(argsNS, b.Build(), io.Discard, &errOut, nil)
+			cli.RunWith(f, func(runner.Subject, runner.Options) error {
+				t.Error("a Job was started")
+				return nil
+			})
+			err := cli.Execute(f, tt.args...)
+			if !errors.Is(err, cli.ErrUsage) {
+				t.Fatalf("err = %v, want %v", err, cli.ErrUsage)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+			if tt.denyList && strings.Contains(err.Error(), "namespace") {
+				t.Errorf("error %q lists although listing failed", err)
+			}
+			if errOut.Len() > 0 {
+				t.Errorf("stderr = %q, want nothing", errOut.String())
 			}
 		})
 	}

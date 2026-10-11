@@ -83,7 +83,7 @@ func newRestoreCommand(f *Factory) *cobra.Command {
 	var o restoreOptions
 
 	cmd := &cobra.Command{
-		Use:     "restore <name>",
+		Use:     "restore NAME",
 		Short:   "Restore a snapshot",
 		GroupID: GroupSnapshots,
 		Long: `Restore a snapshot to one of four places.
@@ -123,7 +123,7 @@ With no target and a terminal, b2bk asks. Without a terminal it lists the
 targets and exits, so a script never restores somewhere it did not name.
 
 --in-place and --to-database overwrite live data and ask for confirmation.`,
-		Args: argCount(1, 1, "name"),
+		Args: f.requiredName(backupsOnly, "can overwrite live data"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := f.Client()
 			if err != nil {

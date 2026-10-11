@@ -28,7 +28,7 @@ func newUnlockCommand(f *Factory) *cobra.Command {
 	var removeAll, yes bool
 
 	cmd := &cobra.Command{
-		Use:     "unlock <name>",
+		Use:     "unlock NAME",
 		Short:   "Remove a stale restic lock",
 		GroupID: GroupMaintenance,
 		Long: `Remove stale locks from the repository.
@@ -39,7 +39,7 @@ waiting for it. This is the usual fix.
 Only locks restic considers stale are removed. Use --remove-all to remove them
 all, which is safe only when nothing is running: it is refused while any Job of
 a ScheduledBackup on the repository, or of the Repository itself, is running.`,
-		Args: argCount(1, 1, "name"),
+		Args: f.requiredName(anyKind, "can remove the lock of a running backup"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if removeAll {
 				if err := confirm(f, yes, "every lock on the repository, including live ones", args[0]); err != nil {
@@ -120,7 +120,7 @@ func newPruneCommand(f *Factory) *cobra.Command {
 	var dryRun, yes bool
 
 	cmd := &cobra.Command{
-		Use:     "prune <name>",
+		Use:     "prune NAME",
 		Short:   "Apply the retention policy and reclaim space",
 		GroupID: GroupMaintenance,
 		Long: `Run restic forget --prune using the ScheduledBackup's retention policy.
@@ -136,7 +136,7 @@ It runs only once the operator has rendered the backup's CronJob from the
 ScheduledBackup and Repository as they are now and reports it Ready, and only
 while nothing else in the namespace forgets under its tags: a ScheduledBackup,
 a CronJob left without one, or a backup Job still running an older spec.`,
-		Args: argCount(1, 1, "name"),
+		Args: f.requiredName(backupsOnly, "deletes snapshots"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !dryRun {
 				if err := confirm(f, yes, "snapshots outside the retention policy, permanently", args[0]); err != nil {
