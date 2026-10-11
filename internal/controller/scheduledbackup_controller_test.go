@@ -713,3 +713,41 @@ func TestEditingTheOlderBackupIntoAConflictStopsIt(t *testing.T) {
 		t.Errorf("the CronJob stayed suspended after the conflict was resolved: %v", err)
 	}
 }
+
+func TestACronJobThatCannotBeRebuiltIsSuspended(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		edit func(*b2backupv1.ScheduledBackup)
+	}{
+		{"moved to a Repository that does not exist", func(sb *b2backupv1.ScheduledBackup) {
+			sb.Spec.RepositoryRef.Name = "not-yet"
+		}},
+		{"a spec the operator rejects", func(sb *b2backupv1.ScheduledBackup) {
+			sb.Spec.Env = map[string]string{"RESTIC_HOST": "elsewhere"}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r, c := backupHarness(t, initializedRepo(), scheduledBackup())
+			reconcileBackup(t, r)
+			var sb b2backupv1.ScheduledBackup
+			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: resticName}, &sb); err != nil {
+				t.Fatal(err)
+			}
+			tt.edit(&sb)
+			if err := c.Update(context.Background(), &sb); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: resticName})
+			var cj batchv1.CronJob
+			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+				t.Fatal(err)
+			}
+			if cj.Spec.Suspend == nil || !*cj.Spec.Suspend {
+				t.Error("a CronJob from a spec that no longer exists kept firing")
+			}
+		})
+	}
+}
