@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,8 @@ const (
 
 	kindScheduledBackup = "ScheduledBackup"
 	moreBackupName      = "restic-more"
+	elsewhereBackupName = "restic-elsewhere"
+	reportingTag        = "db-reporting"
 
 	hourlySchedule = "@hourly"
 	testScript     = "restic backup /data"
@@ -528,7 +531,7 @@ func TestTwoBackupsIntoOneRepositoryNeedTagsOfTheirOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cond := apimeta.FindStatusCondition(got.Status.Conditions, b2backupv1.ScheduledBackupConditionReady); cond == nil ||
-		cond.Reason != "TagConflict" || !strings.Contains(cond.Message, `"db"`) {
+		cond.Reason != reasonTagConflict || !strings.Contains(cond.Message, `"db"`) {
 		t.Errorf("Ready = %+v, want TagConflict naming tag db", cond)
 	}
 	var cj batchv1.CronJob
@@ -540,7 +543,7 @@ func TestTwoBackupsIntoOneRepositoryNeedTagsOfTheirOwn(t *testing.T) {
 	}
 
 	newer = &got
-	newer.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: "db-reporting"}}
+	newer.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: reportingTag}}
 	if err := c.Update(context.Background(), newer); err != nil {
 		t.Fatal(err)
 	}
@@ -549,5 +552,118 @@ func TestTwoBackupsIntoOneRepositoryNeedTagsOfTheirOwn(t *testing.T) {
 	}
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: moreBackupName + "-backup"}, &cj); err != nil {
 		t.Errorf("a backup with tags of its own got no CronJob: %v", err)
+	}
+}
+
+func TestAScriptForgettingEveryTagConflicts(t *testing.T) {
+	t.Parallel()
+	script := scheduledBackup()
+	script.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	script.Spec.Sources = nil
+	script.Spec.Script = "restic backup --tag=db --stdin-from-command -- backup-cnpg.sh\nrestic forget --prune \\\n  --keep-last=1"
+	sources := scheduledBackup()
+	sources.Name = moreBackupName
+	sources.CreationTimestamp = metav1.NewTime(time.Now())
+	sources.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: reportingTag}}
+	elsewhere := scheduledBackup()
+	elsewhere.Name = elsewhereBackupName
+	elsewhere.CreationTimestamp = metav1.NewTime(time.Now())
+	elsewhere.Spec.ResticHost = "another-host"
+	elsewhere.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: "db-other"}}
+	r, c := backupHarness(t, initializedRepo(), script, sources, elsewhere)
+	for _, name := range []string{resticName, moreBackupName, elsewhereBackupName} {
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name     string
+		conflict bool
+	}{
+		{resticName, false},
+		{moreBackupName, true},
+		{elsewhereBackupName, false},
+	}
+	for _, tt := range tests {
+		var got b2backupv1.ScheduledBackup
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: tt.name}, &got); err != nil {
+			t.Fatal(err)
+		}
+		cond := apimeta.FindStatusCondition(got.Status.Conditions, b2backupv1.ScheduledBackupConditionReady)
+		if (cond != nil && cond.Reason == reasonTagConflict) != tt.conflict {
+			t.Errorf("%s: Ready = %+v, want conflict %t", tt.name, cond, tt.conflict)
+		}
+	}
+}
+
+func TestBackupTagsReadEveryShapeOfScript(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		script   string
+		tags     []string
+		unscoped bool
+	}{
+		{"scoped", "restic forget --prune --tag=db --keep-last=1", []string{"db"}, false},
+		{"after &&", "restic backup --tag=a /x && restic forget --prune --keep-last=1", []string{"a"}, true},
+		{"after set -e;", "set -e; restic forget --keep-last=1", nil, true},
+		{"a full path", "/usr/bin/restic forget --keep-last=1", nil, true},
+		{"global flags first", "restic -q forget --keep-last=1", nil, true},
+		{"behind exec", "exec restic forget --keep-last=1", nil, true},
+		{"inside if", "if true; then restic forget --keep-last=1; fi", nil, true},
+		{"a --tag in a comment", "restic forget --keep-last=1 # see --tag=x later", nil, true},
+		{"a separate tag word", "restic forget --tag db,files --keep-last=1", []string{"db", "files"}, false},
+		{"continued lines", "restic forget --prune \\\n  --tag=db \\\n  --keep-last=1", []string{"db"}, false},
+		{"a backup tag only", "restic backup --tag=db-reporting --stdin-from-command -- dumpdb cnpg",
+			[]string{reportingTag}, false},
+		{"quoted tags", `restic backup --tag "files" /data && restic forget --tag='files' --tag="db" --keep-last 1`,
+			[]string{"files", "db"}, false},
+		{"a # inside quotes", "echo 'step #1'; restic forget --keep-last 1", nil, true},
+		{"a global flag with a value", "restic -o s3.connections=4 forget --keep-last 1", nil, true},
+		{"a cache dir first", "restic --cache-dir /cache forget --prune --keep-daily 7", nil, true},
+		{"a repository first", `restic -r "$RESTIC_REPOSITORY" forget --keep-last 1`, nil, true},
+		{"a quote spanning lines", "echo \"a\n# b\"; restic forget --keep-last 1", nil, true},
+		{"an escaped space before #", "echo a\\ #b; restic forget --keep-last 1", nil, true},
+		{"a computed tag", "restic backup --tag=$(echo shared) /x && restic forget --tag=$TAG --keep-last 1", nil, true},
+		{"a real comment", "restic forget --tag=db --keep-last 1 # forget --keep-last 1", []string{"db"}, false},
+		{"eval", `eval "restic forget --keep-last 1"`, nil, true},
+		{"sh -c", `sh -c 'restic forget --keep-last 1'`, nil, true},
+		{"a variable", "R=restic; $R forget --keep-last 1", nil, true},
+		{"a function", "f() { restic \"$@\"; }; f forget --keep-last 1", nil, true},
+		{"eval of a scoped forget", `eval "restic forget --tag=db --keep-last 1"`, nil, true},
+	}
+	for _, tt := range tests {
+		sb := scheduledBackup()
+		sb.Spec.Sources = nil
+		sb.Spec.Script = tt.script
+		tags, unscoped := backupTags(sb)
+		if !slices.Equal(tags, tt.tags) || unscoped != tt.unscoped {
+			t.Errorf("%s: backupTags = %v, %t; want %v, %t", tt.name, tags, unscoped, tt.tags, tt.unscoped)
+		}
+	}
+}
+
+func TestAScriptSharingASourcesTagConflicts(t *testing.T) {
+	t.Parallel()
+	script := scheduledBackup()
+	script.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	script.Spec.Sources = nil
+	script.Spec.Script = "restic backup --tag=db-reporting --stdin-from-command -- dumpdb cnpg\n" +
+		"restic forget --prune --tag=db-reporting --keep-last=1"
+	sources := scheduledBackup()
+	sources.Name = moreBackupName
+	sources.CreationTimestamp = metav1.NewTime(time.Now())
+	sources.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: reportingTag}}
+	r, c := backupHarness(t, initializedRepo(), script, sources)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: moreBackupName}); err != nil {
+		t.Fatal(err)
+	}
+	var got b2backupv1.ScheduledBackup
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: moreBackupName}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, b2backupv1.ScheduledBackupConditionReady); cond == nil ||
+		cond.Reason != reasonTagConflict {
+		t.Errorf("Ready = %+v, want TagConflict with the script's tag", cond)
 	}
 }
