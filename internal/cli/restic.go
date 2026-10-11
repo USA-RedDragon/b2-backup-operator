@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,6 +22,10 @@ const (
 // ErrNoBackupForRepository means no backup references the repository, so there is no
 // CronJob to derive a Job from.
 var ErrNoBackupForRepository = errors.New("no ScheduledBackup uses this repository")
+
+// ErrSeveralBackupsForRepository means more than one backup references the
+// repository, and each has its own retention, tags, claims and database.
+var ErrSeveralBackupsForRepository = errors.New("several ScheduledBackups use this repository")
 
 // Runner returns a Runner backed by this Factory's clients.
 func (f *Factory) Runner() (*runner.Runner, error) {
@@ -66,14 +71,24 @@ func resolveRunTarget(
 	if err := c.List(ctx, &backups, client.InNamespace(repo.Namespace)); err != nil {
 		return nil, nil, err
 	}
+	var found *b2backupv1.ScheduledBackup
+	var names []string
 	for i := range backups.Items {
 		if backups.Items[i].Spec.RepositoryRef.Name == repo.Name {
-			return &backups.Items[i], repo, nil
+			found = &backups.Items[i]
+			names = append(names, "scheduledbackup/"+found.Name)
 		}
 	}
-	return nil, nil, fmt.Errorf(
-		"%w: repository/%s has no ScheduledBackup to borrow credentials and placement from",
-		ErrNoBackupForRepository, repo.Name)
+	switch len(names) {
+	case 0:
+		return nil, nil, fmt.Errorf(
+			"%w: repository/%s has no ScheduledBackup to borrow credentials and placement from",
+			ErrNoBackupForRepository, repo.Name)
+	case 1:
+		return found, repo, nil
+	}
+	return nil, nil, fmt.Errorf("%w: repository/%s is used by %s; name one of them",
+		ErrSeveralBackupsForRepository, repo.Name, strings.Join(names, ", "))
 }
 
 func sourceTags(sb *b2backupv1.ScheduledBackup) []string {

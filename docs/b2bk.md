@@ -56,6 +56,11 @@ than guessed at.
 | `sb/web-files` | A ScheduledBackup. Also `scheduledbackup/`, `scheduledbackups/`, `backup/`, `backups/` |
 | `repo/prod` | A Repository. Also `repository/`, `repositories/`, `repos/` |
 
+A command that runs in a pod builds it from a ScheduledBackup's CronJob, so a
+Repository stands for the one ScheduledBackup that uses it. When several do, the
+command refuses and lists them: each has its own retention, tags, claims and
+database, and picking one would prune or restore under the wrong one.
+
 Standard kubectl connection flags work everywhere: `-n/--namespace`,
 `--context`, `--kubeconfig`. `-A` and `-o` appear only on `get`, where they
 mean something.

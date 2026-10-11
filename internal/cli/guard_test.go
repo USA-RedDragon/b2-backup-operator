@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -172,5 +173,34 @@ func TestOverwritingRestoresRefuseToActOnStaleStatus(t *testing.T) {
 				checkStalenessError(t, target.restore(context.Background(), factoryWithClient(t, c), c, fx.sb), tt.wants)
 			})
 		}
+	}
+}
+
+func TestARepositoryWithSeveralBackupsNeedsOneNamed(t *testing.T) {
+	t.Parallel()
+	fx := currentBackup(t)
+	other := newBackup("other", testRepoName)
+	c := newClient(t, fx.objects(other)...)
+	cmd := newPruneCommand(factoryWithClient(t, c))
+	cmd.SetArgs([]string{subjectRepo, "--yes"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "other") || !strings.Contains(err.Error(), testBackupName) {
+		t.Errorf("err = %v, want both ScheduledBackups named", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "name one") {
+		t.Errorf("err = %v, want it to ask for one", err)
+	}
+}
+
+func TestRestoreOfARepositoryWithSeveralBackupsNeedsOneNamed(t *testing.T) {
+	t.Parallel()
+	fx := currentBackup(t, withVolume)
+	other := newBackup("other", testRepoName)
+	cmd := newRestoreCommand(factoryWithClient(t, newClient(t, fx.objects(other)...)))
+	cmd.SetArgs([]string{subjectRepo, "--in-place", "--yes"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); !errors.Is(err, ErrSeveralBackupsForRepository) {
+		t.Errorf("err = %v, want the restore refused until one ScheduledBackup is named", err)
 	}
 }
