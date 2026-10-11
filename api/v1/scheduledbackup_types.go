@@ -230,35 +230,6 @@ type CacheSpec struct {
 	AccessMode corev1.PersistentVolumeAccessMode `json:"accessMode,omitempty"`
 }
 
-// HealthchecksSpec configures Healthchecks.io pings around each run.
-type HealthchecksSpec struct {
-	// Enabled turns pinging on. Defaults to the operator's setting.
-	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
-
-	// PingKeySecretRef holds the project ping key. Used with slug.
-	// +optional
-	PingKeySecretRef *corev1.SecretKeySelector `json:"pingKeySecretRef,omitempty"`
-
-	// Slug is the check slug to ping. Defaults to the namespace.
-	// +kubebuilder:validation:Pattern=`^[a-z0-9_-]+$`
-	// +kubebuilder:validation:MaxLength=100
-	// +optional
-	Slug string `json:"slug,omitempty"`
-
-	// Create makes runitor create the check on first ping. Ignored when pinging by UUID.
-	// +optional
-	Create *bool `json:"create,omitempty"`
-
-	// APIURL overrides the Healthchecks endpoint.
-	// +optional
-	APIURL string `json:"apiURL,omitempty"`
-
-	// UUIDSecretRef holds a check UUID to ping directly, instead of slug and ping key.
-	// +optional
-	UUIDSecretRef *corev1.SecretKeySelector `json:"uuidSecretRef,omitempty"`
-}
-
 // ScheduledBackupSpec defines the desired state of a ScheduledBackup.
 // +kubebuilder:validation:XValidation:rule="!has(self.env) || self.env.all(k, k != 'RESTIC_REPOSITORY' && k != 'RESTIC_PASSWORD')",message="spec.env must not set RESTIC_REPOSITORY or RESTIC_PASSWORD: they come from the Repository's Secret, and a container's env overrides envFrom"
 type ScheduledBackupSpec struct {
@@ -332,10 +303,6 @@ type ScheduledBackupSpec struct {
 	// Cache configures restic's cache volume.
 	// +optional
 	Cache *CacheSpec `json:"cache,omitempty"`
-
-	// Healthchecks configures Healthchecks.io pings.
-	// +optional
-	Healthchecks *HealthchecksSpec `json:"healthchecks,omitempty"`
 
 	// Affinity for the backup pod.
 	// +optional
@@ -475,14 +442,6 @@ type ScheduledBackup struct {
 
 	// +optional
 	Status ScheduledBackupStatus `json:"status,omitzero"`
-}
-
-// Slug returns the Healthchecks check slug to ping.
-func (s *ScheduledBackup) Slug() string {
-	if s.Spec.Healthchecks != nil && s.Spec.Healthchecks.Slug != "" {
-		return s.Spec.Healthchecks.Slug
-	}
-	return s.Namespace
 }
 
 // EffectiveResticHost returns the host recorded on this backup's snapshots.

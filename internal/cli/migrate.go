@@ -47,8 +47,8 @@ which is where the cloud credentials for that live. Pass --repository-id to
 skip decryption entirely.
 
 Before applying, reduce the app's secret.yaml to just RESTIC_PASSWORD:
-RESTIC_REPOSITORY is synthesized by the operator and CHECK_UUID is replaced by
-healthchecks slug pinging. Do not remove RESTIC_PASSWORD -- it is the only
+RESTIC_REPOSITORY is synthesized by the operator and CHECK_UUID is no longer
+used. Do not remove RESTIC_PASSWORD -- it is the only
 off-cluster copy of the key that decrypts these backups.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -158,12 +158,6 @@ func migrateHelmRelease(
 			Schedule:      shorthandSchedule(controller.CronJob.Schedule),
 			Sources:       sources,
 			Retention:     retention,
-			Healthchecks: &b2backupv1.HealthchecksSpec{
-				PingKeySecretRef: &corev1.SecretKeySelector{
-					Name: "healthchecks-ping-key",
-					Key:  "PING_KEY",
-				},
-			},
 		},
 	}
 

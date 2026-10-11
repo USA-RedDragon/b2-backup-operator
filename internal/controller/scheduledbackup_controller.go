@@ -120,21 +120,6 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, nil
 	}
 
-	if other, err := r.slugConflict(ctx, sb); err != nil {
-		return ctrl.Result{}, err
-	} else if other != "" {
-		r.setCondition(sb, metav1.Condition{
-			Type:   b2backupv1.ScheduledBackupConditionReady,
-			Status: metav1.ConditionFalse,
-			Reason: "SlugConflict",
-			Message: fmt.Sprintf(
-				"healthchecks slug %q is already reported by ScheduledBackup %q; "+
-					"set spec.healthchecks.slug to something unique",
-				backup.Reporter(sb, r.Config).Slug(), other),
-		})
-		return ctrl.Result{RequeueAfter: backupRequeueInterval}, nil
-	}
-
 	if err := r.reconcileCache(ctx, sb); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -211,11 +196,6 @@ func (r *ScheduledBackupReconciler) reconcile(
 		r.Recorder.Eventf(sb, nil, corev1.EventTypeWarning, "AppendOnlyWithRetention", "Reconcile",
 			"%s", message)
 		degrade(&ready, "AppendOnlyWithRetention", message)
-	}
-	if err := backup.Reporter(sb, r.Config).ConfigError(); err != nil {
-		r.Recorder.Eventf(sb, nil, corev1.EventTypeWarning, "HealthchecksNotConfigured", "Reconcile",
-			"Dropped healthchecks reporting from CronJob %s: %s", desired.Name, err.Error())
-		degrade(&ready, "HealthchecksNotConfigured", err.Error())
 	}
 	r.setCondition(sb, ready)
 
@@ -295,42 +275,6 @@ func (r *ScheduledBackupReconciler) deleteCache(
 		return fmt.Errorf("deleting cache volume: %w", err)
 	}
 	return nil
-}
-
-func (r *ScheduledBackupReconciler) slugConflict(
-	ctx context.Context, sb *b2backupv1.ScheduledBackup,
-) (string, error) {
-	mine := backup.Reporter(sb, r.Config)
-	if !mine.Enabled() || mine.PingsByUUID() {
-		return "", nil
-	}
-
-	var list b2backupv1.ScheduledBackupList
-	if err := r.List(ctx, &list, client.InNamespace(sb.Namespace)); err != nil {
-		return "", fmt.Errorf("listing backups in %s: %w", sb.Namespace, err)
-	}
-
-	for i := range list.Items {
-		other := &list.Items[i]
-		if other.Name == sb.Name || !other.DeletionTimestamp.IsZero() {
-			continue
-		}
-		theirs := backup.Reporter(other, r.Config)
-		if !theirs.Enabled() || theirs.PingsByUUID() || theirs.Slug() != mine.Slug() {
-			continue
-		}
-		if olderThan(other, sb) {
-			return other.Name, nil
-		}
-	}
-	return "", nil
-}
-
-func olderThan(a, b *b2backupv1.ScheduledBackup) bool {
-	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
-		return a.CreationTimestamp.Before(&b.CreationTimestamp)
-	}
-	return a.Name < b.Name
 }
 
 func (r *ScheduledBackupReconciler) patchStatus(

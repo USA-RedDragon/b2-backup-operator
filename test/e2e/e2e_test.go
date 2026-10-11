@@ -296,8 +296,6 @@ spec:
   sources:
     - type: cnpg
       tag: db
-  healthchecks:
-    enabled: false
 `, name, testNS)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(manifest)
@@ -502,8 +500,6 @@ spec:
   sources:
     - type: cnpg
       tag: db
-  healthchecks:
-    enabled: false
 `, name, testNS)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(manifest)

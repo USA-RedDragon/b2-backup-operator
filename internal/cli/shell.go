@@ -25,7 +25,7 @@ func newShellCommand(f *Factory) *cobra.Command {
 		GroupID: GroupEscape,
 		Long: `Start a pod from the backup image and drop into a shell.
 
-restic, runitor, ts and dumpdb are on PATH, and RESTIC_REPOSITORY and
+restic, ts and dumpdb are on PATH, and RESTIC_REPOSITORY and
 RESTIC_PASSWORD are already set, so restic works with no arguments:
 
     restic snapshots

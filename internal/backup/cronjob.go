@@ -10,7 +10,6 @@ import (
 	"time"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
-	"github.com/USA-RedDragon/b2-backup-operator/internal/healthchecks"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -46,24 +45,18 @@ const (
 )
 
 var envSource = map[string]string{
-	envTZ:                   "spec.timeZone",
-	envResticHost:           "spec.resticHost",
-	envResticRepository:     "the Repository's Secret",
-	envResticPassword:       "the Repository's Secret",
-	envDBHost:               "spec.database.host",
-	envDBDatabase:           "spec.database.name",
-	envDBUsername:           "spec.database.user",
-	healthchecks.EnvAPIURL:  "spec.healthchecks.apiURL",
-	healthchecks.EnvSlug:    "spec.healthchecks.slug",
-	healthchecks.EnvPingKey: "spec.healthchecks.pingKeySecretRef",
-	healthchecks.EnvUUID:    "spec.healthchecks.uuidSecretRef",
+	envTZ:               "spec.timeZone",
+	envResticHost:       "spec.resticHost",
+	envResticRepository: "the Repository's Secret",
+	envResticPassword:   "the Repository's Secret",
+	envDBHost:           "spec.database.host",
+	envDBDatabase:       "spec.database.name",
+	envDBUsername:       "spec.database.user",
 }
 
 // Config is the operator-wide backup configuration.
 type Config struct {
 	Image string
-
-	Healthchecks healthchecks.Config
 
 	CacheStorageClass string
 }
@@ -91,11 +84,6 @@ func DefaultImage() string {
 func DefaultConfig() Config {
 	return Config{
 		Image: DefaultImage(),
-		Healthchecks: healthchecks.Config{
-			Enabled:    true,
-			APIURL:     "http://healthchecks.healthchecks:8000/ping",
-			AutoCreate: true,
-		},
 	}
 }
 
@@ -226,7 +214,7 @@ func BuildJobTemplate(
 		return batchv1.JobTemplateSpec{}, fmt.Errorf("no backup image configured")
 	}
 
-	env, err := buildEnv(sb, cfg)
+	env, err := buildEnv(sb)
 	if err != nil {
 		return batchv1.JobTemplateSpec{}, err
 	}
@@ -235,7 +223,7 @@ func BuildJobTemplate(
 	container := corev1.Container{
 		Name:            containerName,
 		Image:           image,
-		Command:         buildCommand(sb, cfg, script),
+		Command:         []string{"sh", "-c", script},
 		Env:             env,
 		EnvFrom:         []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{Name: repo.SecretName()}}},
 		VolumeMounts:    mounts,
@@ -366,27 +354,7 @@ func containerSecurityContext(sb *b2backupv1.ScheduledBackup) *corev1.SecurityCo
 	}
 }
 
-// Reporter returns the Healthchecks reporter for a backup.
-func Reporter(sb *b2backupv1.ScheduledBackup, cfg Config) healthchecks.Reporter {
-	var o healthchecks.Overrides
-	if hc := sb.Spec.Healthchecks; hc != nil {
-		o = healthchecks.Overrides{
-			Enabled:    hc.Enabled,
-			Create:     hc.Create,
-			APIURL:     hc.APIURL,
-			Slug:       hc.Slug,
-			PingKeyRef: hc.PingKeySecretRef,
-			UUIDRef:    hc.UUIDSecretRef,
-		}
-	}
-	return healthchecks.Resolve(cfg.Healthchecks, o, sb.Namespace)
-}
-
-func buildCommand(sb *b2backupv1.ScheduledBackup, cfg Config, script string) []string {
-	return Reporter(sb, cfg).Wrap([]string{"sh", "-c", script})
-}
-
-func buildEnv(sb *b2backupv1.ScheduledBackup, cfg Config) ([]corev1.EnvVar, error) {
+func buildEnv(sb *b2backupv1.ScheduledBackup) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{
 		{Name: envTZ, Value: sb.Spec.TimeZone},
 		resticHostEnv(sb),
@@ -403,10 +371,7 @@ func buildEnv(sb *b2backupv1.ScheduledBackup, cfg Config) ([]corev1.EnvVar, erro
 		)
 	}
 
-	reporter := Reporter(sb, cfg)
-	env = append(env, reporter.Env()...)
-
-	if err := rejectReservedEnv(sb.Spec.Env, reservedEnvNames(env, reporter)); err != nil {
+	if err := rejectReservedEnv(sb.Spec.Env, reservedEnvNames(env)); err != nil {
 		return nil, err
 	}
 
@@ -429,24 +394,13 @@ func resticHostEnv(sb *b2backupv1.ScheduledBackup) corev1.EnvVar {
 	}
 }
 
-func reservedEnvNames(operatorSet []corev1.EnvVar, reporter healthchecks.Reporter) map[string]struct{} {
-	reserved := make(map[string]struct{}, len(operatorSet)+6)
+func reservedEnvNames(operatorSet []corev1.EnvVar) map[string]struct{} {
+	reserved := make(map[string]struct{}, len(operatorSet)+2)
 	for _, e := range operatorSet {
 		reserved[e.Name] = struct{}{}
 	}
 	reserved[envResticRepository] = struct{}{}
 	reserved[envResticPassword] = struct{}{}
-
-	if reporter.Enabled() {
-		for _, name := range []string{
-			healthchecks.EnvAPIURL,
-			healthchecks.EnvSlug,
-			healthchecks.EnvPingKey,
-			healthchecks.EnvUUID,
-		} {
-			reserved[name] = struct{}{}
-		}
-	}
 	return reserved
 }
 

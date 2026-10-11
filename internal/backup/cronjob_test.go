@@ -7,7 +7,6 @@ import (
 	"time"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
-	"github.com/USA-RedDragon/b2-backup-operator/internal/healthchecks"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
@@ -25,11 +24,6 @@ func testConfig() Config {
 	return Config{
 		Image:             "ghcr.io/usa-reddragon/b2-backup-operator-restic:test",
 		CacheStorageClass: "nfs-regional-ssd",
-		Healthchecks: healthchecks.Config{
-			Enabled:    true,
-			APIURL:     "http://healthchecks.healthchecks:8000/ping",
-			AutoCreate: true,
-		},
 	}
 }
 
@@ -47,12 +41,6 @@ func testBackup(mutate func(*b2backupv1.ScheduledBackup)) *b2backupv1.ScheduledB
 			Schedule:      testSchedule,
 			TimeZone:      "America/Chicago",
 			Sources:       []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}},
-			Healthchecks: &b2backupv1.HealthchecksSpec{
-				PingKeySecretRef: &corev1.SecretKeySelector{
-					Name: "healthchecks-ping-key",
-					Key:  "PING_KEY",
-				},
-			},
 		},
 	}
 	if mutate != nil {
@@ -132,42 +120,18 @@ func TestCacheMountsWhereTheImageExpects(t *testing.T) {
 	}
 }
 
-func TestHealthchecksSlugMode(t *testing.T) {
+func TestCommandRunsTheScriptUnderSh(t *testing.T) {
 	c := containerOf(t, testBackup(nil), testConfig())
 
-	if c.Command[0] != "runitor" {
-		t.Fatalf("command = %v, want it wrapped in runitor", c.Command)
+	if len(c.Command) != 3 || c.Command[0] != "sh" || c.Command[1] != "-c" {
+		t.Fatalf("command = %v, want sh -c <script>", c.Command)
 	}
-	if !slices.Contains(c.Command, "-create") {
-		t.Error("expected -create so the check auto-provisions on first ping")
-	}
-	if env := envOf(c, "CHECK_SLUG"); env == nil || env.Value != "myapp-prod" {
-		t.Errorf("CHECK_SLUG = %v, want the namespace", env)
-	}
-	if env := envOf(c, "PING_KEY"); env == nil || env.ValueFrom == nil ||
-		env.ValueFrom.SecretKeyRef.Name != "healthchecks-ping-key" {
-		t.Error("PING_KEY must come from the per-resource secret ref")
-	}
-	if envOf(c, "CHECK_UUID") != nil {
-		t.Error("slug mode must not set CHECK_UUID")
-	}
-}
-
-func TestHealthchecksEnabledWithoutKeyStillSchedules(t *testing.T) {
-	sb := testBackup(func(s *b2backupv1.ScheduledBackup) { s.Spec.Healthchecks = nil })
-	cj, err := BuildCronJob(sb, testRepo(), testConfig())
+	script, err := Render(&testBackup(nil).Spec)
 	if err != nil {
-		t.Fatalf("BuildCronJob() error = %v, want a CronJob so backups keep running", err)
+		t.Fatal(err)
 	}
-	c := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0]
-
-	if c.Command[0] == "runitor" {
-		t.Errorf("command = %v, want it unwrapped when there is no ping key", c.Command)
-	}
-	for _, name := range []string{"HC_API_URL", "CHECK_SLUG", "PING_KEY", "CHECK_UUID"} {
-		if envOf(c, name) != nil {
-			t.Errorf("%s must not be set when healthchecks cannot be configured", name)
-		}
+	if c.Command[2] != script {
+		t.Errorf("command script = %q, want the rendered script", c.Command[2])
 	}
 }
 
@@ -541,9 +505,6 @@ func TestReservedEnvNamesAreRejected(t *testing.T) {
 	cnpg := func(s *b2backupv1.ScheduledBackup) {
 		s.Spec.Database = &b2backupv1.DatabaseSpec{Engine: b2backupv1.DatabaseEngineCNPG}
 	}
-	noHealthchecks := func(s *b2backupv1.ScheduledBackup) {
-		s.Spec.Healthchecks = &b2backupv1.HealthchecksSpec{Enabled: ptr.To(false)}
-	}
 
 	tests := []struct {
 		name    string
@@ -555,11 +516,6 @@ func TestReservedEnvNamesAreRejected(t *testing.T) {
 		{name: "encryption key", key: envResticPassword, wantErr: true},
 		{name: "snapshot host", key: envResticHost, wantErr: true},
 		{name: "time zone", key: envTZ, wantErr: true},
-		{name: "ping key", key: healthchecks.EnvPingKey, wantErr: true},
-		{name: "check slug", key: healthchecks.EnvSlug, wantErr: true},
-		{name: "check api url", key: healthchecks.EnvAPIURL, wantErr: true},
-		{name: "check uuid alongside slug pinging", key: healthchecks.EnvUUID, wantErr: true},
-		{name: "check uuid with pinging off", setup: noHealthchecks, key: healthchecks.EnvUUID},
 		{name: "mariadb host", setup: mariadb, key: envDBHost, wantErr: true},
 		{name: "mariadb database", setup: mariadb, key: envDBDatabase, wantErr: true},
 		{name: "cnpg host, which the operator never sets", setup: cnpg, key: envDBHost},

@@ -30,11 +30,6 @@ spec:
     mountPath: /data
   cache:
     storageClass: nfs-regional-ssd
-  healthchecks:
-    slug: myapp-prod-restic
-    pingKeySecretRef:
-      name: healthchecks-ping-key
-      key: PING_KEY
 ---
 apiVersion: b2backup.mcswain.dev/v1
 kind: ScheduledBackup
@@ -68,10 +63,6 @@ spec:
     existingClaim: otherapp-prod-data
   cache:
     storageClass: nfs-regional-ssd
-  healthchecks:
-    pingKeySecretRef:
-      name: healthchecks-ping-key
-      key: PING_KEY
 ---
 apiVersion: b2backup.mcswain.dev/v1
 kind: ScheduledBackup
@@ -96,8 +87,3 @@ spec:
     readOnly: true
   cache:
     storageClass: nfs-regional-ssd
-  healthchecks:
-    slug: myapp-prod-nightly
-    pingKeySecretRef:
-      name: healthchecks-ping-key
-      key: PING_KEY

@@ -14,7 +14,6 @@ api/v1/zz_generated.*          Auto-generated (DO NOT EDIT)
 internal/controller/           Reconciliation for both kinds
 internal/backup/               Rendering: CronJob, schedule, backup script
 internal/borgbase/             GraphQL client for the BorgBase API
-internal/healthchecks/         runitor wrapping, no API client of its own
 internal/secrets/              Restic password generation
 internal/cli/                  b2bk commands, including migrate and parity
 internal/cli/runner/           Ephemeral Jobs for one-off restic commands

@@ -21,18 +21,14 @@ import (
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
-	"github.com/USA-RedDragon/b2-backup-operator/internal/healthchecks"
 )
 
 const (
 	cronJobName = resticName + "-backup"
 	testRepoID  = "abc12345"
 
-	newBackupName   = "restic-new"
 	filesBackupName = "restic-files"
 	dbBackupName    = "restic-db"
-
-	healthchecksAPIURL = "http://healthchecks:8000/ping"
 
 	kindScheduledBackup = "ScheduledBackup"
 
@@ -53,8 +49,7 @@ func backupHarness(t *testing.T, objs ...client.Object) (*ScheduledBackupReconci
 		Scheme:   scheme,
 		Recorder: events.NewFakeRecorder(100),
 		Config: backup.Config{
-			Image:        "ghcr.io/usa-reddragon/b2-backup-operator-restic:test",
-			Healthchecks: healthchecks.Config{Enabled: false},
+			Image: "ghcr.io/usa-reddragon/b2-backup-operator-restic:test",
 		},
 	}, c
 }
@@ -348,62 +343,6 @@ func TestCopiesCronJobStatusTimes(t *testing.T) {
 	}
 }
 
-func TestSlugConflictBlocksTheNewerBackup(t *testing.T) {
-	pingKey := &corev1.SecretKeySelector{
-		Name: "healthchecks-ping-key", Key: "PING_KEY",
-	}
-	incumbent := scheduledBackup()
-	incumbent.Name = "restic-old"
-	incumbent.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
-	incumbent.Spec.Healthchecks = &b2backupv1.HealthchecksSpec{PingKeySecretRef: pingKey}
-
-	newcomer := scheduledBackup()
-	newcomer.Name = newBackupName
-	newcomer.CreationTimestamp = metav1.NewTime(time.Now())
-	newcomer.Spec.Healthchecks = &b2backupv1.HealthchecksSpec{PingKeySecretRef: pingKey}
-
-	r, c := backupHarness(t, initializedRepo(), incumbent, newcomer)
-	r.Config.Healthchecks = healthchecks.Config{
-		Enabled: true, APIURL: healthchecksAPIURL, AutoCreate: true,
-	}
-
-	res, err := r.Reconcile(context.Background(), ctrl.Request{
-		Namespace: testNS, Name: newBackupName,
-	})
-	if err != nil {
-		t.Fatalf("reconciling the newcomer: %v", err)
-	}
-	if res.RequeueAfter != backupRequeueInterval {
-		t.Errorf("RequeueAfter = %v, want %v so the block clears on its own",
-			res.RequeueAfter, backupRequeueInterval)
-	}
-	var got b2backupv1.ScheduledBackup
-	if err := c.Get(context.Background(),
-		types.NamespacedName{Namespace: testNS, Name: newBackupName}, &got); err != nil {
-		t.Fatal(err)
-	}
-	cond := apimeta.FindStatusCondition(got.Status.Conditions, b2backupv1.ScheduledBackupConditionReady)
-	if cond == nil || cond.Reason != "SlugConflict" {
-		t.Fatalf("newcomer Ready = %+v, want reason SlugConflict", cond)
-	}
-	if err := c.Get(context.Background(),
-		types.NamespacedName{Namespace: testNS, Name: newBackupName + "-backup"},
-		&batchv1.CronJob{}); !apierrors.IsNotFound(err) {
-		t.Error("the conflicting backup was scheduled anyway")
-	}
-
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{
-		Namespace: testNS, Name: "restic-old",
-	}); err != nil {
-		t.Fatalf("reconciling the incumbent: %v", err)
-	}
-	if err := c.Get(context.Background(),
-		types.NamespacedName{Namespace: testNS, Name: "restic-old-backup"},
-		&batchv1.CronJob{}); err != nil {
-		t.Errorf("the older backup should still be scheduled: %v", err)
-	}
-}
-
 func TestReadyBackupRequeuesOnTheStandardInterval(t *testing.T) {
 	r, _ := backupHarness(t, initializedRepo(), scheduledBackup())
 
@@ -412,23 +351,13 @@ func TestReadyBackupRequeuesOnTheStandardInterval(t *testing.T) {
 	}
 }
 
-func TestDistinctSlugsCoexist(t *testing.T) {
-	pingKey := &corev1.SecretKeySelector{Name: "healthchecks-ping-key", Key: "PING_KEY"}
+func TestTwoBackupsInOneNamespaceAreBothScheduled(t *testing.T) {
 	first := scheduledBackup()
 	first.Name = filesBackupName
-	first.Spec.Healthchecks = &b2backupv1.HealthchecksSpec{
-		PingKeySecretRef: pingKey, Slug: "myapp-files",
-	}
 	second := scheduledBackup()
 	second.Name = dbBackupName
-	second.Spec.Healthchecks = &b2backupv1.HealthchecksSpec{
-		PingKeySecretRef: pingKey, Slug: "myapp-db",
-	}
 
 	r, c := backupHarness(t, initializedRepo(), first, second)
-	r.Config.Healthchecks = healthchecks.Config{
-		Enabled: true, APIURL: healthchecksAPIURL, AutoCreate: true,
-	}
 
 	for _, name := range []string{filesBackupName, dbBackupName} {
 		if _, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -490,75 +419,6 @@ func TestAppendOnlyWithAScriptStaysReady(t *testing.T) {
 
 	if cond := readyCondition(t, c); cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Errorf("Ready = %+v, want True; spec.script renders no forget", cond)
-	}
-}
-
-func TestTwoDegradationsAreBothReported(t *testing.T) {
-	sb := scheduledBackup()
-	sb.Spec.Retention = &b2backupv1.Retention{Hourly: ptr.To(int32(168))}
-
-	r, c := backupHarness(t, appendOnlyRepo(), sb)
-	r.Config.Healthchecks = healthchecks.Config{
-		Enabled: true, APIURL: healthchecksAPIURL, AutoCreate: true,
-	}
-	reconcileBackup(t, r)
-
-	cond := readyCondition(t, c)
-	if cond == nil || cond.Reason != "AppendOnlyWithRetention" {
-		t.Fatalf("Ready = %+v, want the first reason to survive", cond)
-	}
-	if !strings.Contains(cond.Message, "append-only") ||
-		!strings.Contains(cond.Message, "pingKeySecretRef") {
-		t.Errorf("Ready message = %q, want both degradations named", cond.Message)
-	}
-}
-
-func TestHealthchecksMisconfigurationDoesNotBlockTheCronJob(t *testing.T) {
-	r, c := backupHarness(t, initializedRepo(), scheduledBackup())
-	r.Config.Healthchecks = healthchecks.Config{
-		Enabled: true, APIURL: healthchecksAPIURL, AutoCreate: true,
-	}
-	reconcileBackup(t, r)
-
-	var cj batchv1.CronJob
-	if err := c.Get(context.Background(),
-		types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
-		t.Fatalf("no CronJob was created, so backups would never run: %v", err)
-	}
-	if cmd := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Command; cmd[0] == "runitor" {
-		t.Errorf("command = %v, want it unwrapped when there is no ping key", cmd)
-	}
-
-	cond := readyCondition(t, c)
-	if cond == nil || cond.Status != metav1.ConditionFalse ||
-		cond.Reason != "HealthchecksNotConfigured" {
-		t.Errorf("Ready = %+v, want False with reason HealthchecksNotConfigured", cond)
-	}
-	assertWarningEvent(t, r.Recorder, "HealthchecksNotConfigured")
-}
-
-func TestMisconfiguredHealthchecksIsNotASlugConflict(t *testing.T) {
-	first := scheduledBackup()
-	first.Name = filesBackupName
-	second := scheduledBackup()
-	second.Name = dbBackupName
-
-	r, c := backupHarness(t, initializedRepo(), first, second)
-	r.Config.Healthchecks = healthchecks.Config{
-		Enabled: true, APIURL: healthchecksAPIURL, AutoCreate: true,
-	}
-
-	for _, name := range []string{filesBackupName, dbBackupName} {
-		if _, err := r.Reconcile(context.Background(), ctrl.Request{
-			Namespace: testNS, Name: name,
-		}); err != nil {
-			t.Fatalf("reconciling %s: %v", name, err)
-		}
-		if err := c.Get(context.Background(),
-			types.NamespacedName{Namespace: testNS, Name: name + "-backup"},
-			&batchv1.CronJob{}); err != nil {
-			t.Errorf("%s was not scheduled: %v", name, err)
-		}
 	}
 }
 

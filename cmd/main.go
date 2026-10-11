@@ -29,7 +29,6 @@ import (
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/controller"
-	"github.com/USA-RedDragon/b2-backup-operator/internal/healthchecks"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -75,8 +74,6 @@ func main() {
 	var tlsOpts []func(*tls.Config)
 
 	var apiTokenSecret, apiTokenKey, backupImage, cacheStorageClass, borgbaseEndpoint string
-	var healthchecksEnabled, healthchecksAutoCreate bool
-	var healthchecksAPIURL string
 	defaults := backup.DefaultConfig()
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -108,20 +105,12 @@ func main() {
 	flag.StringVar(&apiTokenKey, "api-token-key", "token",
 		"Key within the default BorgBase API token Secret.")
 	flag.StringVar(&backupImage, "backup-image", defaults.Image,
-		"Image used for backup and init jobs. It must provide restic, runitor, ts and dumpdb.")
+		"Image used for backup and init jobs. It must provide restic, ts and dumpdb.")
 	flag.StringVar(&cacheStorageClass, "cache-storage-class", "",
 		"StorageClass for restic cache volumes. Cache claims request ReadWriteMany by default, "+
 			"which most cluster default StorageClasses do not support: leaving this empty will "+
 			"usually leave the claim Pending and the backup unable to start. Set a class that "+
 			"provides ReadWriteMany, or set spec.cache.accessMode on each ScheduledBackup.")
-	flag.BoolVar(&healthchecksEnabled, "healthchecks-enabled", defaults.Healthchecks.Enabled,
-		"Report backup runs to healthchecks via runitor. Each ScheduledBackup still supplies its "+
-			"own project ping key; there is deliberately no cluster-wide key.")
-	flag.StringVar(&healthchecksAPIURL, "healthchecks-api-url", defaults.Healthchecks.APIURL,
-		"Healthchecks ping endpoint.")
-	flag.BoolVar(&healthchecksAutoCreate, "healthchecks-auto-create", defaults.Healthchecks.AutoCreate,
-		"Auto-provision a check on its first ping. Auto-created checks get the healthchecks "+
-			"defaults of a one day period and one hour grace.")
 
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -232,11 +221,6 @@ func main() {
 		Config: backup.Config{
 			Image:             backupImage,
 			CacheStorageClass: cacheStorageClass,
-			Healthchecks: healthchecks.Config{
-				Enabled:    healthchecksEnabled,
-				APIURL:     healthchecksAPIURL,
-				AutoCreate: healthchecksAutoCreate,
-			},
 		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "scheduledbackup")

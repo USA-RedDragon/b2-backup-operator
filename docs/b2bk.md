@@ -316,7 +316,7 @@ interfere with a running backup.
 
 ### `shell <name>` — `writes` — alias `sh`
 
-A pod from the backup image with `restic`, `runitor`, `ts` and `dumpdb` on PATH
+A pod from the backup image with `restic`, `ts` and `dumpdb` on PATH
 and the credentials already in the environment, so `restic snapshots` just
 works — and so does `restic mount /mnt`.
 
@@ -429,8 +429,8 @@ one field once per app. `--repository-id` skips that path entirely. Everything
 else is parsed and emitted in Go.
 
 Before applying, reduce the app's `secret.yaml` to just `RESTIC_PASSWORD`:
-`RESTIC_REPOSITORY` is synthesized by the operator and `CHECK_UUID` is replaced
-by healthchecks slug pinging. Do not remove `RESTIC_PASSWORD` — it is the only
+`RESTIC_REPOSITORY` is synthesized by the operator and `CHECK_UUID` is no
+longer used. Do not remove `RESTIC_PASSWORD` — it is the only
 off-cluster copy of the key that decrypts these backups.
 
 ## Recipes

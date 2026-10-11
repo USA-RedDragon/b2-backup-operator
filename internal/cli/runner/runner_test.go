@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -651,23 +650,12 @@ func TestRunStillReportsAStreamErrorWhenTheJobSucceeded(t *testing.T) {
 	}
 }
 
-const testPingSecret = "healthchecks-ping-key"
-
-func withHealthchecks(sb *b2backupv1.ScheduledBackup) {
-	sb.Spec.Healthchecks = &b2backupv1.HealthchecksSpec{
-		Enabled: ptr.To(true),
-		APIURL:  "https://hc.example.com/ping",
-		PingKeySecretRef: &corev1.SecretKeySelector{
-			Name: testPingSecret,
-			Key:  "ping-key",
-		},
-	}
-}
+const testKeySecret = "app-credentials"
 
 func preflightWithDependencies(t *testing.T, extra ...client.Object) error {
 	t.Helper()
 
-	r, sb := fixture(t, withHealthchecks)
+	r, sb := fixture(t, nil)
 	ctx := context.Background()
 
 	objs := []client.Object{
@@ -684,36 +672,41 @@ func preflightWithDependencies(t *testing.T, extra ...client.Object) error {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if envOf(containerOf(t, job), "PING_KEY") == nil {
-		t.Fatal("the fixture no longer produces a secretKeyRef env var")
-	}
+	c := containerOf(t, job)
+	c.Env = append(c.Env, corev1.EnvVar{
+		Name: "API_KEY",
+		ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			Name: testKeySecret,
+			Key:  "api-key",
+		}},
+	})
 	return r.Preflight(ctx, job)
 }
 
 func TestPreflightChecksSecretKeyRefEnv(t *testing.T) {
 	err := preflightWithDependencies(t)
 	if !errors.Is(err, ErrMissingDependency) {
-		t.Fatalf("expected ErrMissingDependency for PING_KEY's Secret, got %v", err)
+		t.Fatalf("expected ErrMissingDependency for API_KEY's Secret, got %v", err)
 	}
-	if !strings.Contains(err.Error(), testPingSecret) {
+	if !strings.Contains(err.Error(), testKeySecret) {
 		t.Errorf("the error should name the missing Secret: %v", err)
 	}
 }
 
 func TestPreflightChecksTheKeyWithinTheSecret(t *testing.T) {
-	err := preflightWithDependencies(t, &corev1.Secret{Namespace: testNS, Name: testPingSecret})
+	err := preflightWithDependencies(t, &corev1.Secret{Namespace: testNS, Name: testKeySecret})
 	if !errors.Is(err, ErrMissingDependency) {
 		t.Fatalf("expected ErrMissingDependency for the absent key, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "ping-key") {
+	if !strings.Contains(err.Error(), "api-key") {
 		t.Errorf("the error should name the missing key: %v", err)
 	}
 }
 
 func TestPreflightPassesWithTheKeyPresent(t *testing.T) {
 	err := preflightWithDependencies(t, &corev1.Secret{
-		Namespace: testNS, Name: testPingSecret,
-		Data: map[string][]byte{"ping-key": []byte("hunter2")},
+		Namespace: testNS, Name: testKeySecret,
+		Data: map[string][]byte{"api-key": []byte("hunter2")},
 	})
 	if err != nil {
 		t.Errorf("preflight should pass once the key exists: %v", err)

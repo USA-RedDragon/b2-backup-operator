@@ -17,8 +17,7 @@ borg repositories, which this operator deliberately does not manage.
 - **Initializes the repository** with a one-shot Job that probes before
   initializing, so a genuine failure is not mistaken for success.
 - **Renders a CronJob** from a declarative backup spec: sources, retention,
-  database credential wiring, pod affinity, cache volume and healthchecks
-  reporting are all derived.
+  database credential wiring, pod affinity and cache volume are all derived.
 
 ## Resources
 
@@ -116,18 +115,11 @@ spec:
   retention: {hourly: 168, daily: 90, monthly: 24, yearly: 10}
   database: {engine: cnpg, secretName: postgresql-app}
   volume: {existingClaim: myapp-prod-storage}
-  healthchecks:
-    pingKeySecretRef: {name: healthchecks-ping-key, key: PING_KEY}
 ```
 
 `spec.script` replaces the generated body wholesale for anything the source
 types do not cover; it still gets the standard preamble, logging and cache
 cleanup.
-
-Two backups in one namespace must set distinct `healthchecks.slug` values. The
-slug defaults to the namespace, and sharing one check would let either
-backup's success hide the other's failure, so the newer of the two is held
-back with `SlugConflict` rather than silently reporting into the same place.
 
 ### Pod security
 
@@ -165,44 +157,12 @@ are phase-shifted rather than started at zero, so `@every 15m` renders as
 Steps that do not divide their period evenly (`@every 7h`) are rejected, since
 cron restarts the sequence each period and would leave an irregular gap.
 
-#### Healthchecks
-
-The operator contains no healthchecks API client. `runitor`, already in the
-backup image, pings `<apiURL>/<pingKey>/<slug>?create=1`, and healthchecks
-auto-provisions the check on first ping with the project's notification
-channels attached.
-
-The ping key is **per resource, never cluster-wide**: separate client projects
-have separate ping keys, and a shared one would file checks into the wrong
-project. The slug defaults to the namespace.
-
-Reporting is best-effort. Misconfigured reporting degrades a backup rather than
-blocking it: the CronJob is still created, just without the `runitor` wrapper,
-and `Ready=False` with reason `HealthchecksNotConfigured` plus a Warning event
-are the only signs that monitoring is gone. It happens when reporting is on but
-there is no API URL, when neither `pingKeySecretRef` nor `uuidSecretRef`
-resolves, or when no slug can be determined.
-
-`SlugConflict` is the exception among the healthchecks failures: it holds the
-CronJob back instead of degrading it, because two backups reporting into one
-check is worse than one backup not running yet.
-
-Both degraded reasons are on the same `Ready` condition, so a backup that hits
-`AppendOnlyWithRetention` *and* `HealthchecksNotConfigured` keeps the first
-reason and gets both messages, joined by `; `. Read the message, not just the
-reason.
-
-Auto-created checks get the healthchecks defaults of a one-day period and
-one-hour grace. Adopting an existing check preserves its tuned values: set its
-`slug` to match, and the first ping returns `200` rather than `201`.
-
 ### Extra environment variables
 
 `spec.env` is a plain map of extra variables for the backup container. It is
 merged after everything the operator sets, and a container's `env` overrides its
 `envFrom` as a whole, so a name the operator already uses would win silently —
-sending a backup to another repository, encrypting it under another key, or
-redirecting its healthchecks pings.
+sending a backup to another repository or encrypting it under another key.
 
 So `spec.env` is refused when it names one of those. Which names are reserved
 depends on the rest of the spec:
@@ -211,7 +171,6 @@ depends on the rest of the spec:
 | --- | --- |
 | `RESTIC_REPOSITORY`, `RESTIC_PASSWORD` | Always. These come from the Repository's Secret |
 | `RESTIC_HOST`, `TZ` | Always. Use `spec.resticHost` and `spec.timeZone` |
-| `HC_API_URL`, `CHECK_SLUG`, `PING_KEY`, `CHECK_UUID` | Only while healthchecks reporting is on for this backup |
 | `DB_HOST`, `DB_DATABASE`, `DB_USERNAME` | Only under the **mariadb** engine, which is where the operator sets them. A cnpg backup may set `DB_HOST` itself |
 
 The error names each offending variable and the field to use instead. It is
@@ -281,9 +240,6 @@ is a preference, but it silently stops doing anything.
 | `--api-token-key` | `token` | Key within that Secret |
 | `--backup-image` | `ghcr.io/usa-reddragon/b2-backup-operator-restic:<operator version>` | The image every backup pod runs. More than a list of binaries — see the contract below |
 | `--cache-storage-class` | *(none)* | StorageClass for restic cache volumes. **Cache claims request `ReadWriteMany`**, which most cluster default classes cannot satisfy — see below |
-| `--healthchecks-enabled` | `true` | Report runs via runitor |
-| `--healthchecks-api-url` | `http://healthchecks.healthchecks:8000/ping` | Ping endpoint |
-| `--healthchecks-auto-create` | `true` | Auto-provision checks on first ping |
 | `--borgbase-endpoint` | *(public API)* | Override, for testing |
 
 The BorgBase token needs **Full Access**. `repoAdd` alone is insufficient:
@@ -298,7 +254,7 @@ the spec says nothing about is left alone.
 default image satisfies a contract the operator and `b2bk` both rely on, and a
 substitute that does not will fail quietly rather than loudly.
 
-It must provide `restic`, `runitor`, `ts` and `dumpdb` on PATH. `b2bk restore
+It must provide `restic`, `ts` and `dumpdb` on PATH. `b2bk restore
 --to-database` additionally needs `restoredb`, which it probes for, and a
 `/bin/sh` that supports `set -o pipefail`, so a dump that dies mid-stream cannot
 be reported as a successful restore. BusyBox ash, bash, zsh and Debian trixie's
@@ -377,17 +333,14 @@ maintained without anyone maintaining it.
 Anything that does not map exactly, such as a specific weekday, is pinned
 verbatim and left alone.
 
-This moves when a backup runs, which is the point, but note two things on
-cutover day. A backup whose new slot has already passed will wait until the
-next one, so a daily backup can go up to a day longer than usual before its
-first run under the operator. If its healthchecks check was auto-created with
-the default one-day period and one-hour grace, that can trip a late alarm once.
-Neither loses data; both are worth expecting rather than being surprised by.
+This moves when a backup runs, which is the point. A backup whose new slot has
+already passed waits until the next one, so a daily backup can go up to a day
+longer than usual before its first run under the operator.
 
 Keep the existing SOPS secret, reduced to `RESTIC_PASSWORD`. The operator reads
 it as a seed and never writes to it, so it stays the off-cluster copy of the key
 that decrypts the backups. `RESTIC_REPOSITORY` is synthesized by the operator
-and `CHECK_UUID` is replaced by slug pinging, so both can be dropped.
+and `CHECK_UUID` is no longer used, so both can be dropped.
 
 ## Optional monitoring manifests
 

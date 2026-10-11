@@ -12,7 +12,6 @@ import (
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
-	"github.com/USA-RedDragon/b2-backup-operator/internal/healthchecks"
 )
 
 func writeHelmRelease(t *testing.T, schedule string) string {
@@ -30,8 +29,6 @@ spec:
         containers:
           restic:
             command:
-              - runitor
-              - --
               - sh
               - -c
               - |
@@ -119,7 +116,7 @@ func writeManifest(t *testing.T, body string) string {
 	return path
 }
 
-const healthchecksBackup = `apiVersion: b2backup.mcswain.dev/v1
+const filesBackup = `apiVersion: b2backup.mcswain.dev/v1
 kind: ScheduledBackup
 metadata:
   name: web
@@ -128,17 +125,13 @@ spec:
   repositoryRef:
     name: store
   schedule: "@daily"
-  healthchecks:
-    pingKeySecretRef:
-      name: healthchecks-ping-key
-      key: PING_KEY
   sources:
     - type: files
       path: /data
 `
 
 func TestRenderCronJobUsesTheOperatorsDefaults(t *testing.T) {
-	sb, err := readScheduledBackup(writeManifest(t, healthchecksBackup))
+	sb, err := readScheduledBackup(writeManifest(t, filesBackup))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,18 +149,10 @@ func TestRenderCronJobUsesTheOperatorsDefaults(t *testing.T) {
 	if strings.Contains(out, "restic:latest") {
 		t.Errorf("rendered a :latest image the operator never uses:\n%s", out)
 	}
-	for _, want := range []string{"runitor", healthchecks.EnvAPIURL, healthchecks.EnvSlug, healthchecks.EnvPingKey} {
-		if !strings.Contains(out, want) {
-			t.Errorf("expected %q in the rendered CronJob:\n%s", want, out)
-		}
-	}
-	if !strings.Contains(out, defaults.Healthchecks.APIURL) {
-		t.Errorf("expected the operator's default ping endpoint:\n%s", out)
-	}
 }
 
 func TestRenderCronJobMatchesTheOperator(t *testing.T) {
-	sb, err := readScheduledBackup(writeManifest(t, healthchecksBackup))
+	sb, err := readScheduledBackup(writeManifest(t, filesBackup))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +176,7 @@ func TestRenderCronJobMatchesTheOperator(t *testing.T) {
 }
 
 func TestRenderPrintsTheScript(t *testing.T) {
-	sb, err := readScheduledBackup(writeManifest(t, healthchecksBackup))
+	sb, err := readScheduledBackup(writeManifest(t, filesBackup))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +190,7 @@ func TestRenderPrintsTheScript(t *testing.T) {
 }
 
 func TestValidateAcceptsAManifestTheOperatorRuns(t *testing.T) {
-	sb, err := readScheduledBackup(writeManifest(t, healthchecksBackup))
+	sb, err := readScheduledBackup(writeManifest(t, filesBackup))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,12 +213,12 @@ func TestValidateRejectsWhatTheOperatorRejects(t *testing.T) {
 	}{
 		{
 			name: "unresolvable schedule",
-			body: strings.Replace(healthchecksBackup, `schedule: "@daily"`, `schedule: "@every 5h"`, 1),
+			body: strings.Replace(filesBackup, `schedule: "@daily"`, `schedule: "@every 5h"`, 1),
 			want: "spec.schedule",
 		},
 		{
 			name: "unknown source type",
-			body: strings.Replace(healthchecksBackup, "type: files", "type: sqlite", 1),
+			body: strings.Replace(filesBackup, "type: files", "type: sqlite", 1),
 			want: "rendering the script",
 		},
 	}
