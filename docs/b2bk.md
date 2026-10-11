@@ -435,7 +435,9 @@ past the staging database or run code there. `CREATE TABLE` is the exception,
 since mariadb-dump qualifies a foreign key to another database there, but a
 `CREATE TABLE ... SELECT` is refused, and so is a table whose engine or
 options reach other tables: `MERGE` (`MRG_MyISAM`) and its `UNION`,
-`FEDERATED`, `CONNECT`, `SPIDER`, `OQGRAPH` and `CONNECTION`. A `SET` of the
+`FEDERATED`, `CONNECT`, `SPIDER`, `OQGRAPH` and `CONNECTION`, and one placing
+its files outside the data directory with `DATA DIRECTORY` or `INDEX
+DIRECTORY`, which a dump holds only for a table created that way. A `SET` of the
 default engine (`default_storage_engine` and the like) is allowed only to the
 engines a dump of tables needs, since a `CREATE TABLE` without an `ENGINE` of
 its own would take it. The charset decides how the server reads the bytes of
