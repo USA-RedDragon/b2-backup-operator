@@ -82,6 +82,7 @@ const (
 	reasonRepositoryNotOwn = "RepositoryNotItsOwn"
 
 	reasonSeedIsCredentials = "PasswordSecretRefIsCredentialsSecret"
+	reasonInitJobNotOwned   = "InitJobNotOwned"
 	reasonOtherFiles        = "OtherFilesInBucket"
 
 	// SecretFinalizer keeps a credentials Secret holding the only copy of a
@@ -1322,13 +1323,13 @@ func (r *RepositoryReconciler) reconcileInitJob(
 	key := types.NamespacedName{Namespace: repo.Namespace, Name: name}
 
 	var job batchv1.Job
-	err := r.Get(ctx, key, &job)
+	err := r.uncached().Get(ctx, key, &job)
 	switch {
 	case err == nil:
 		if !metav1.IsControlledBy(&job, repo) {
-			r.setInitializing(repo, "Initializing", fmt.Sprintf(
-				"waiting for init Job %s, which this Repository does not own, to be deleted; it may be left "+
-					"by an earlier Repository of the same name", name))
+			r.setInitializing(repo, reasonInitJobNotOwned, fmt.Sprintf(
+				"Job %s, which this Repository does not own, has the init Job's name; it may be left by an "+
+					"earlier Repository of the same name, or be someone else's. Waiting for it to be deleted", name))
 			return 15 * time.Second, nil
 		}
 		if !job.DeletionTimestamp.IsZero() {
