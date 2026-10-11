@@ -227,6 +227,14 @@ case in `internal/controller/crd_validation_envtest_test.go`.
 CEL gotcha: `\.` is not a valid escape in a CEL string literal. Use a character
 class, `[.]`, instead.
 
+A root-level rule runs on every write to the object, status, finalizer and
+annotation patches included, and validation ratcheting does not cover it. A
+rule that tightens what an existing object may hold must let an update keep
+the value it already has (`optionalOldSelf=true` and `oldSelf.hasValue()`),
+or an object created before it can no longer be written or finalized.
+`go fmt` rewrites `''` inside a marker comment into a typographic quote; use
+`size(x) > 0` instead of `x != ''`.
+
 ## Migration
 
 `b2bk migrate` reads an app's hand-written app-template HelmRelease (the

@@ -8,11 +8,13 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,7 +49,9 @@ func TestMain(m *testing.M) {
 	}
 
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, b2backupv1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{
+		clientgoscheme.AddToScheme, b2backupv1.AddToScheme, apiextensionsv1.AddToScheme,
+	} {
 		if err := add(scheme); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -653,4 +657,140 @@ func TestCRDRepositoryLocationIsImmutable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func secretRuleIndexes(crd *apiextensionsv1.CustomResourceDefinition) []int {
+	var out []int
+	for i, v := range crd.Spec.Versions[0].Schema.OpenAPIV3Schema.XValidations {
+		if strings.Contains(v.Rule, "passwordSecretRef") || strings.Contains(v.Rule, "credentialsSecretRef") {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func setRepositoryCRDRules(t *testing.T, c client.Client, rules apiextensionsv1.ValidationRules) {
+	t.Helper()
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := c.Get(context.Background(), client.ObjectKey{Name: "repositories.b2backup.mcswain.dev"}, &crd); err != nil {
+		t.Fatal(err)
+	}
+	crd.Spec.Versions[0].Schema.OpenAPIV3Schema.XValidations = rules
+	if err := c.Update(context.Background(), &crd); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// eventually retries until try reports done, as a CRD change reaches the
+// API server's validation a moment after the update returns.
+func eventually(t *testing.T, what string, try func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		if try() {
+			return
+		}
+	}
+	t.Fatalf("timed out waiting until %s", what)
+}
+
+func TestCRDAnExistingRepositoryBreakingTheSecretRulesCanStillBeWritten(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	mustCreateNamespace(t, c, "legacy")
+
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := c.Get(ctx, client.ObjectKey{Name: "repositories.b2backup.mcswain.dev"}, &crd); err != nil {
+		t.Fatal(err)
+	}
+	full := slices.Clone(crd.Spec.Versions[0].Schema.OpenAPIV3Schema.XValidations)
+	drop := secretRuleIndexes(&crd)
+	if len(drop) != 2 {
+		t.Fatalf("found %d secret reference rules, want 2", len(drop))
+	}
+	stripped := slices.DeleteFunc(slices.Clone(full), func(v apiextensionsv1.ValidationRule) bool {
+		return strings.Contains(v.Rule, "passwordSecretRef") || strings.Contains(v.Rule, "credentialsSecretRef")
+	})
+	setRepositoryCRDRules(t, c, stripped)
+	restored := false
+	defer func() {
+		if !restored {
+			setRepositoryCRDRules(t, c, full)
+		}
+	}()
+
+	broken := validRepository("broken", "legacy")
+	broken.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: "broken-credentials", Key: KeyResticPassword}
+	eventually(t, "the CRD without the rule admits the old object", func() bool {
+		return c.Create(ctx, broken.DeepCopy()) == nil
+	})
+	setRepositoryCRDRules(t, c, full)
+	restored = true
+	probe := 0
+	eventually(t, "the rule is back", func() bool {
+		probe++
+		p := validRepository(fmt.Sprintf("probe-%d", probe), "legacy")
+		p.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: p.Name + "-credentials", Key: KeyResticPassword}
+		return c.Create(ctx, p) != nil
+	})
+
+	patches := []struct {
+		name  string
+		apply func(*b2backupv1.Repository) error
+	}{
+		{"a status patch", func(r *b2backupv1.Repository) error {
+			base := r.DeepCopy()
+			r.Status.BucketName = "acme-shared"
+			return c.Status().Patch(ctx, r, client.MergeFrom(base))
+		}},
+		{"adding a finalizer", func(r *b2backupv1.Repository) error {
+			base := r.DeepCopy()
+			r.Finalizers = append(r.Finalizers, FinalizerName)
+			return c.Patch(ctx, r, client.MergeFrom(base))
+		}},
+		{"removing it", func(r *b2backupv1.Repository) error {
+			base := r.DeepCopy()
+			r.Finalizers = nil
+			return c.Patch(ctx, r, client.MergeFrom(base))
+		}},
+		{"an annotation", func(r *b2backupv1.Repository) error {
+			base := r.DeepCopy()
+			r.Annotations = map[string]string{b2backupv1.AnnotationReinitAt: "2026-10-11T00:00:00Z"}
+			return c.Patch(ctx, r, client.MergeFrom(base))
+		}},
+	}
+	for _, p := range patches {
+		if err := p.apply(getRepository(t, c, broken)); err != nil {
+			t.Errorf("%s on an existing Repository breaking the rule was rejected: %v", p.name, err)
+		}
+	}
+
+	introduce := getRepository(t, c, broken)
+	introduce.Spec.CredentialsSecretRef = &corev1.LocalObjectReference{Name: "broken-credentials"}
+	if err := c.Update(ctx, introduce); err == nil {
+		t.Error("an update introducing a credentialsSecretRef naming the credentials Secret was accepted")
+	}
+	fix := getRepository(t, c, broken)
+	fix.Spec.PasswordSecretRef.Name = seedSecret
+	if err := c.Update(ctx, fix); err != nil {
+		t.Errorf("an edit fixing the seed was rejected: %v", err)
+	}
+
+	fresh := validRepository("fresh", "legacy")
+	if err := c.Create(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	introduced := getRepository(t, c, fresh)
+	introduced.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: "fresh-credentials", Key: KeyResticPassword}
+	if err := c.Update(ctx, introduced); err == nil || !strings.Contains(err.Error(), seedRefused) {
+		t.Errorf("an update introducing a seed naming the credentials Secret = %v, want refused", err)
+	}
+}
+
+func getRepository(t *testing.T, c client.Client, obj *b2backupv1.Repository) *b2backupv1.Repository {
+	t.Helper()
+	var got b2backupv1.Repository
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(obj), &got); err != nil {
+		t.Fatal(err)
+	}
+	return &got
 }
