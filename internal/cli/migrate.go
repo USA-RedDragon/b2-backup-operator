@@ -7,6 +7,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -838,7 +839,7 @@ func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
 			if forgets++; forgets > 1 {
 				return parsed, notStructured("it runs restic forget more than once, and spec.retention is one policy")
 			}
-			r, err := parseRetention(args)
+			r, prune, err := parseRetention(args)
 			if err != nil {
 				return parsed, err
 			}
@@ -846,7 +847,7 @@ func parseBackupScript(script string, mounts []hrVolume) (parsedScript, error) {
 				return parsed, notStructured("%q keeps nothing by policy, which spec.retention cannot say", line)
 			}
 			parsed.retention = r
-			parsed.unpruned = !slices.Contains(args, "--prune")
+			parsed.unpruned = !prune
 		default:
 			return parsed, notStructured("it runs %q", line)
 		}
@@ -1051,32 +1052,44 @@ func parseDumpCommand(args []string) (b2backupv1.DatabaseEngine, string, bool, e
 	return "", "", false, fmt.Errorf("it dumps with %s", args[0])
 }
 
-func parseRetention(args []string) (*b2backupv1.Retention, error) {
+// parseRetention reads a restic forget line's policy, and whether it prunes:
+// --prune, or --prune= with a value strconv reads as true.
+func parseRetention(args []string) (*b2backupv1.Retention, bool, error) {
 	r := &b2backupv1.Retention{}
 	fields := map[string]**int32{
 		"last": &r.Last, "hourly": &r.Hourly, "daily": &r.Daily,
 		"weekly": &r.Weekly, "monthly": &r.Monthly, "yearly": &r.Yearly,
 	}
 
+	prune := false
 	for _, a := range args[2:] {
 		if a == "--prune" {
+			prune = true
+			continue
+		}
+		if v, ok := strings.CutPrefix(a, "--prune="); ok {
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return nil, false, notStructured("restic forget is passed %s", a)
+			}
+			prune = b
 			continue
 		}
 		name, value, ok := strings.Cut(strings.TrimPrefix(a, "--keep-"), "=")
 		target, known := fields[name]
 		if !ok || !known || !strings.HasPrefix(a, "--keep-") {
-			return nil, notStructured("restic forget is passed %s", a)
+			return nil, false, notStructured("restic forget is passed %s", a)
 		}
 		n, err := parseInt32(value)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", a, err)
+			return nil, false, fmt.Errorf("%s: %w", a, err)
 		}
 		*target = n
 	}
 	if *r == (b2backupv1.Retention{}) {
-		return nil, nil
+		return nil, prune, nil
 	}
-	return r, nil
+	return r, prune, nil
 }
 
 func shorthandSchedule(expr string) string {
