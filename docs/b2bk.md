@@ -619,6 +619,11 @@ the original sets none, the operator's own security contexts.
 | `--repository` | The original `s3:` URL, as it appears in `RESTIC_REPOSITORY` |
 | `--from-secret` | A SOPS-encrypted Secret to read it from. Its `metadata.namespace` must be the HelmRelease's. Its other keys are compared as part of the original's environment |
 
+A forget's `--group-by` is compared on its own, as `GROUPING DIFFERS`, against
+what the original's wrapper would have added: `RESTIC_GROUP_BY` from the
+container's `env`, from `restic-envs` given `--from-secret`, or else the image's
+own `tags`.
+
 The script comparison ignores the quoting around `--exclude` patterns and the
 `--retry-lock` and `--secret-mount` flags, which the operator renders and the
 hand-written script does not. It also takes out of `restic forget` the
@@ -667,6 +672,7 @@ printed with the time of day in the schedule's time zone, such as
 | `WORKING DIR DIFFERS` | 1 | |
 | `RESTIC HOST DIFFERS` | 1 | Snapshots would start a new series under another host |
 | `ENV DIFFERS` | 1 | Another extra variable, or another `TZ` |
+| `GROUPING DIFFERS` | 1 | The original's forget grouped by something other than tags: its own `--group-by`, or `RESTIC_GROUP_BY`, which the image's wrapper adds and the image sets to `tags`. The operator's forget always passes `--group-by=tags` |
 | `ENVFROM DIFFERS` | 1 | The original reads a Secret or ConfigMap other than `restic-envs` and `restic-b2` |
 | `DATABASE SECRET DIFFERS` | 1 | |
 | `REPOSITORY DIFFERS` | 1 | The Repository is not at the original bucket and path |

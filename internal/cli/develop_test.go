@@ -751,3 +751,35 @@ func TestParityReadsAMissingTimeZoneAsUTC(t *testing.T) {
 		t.Errorf("parity = %v; a CronJob with no timeZone runs in the controller manager's zone, UTC:\n%s", err, out.String())
 	}
 }
+
+func TestParityReportsAForgetThatGroupedByAnythingButTags(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	hr := filepath.Join(dir, "helmrelease.yaml")
+	gen := filepath.Join(dir, "generated.yaml")
+	original := strings.Replace(parityRelease, "              TZ: America/Chicago\n",
+		"              TZ: America/Chicago\n              RESTIC_GROUP_BY: host\n", 1)
+	generated := strings.Replace(parityGenerated, "  volumes:", "  env: {RESTIC_GROUP_BY: host}\n  volumes:", 1)
+	if err := os.WriteFile(hr, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gen, []byte(generated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runParity(&out, gen, hr, migrateOptions{})
+	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "GROUPING DIFFERS: the original's forget grouped by host") {
+		t.Errorf("parity = %v; the operator's forget groups by tags whatever RESTIC_GROUP_BY says:\n%s", err, out.String())
+	}
+
+	if err := os.WriteFile(hr, []byte(parityRelease), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gen, []byte(parityGenerated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runParity(&out, gen, hr, migrateOptions{}); err != nil || strings.Contains(out.String(), "GROUPING") {
+		t.Errorf("parity = %v; the image's RESTIC_GROUP_BY=tags is what the operator passes:\n%s", err, out.String())
+	}
+}
