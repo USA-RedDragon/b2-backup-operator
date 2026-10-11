@@ -115,6 +115,10 @@ one of these:
   be one file and one series. Restores pass the source's excludes, so
   `--delete` leaves them; restic refuses includes and excludes together, which
   `restoreArgs` handles. Verify any change against restic 0.19.1 in the image.
+- **A plain-SQL restore commits only a complete dump.** psql
+  `--single-transaction` commits at end of input, so `restoredb` runs it through
+  `dumpdb.RunOpts.Complete` and kills it before closing stdin unless the dump
+  ends with pg_dump's `dump complete` trailer.
 - **The backup image's `restic` is a wrapper** ahead of the real binary on PATH.
   It supplies `--group-by` from `RESTIC_GROUP_BY` and the `--stdin-filename` a
   database dump lands under from `RESTIC_HOST`, neither of which is in the
