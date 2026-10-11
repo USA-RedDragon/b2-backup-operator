@@ -2,15 +2,19 @@ package controller
 
 import (
 	"context"
+	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/b2"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/b2/b2fake"
 )
 
 func deleteRepo(t *testing.T, c client.Client) {
@@ -217,5 +221,125 @@ func TestDeletePolicyKeepsThePasswordUntilTheDataIsGone(t *testing.T) {
 	}
 	if err := getSecretErr(c); !apierrors.IsNotFound(err) {
 		t.Errorf("the Secret outlived the data it protected: %v", err)
+	}
+}
+
+const (
+	otherAccountID = "otheraccount"
+	otherKeyID     = "0099bb000000000000000000bb"
+	otherKey       = "K009otherkeysecret"
+)
+
+func pointAtAnotherAccount(t *testing.T, r *RepositoryReconciler, c client.Client) {
+	t.Helper()
+	other := b2fake.NewAccount(otherAccountID, otherKeyID, otherKey)
+	other.Logf = t.Logf
+	srv := httptest.NewServer(other)
+	t.Cleanup(srv.Close)
+	same := r.NewAPI
+	r.NewAPI = func(keyID, key string) b2.API {
+		if keyID != otherKeyID {
+			return same(keyID, key)
+		}
+		cl := b2.NewClient(keyID, key)
+		cl.AuthURL = srv.URL
+		cl.Sleep = func(context.Context, time.Duration) error { return nil }
+		return cl
+	}
+	if err := c.Create(context.Background(), &corev1.Secret{
+		Name: teamSecret, Namespace: testNS,
+		Data: map[string][]byte{
+			b2backupv1.CredentialsKeyID: []byte(otherKeyID),
+			b2backupv1.CredentialsKey:   []byte(otherKey),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repo := getRepo(t, c)
+	repo.Spec.CredentialsSecretRef = &corev1.LocalObjectReference{Name: teamSecret}
+	if err := c.Update(context.Background(), repo); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestABucketMissingFromAnotherAccountIsNotTakenAsGone(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		legacy bool
+	}{
+		{"with the account recorded", false},
+		{"with no account recorded", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeB2(t)
+			r, c := newHarness(t, f, prefixRepo(func(r *b2backupv1.Repository) {
+				r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+			}))
+			bucket := f.AddBucket(sharedBucket)
+			reconcileN(t, r, 2)
+			f.PutFile(bucket.BucketID, myappPath+"/config", 1)
+			if tt.legacy {
+				repo := getRepo(t, c)
+				base := repo.DeepCopy()
+				repo.Status.AccountID = ""
+				if err := c.Status().Patch(context.Background(), repo, client.MergeFrom(base)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pointAtAnotherAccount(t, r, c)
+			deleteRepo(t, c)
+			for range 3 {
+				_ = reconcileErr(r)
+			}
+
+			if !slices.Contains(getRepo(t, c).Finalizers, FinalizerName) {
+				t.Fatal("the finalizer was released although the bucket was only missing from another account")
+			}
+			if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason != reasonAccountMismatch {
+				t.Errorf("Ready = %+v, want %s", cond, reasonAccountMismatch)
+			}
+			if err := getSecretErr(c); err != nil {
+				t.Errorf("the password went with the data still in B2: %v", err)
+			}
+			if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+				t.Error("the Secret was released for garbage collection")
+			}
+			if n := len(f.FileNames(bucket.BucketID)); n != 1 {
+				t.Errorf("%d files left, want 1", n)
+			}
+		})
+	}
+}
+
+func TestTheAccountIsRecordedAndChecked(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	r, c := newHarness(t, f, prefixRepo(nil))
+	reconcileN(t, r, 1)
+	repo := getRepo(t, c)
+	if repo.Status.AccountID != b2fake.AccountID {
+		t.Fatalf("status.accountID = %q, want %q", repo.Status.AccountID, b2fake.AccountID)
+	}
+
+	base := repo.DeepCopy()
+	repo.Status.AccountID = ""
+	if err := c.Status().Patch(context.Background(), repo, client.MergeFrom(base)); err != nil {
+		t.Fatal(err)
+	}
+	reconcileN(t, r, 1)
+	if got := getRepo(t, c).Status.AccountID; got != b2fake.AccountID {
+		t.Errorf("an existing Repository did not record its account: %q", got)
+	}
+
+	pointAtAnotherAccount(t, r, c)
+	if err := reconcileErr(r); err == nil {
+		t.Fatal("reconciled against another account")
+	}
+	if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason != reasonAccountMismatch {
+		t.Errorf("Ready = %+v, want %s", cond, reasonAccountMismatch)
 	}
 }

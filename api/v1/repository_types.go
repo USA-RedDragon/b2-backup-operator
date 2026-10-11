@@ -156,6 +156,11 @@ type RepositoryStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// AccountID is the B2 account holding the bucket. Deletion treats a bucket
+	// it cannot find as gone only when the credentials belong to this account.
+	// +optional
+	AccountID string `json:"accountID,omitempty"`
+
 	// BucketName is the bucket holding the repository.
 	// +optional
 	BucketName string `json:"bucketName,omitempty"`
