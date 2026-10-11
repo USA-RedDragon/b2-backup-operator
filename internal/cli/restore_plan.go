@@ -408,7 +408,7 @@ func (o *restoreOptions) filesSource(sb *b2backupv1.ScheduledBackup) (restoreSou
 	switch {
 	case len(tags) == 0:
 		return restoreSource{}, fmt.Errorf("%w: scheduledbackup/%s backs up no files sources; download a script "+
-			"backup's files with b2bk exec %s -- restic dump", ErrNoFilesSource, sb.Name, sb.Name)
+			"backup's files with b2bk exec sb/%s -- restic dump", ErrNoFilesSource, sb.Name, sb.Name)
 	case o.tag == "" && len(tags) > 1:
 		return restoreSource{}, fmt.Errorf("%w: scheduledbackup/%s has files sources tagged %s; pass --tag",
 			ErrNoFilesSource, sb.Name, strings.Join(tags, ", "))

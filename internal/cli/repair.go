@@ -97,8 +97,8 @@ The old password is deliberately left working, so a snapshot taken before the
 rotation is still readable and the change can be undone by restoring the old
 Secret. Remove the old key yourself once you are sure:
 
-    b2bk exec REPOSITORY -- restic key list
-    b2bk exec REPOSITORY -- restic key remove <id>
+    b2bk exec repo/REPOSITORY -- restic key list
+    b2bk exec repo/REPOSITORY -- restic key remove <id>
 
 The password is the only thing that can decrypt this repository. If the Secret
 is lost and the password was not archived off-cluster, every snapshot is
@@ -226,9 +226,20 @@ func runRotatePassword(
 	for _, line := range staleSeedNotice(repo, current.Name) {
 		done.printf("! %s\n", line)
 	}
-	done.printf("  the old key still works; remove it with:\n")
-	done.printf("    b2bk exec %s -- restic key list\n", sb.Name)
+	done.printf("  the old key still works; find it and remove it with:\n")
+	for _, line := range keyCommands(sb) {
+		done.printf("    %s\n", line)
+	}
 	return done.Err()
+}
+
+// keyCommands list the repository's keys and remove one, through sb. The name
+// is qualified, since a Repository may share it.
+func keyCommands(sb *b2backupv1.ScheduledBackup) []string {
+	return []string{
+		fmt.Sprintf("b2bk exec sb/%s -- restic key list", sb.Name),
+		fmt.Sprintf("b2bk exec sb/%s -- restic key remove <id>", sb.Name),
+	}
 }
 
 // rotateWriteFailure explains a failed write of the new password after restic
@@ -237,8 +248,8 @@ func runRotatePassword(
 func rotateWriteFailure(
 	sb *b2backupv1.ScheduledBackup, current, temp *corev1.Secret, err error,
 ) (failure error, keep bool) {
-	removeKey := fmt.Sprintf("find it with b2bk exec %s -- restic key list and remove it with "+
-		"b2bk exec %s -- restic key remove <id>", sb.Name, sb.Name)
+	keys := keyCommands(sb)
+	removeKey := fmt.Sprintf("find it with %s and remove it with %s", keys[0], keys[1])
 	switch {
 	case apierrors.IsConflict(err), apierrors.IsForbidden(err), apierrors.IsInvalid(err),
 		apierrors.IsNotFound(err), apierrors.IsBadRequest(err), apierrors.IsUnauthorized(err):

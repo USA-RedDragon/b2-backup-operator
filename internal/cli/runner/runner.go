@@ -127,7 +127,7 @@ func (r *Runner) Build(
 	key := types.NamespacedName{Namespace: sb.Namespace, Name: backup.CronJobName(sb)}
 	if err := r.Client.Get(ctx, key, &cj); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("%w: expected %s; run `b2bk doctor %s`",
+			return nil, fmt.Errorf("%w: expected %s; run `b2bk doctor sb/%s`",
 				ErrNoCronJob, key.Name, sb.Name)
 		}
 		return nil, err

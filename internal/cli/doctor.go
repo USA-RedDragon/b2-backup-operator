@@ -405,14 +405,14 @@ func checkLastRun(sb *b2backupv1.ScheduledBackup, r *report) {
 
 		r.add(levelWarn, "no backup has run yet",
 			"The first run happens at the next scheduled slot.",
-			"To take one now: b2bk backup "+sb.Name)
+			"To take one now: b2bk backup sb/"+sb.Name)
 	case st.LastSuccessfulTime == nil:
 		r.add(levelFail, fmt.Sprintf("a backup started %s but none has ever succeeded", Since(st.LastScheduleTime)),
-			"Run: b2bk logs "+sb.Name)
+			"Run: b2bk logs sb/"+sb.Name)
 	case st.LastSuccessfulTime.Before(st.LastScheduleTime):
 		r.add(levelFail, fmt.Sprintf("the most recent run (%s) did not succeed", Since(st.LastScheduleTime)),
 			fmt.Sprintf("Last success was %s.", Since(st.LastSuccessfulTime)),
-			"Run: b2bk logs "+sb.Name)
+			"Run: b2bk logs sb/"+sb.Name)
 	default:
 		r.add(levelOK, fmt.Sprintf("last backup succeeded %s", Since(st.LastSuccessfulTime)))
 	}
@@ -497,6 +497,6 @@ func checkRecordedRuns(history []b2backupv1.BackupRun, r *report, name string) {
 		r.add(levelInfo, fmt.Sprintf("a backup started %s is still running", Since(last.StartTime)))
 	default:
 		r.add(levelFail, fmt.Sprintf("the most recent run (%s) failed", when),
-			"Run: b2bk logs "+name)
+			"Run: b2bk logs sb/"+name)
 	}
 }

@@ -191,7 +191,7 @@ func awaitTrigger(
 	if jobName == "" {
 		return "", fmt.Errorf(
 			"%w: a backup is already running and concurrencyPolicy is Forbid; "+
-				"wait for it to finish, or use `b2bk status %s` to see it", ErrTriggerSkipped, sb.Name)
+				"wait for it to finish, or use `b2bk status sb/%s` to see it", ErrTriggerSkipped, sb.Name)
 	}
 	return jobName, nil
 }
@@ -225,7 +225,7 @@ func awaitJob(
 		if err := p.Err(); err != nil {
 			return err
 		}
-		return fmt.Errorf("%w: see `b2bk logs %s`", ErrBackupFailed, sb.Name)
+		return fmt.Errorf("%w: see `b2bk logs sb/%s`", ErrBackupFailed, sb.Name)
 	}
 	p.printf("job/%s succeeded\n", jobName)
 	return p.Err()

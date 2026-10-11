@@ -157,7 +157,7 @@ func runWait(
 		if err := p.Err(); err != nil {
 			return err
 		}
-		return fmt.Errorf("%w: see `b2bk logs %s`", ErrBackupFailed, sb.Name)
+		return fmt.Errorf("%w: see `b2bk logs sb/%s`", ErrBackupFailed, sb.Name)
 	}
 	p.printf("job/%s finished\n", running.Name)
 	return p.Err()

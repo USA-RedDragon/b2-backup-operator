@@ -39,7 +39,7 @@ const (
 func requireCurrent(
 	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository,
 ) error {
-	wait := fmt.Sprintf("check b2bk status %s and wait for the operator to reconcile it", sb.Name)
+	wait := fmt.Sprintf("check b2bk status sb/%s and wait for the operator to reconcile it", sb.Name)
 	if why := controller.RepositoryNotOwn(repo); why != "" {
 		return fmt.Errorf("%w: repository/%s %s", ErrRepositoryNotUsable, repo.Name, why)
 	}

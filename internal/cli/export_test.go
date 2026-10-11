@@ -64,3 +64,9 @@ var PrintScheduledBackups = printScheduledBackups
 // RefuseActive is the check an overwriting restore makes for anything still
 // running against the backup's claims or database.
 var RefuseActive = refuseActive
+
+// RotateWriteFailure explains a failed write of a rotated password.
+var RotateWriteFailure = rotateWriteFailure
+
+// KeyCommands are the commands rotate-password prints for the old key.
+var KeyCommands = keyCommands

@@ -18,7 +18,7 @@ func RestoreHold(sb *b2backupv1.ScheduledBackup) string {
 		return "a restore is running (" + holder + ")"
 	}
 	if partial := sb.Annotations[b2backupv1.AnnotationRestorePartial]; partial != "" {
-		return "a failed restore may have left " + partial + " half-written; check it, then run b2bk resume " + sb.Name
+		return "a failed restore may have left " + partial + " half-written; check it, then run b2bk resume sb/" + sb.Name
 	}
 	return ""
 }
@@ -55,7 +55,7 @@ func SharedRestoreHold(sb *b2backupv1.ScheduledBackup, backups []b2backupv1.Sche
 		for _, entry := range PartialTargets(other) {
 			if coversEntry(sb, entry) {
 				return fmt.Sprintf("a failed restore through scheduledbackup/%s may have left %s half-written; "+
-					"check it, then run b2bk resume %s", other.Name, entry, other.Name)
+					"check it, then run b2bk resume sb/%s", other.Name, entry, other.Name)
 			}
 		}
 	}

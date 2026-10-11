@@ -266,7 +266,7 @@ func (h *restoreHold) take(ctx context.Context, key types.NamespacedName) error 
 	if holder := latest.Annotations[b2backupv1.AnnotationRestoreLock]; holder != "" {
 		return fmt.Errorf("%w: scheduledbackup/%s is held by %s; if that restore and its Job are gone "+
 			"(kubectl get jobs -n %s -l %s), release it with kubectl annotate -n %s scheduledbackup/%s %s-; "+
-			"what it was writing stays held until you check it and run b2bk resume %s",
+			"what it was writing stays held until you check it and run b2bk resume sb/%s",
 			ErrRestoreRunning, key.Name, holder, key.Namespace, runner.LabelPurpose, key.Namespace, key.Name,
 			b2backupv1.AnnotationRestoreLock, key.Name)
 	}
@@ -362,11 +362,11 @@ func (h *restoreHold) finish(f *Factory, err error, wrote bool) error {
 		p.printf("! %s stay held, with the CronJob suspended and no backup triggered:\n", strings.Join(names, ", "))
 		p.printf("! %s may hold a partial restore, which the next backup would save\n", strings.Join(left, ", "))
 		p.printf("! and retention could then keep over good snapshots. Restore it in full again,\n")
-		p.printf("! or check it and run: b2bk resume %s\n", h.plan.Name)
+		p.printf("! or check it and run: b2bk resume sb/%s\n", h.plan.Name)
 	}
 	if releaseErr != nil {
 		p.printf("! could not release %s after the restore: %v\n", strings.Join(names, ", "), releaseErr)
-		p.printf("! check the %s annotation with: b2bk status %s\n", b2backupv1.AnnotationRestoreLock, h.plan.Name)
+		p.printf("! check the %s annotation with: b2bk status sb/%s\n", b2backupv1.AnnotationRestoreLock, h.plan.Name)
 	}
 	return errors.Join(err, p.Err())
 }
@@ -469,8 +469,8 @@ func refuseActive(ctx context.Context, c client.Client, sb *b2backupv1.Scheduled
 		return fmt.Errorf("%w: %s is running for scheduledbackup/%s and writes to the same claims or database; "+
 			"wait for it to finish (kubectl get job -n %s %s)", work.sentinel(), work, sb.Name, sb.Namespace, work.name)
 	default:
-		return fmt.Errorf("%w: %s is running for scheduledbackup/%s; wait for it with b2bk wait %s, "+
-			"or stop it with b2bk cancel %s", work.sentinel(), work, sb.Name, sb.Name, sb.Name)
+		return fmt.Errorf("%w: %s is running for scheduledbackup/%s; wait for it with b2bk wait sb/%s, "+
+			"or stop it with b2bk cancel sb/%s", work.sentinel(), work, sb.Name, sb.Name, sb.Name)
 	}
 }
 
