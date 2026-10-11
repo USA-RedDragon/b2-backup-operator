@@ -22,7 +22,10 @@ var (
 	ErrTagConflict = errors.New("the backup is in a tag conflict")
 )
 
-const operatorManagedBy = "b2-backup-operator"
+const (
+	labelManagedBy    = "app.kubernetes.io/managed-by"
+	operatorManagedBy = "b2-backup-operator"
+)
 
 // requireCurrent refuses a command that forgets or overwrites unless the
 // operator has rendered the backup's CronJob from the ScheduledBackup and
@@ -75,7 +78,7 @@ func requireCurrent(
 	if err := c.List(ctx, &backups, client.InNamespace(sb.Namespace)); err != nil {
 		return err
 	}
-	managed := client.MatchingLabels{"app.kubernetes.io/managed-by": operatorManagedBy}
+	managed := client.MatchingLabels{labelManagedBy: operatorManagedBy}
 	var cronJobs batchv1.CronJobList
 	if err := c.List(ctx, &cronJobs, client.InNamespace(sb.Namespace), managed); err != nil {
 		return err

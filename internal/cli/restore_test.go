@@ -324,7 +324,7 @@ func TestRestoreClaimCopiesTheSourceClaim(t *testing.T) {
 	if size.String() != "20Gi" {
 		t.Errorf("size = %s, want 20Gi", size.String())
 	}
-	if pvc.Labels["app.kubernetes.io/managed-by"] != runner.ManagedByValue {
+	if pvc.Labels[labelManagedBy] != runner.ManagedByValue {
 		t.Errorf("labels = %v", pvc.Labels)
 	}
 	if len(pvc.OwnerReferences) != 0 {

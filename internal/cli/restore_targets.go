@@ -330,7 +330,7 @@ func newRestoreClaim(sb *b2backupv1.ScheduledBackup, name string, spec corev1.Pe
 	return &corev1.PersistentVolumeClaim{
 		Namespace: sb.Namespace,
 		Name:      name,
-		Labels:    map[string]string{"app.kubernetes.io/managed-by": runner.ManagedByValue},
+		Labels:    map[string]string{labelManagedBy: runner.ManagedByValue},
 		Spec:      spec,
 	}
 }

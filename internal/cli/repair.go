@@ -163,7 +163,7 @@ func runRotatePassword(
 	temp := &corev1.Secret{
 		Namespace: repo.Namespace,
 		Name:      newKeySecretName(repo),
-		Labels:    map[string]string{"app.kubernetes.io/managed-by": runner.ManagedByValue},
+		Labels:    map[string]string{labelManagedBy: runner.ManagedByValue},
 		Data:      map[string][]byte{"password": []byte(password)},
 	}
 	if err := c.Create(ctx, temp); err != nil {

@@ -43,7 +43,7 @@ func TestAJobStillRunningAnOldForgetHoldsOffTheBackupNowUsingItsTag(t *testing.T
 		Labels:      map[string]string{labelManagedBy: managedByValue},
 		Annotations: map[string]string{forgetScopeAnnotation: `{"repository":"` + resticName + `","host":"` + host + `","tags":["db"]}`},
 		OwnerReferences: []metav1.OwnerReference{{
-			APIVersion: "batch/v1", Kind: "CronJob", Name: siblingCronJob.Name, UID: siblingCronJob.UID,
+			APIVersion: "batch/v1", Kind: kindCronJob, Name: siblingCronJob.Name, UID: siblingCronJob.UID,
 			Controller: ptr.To(true),
 		}},
 	}

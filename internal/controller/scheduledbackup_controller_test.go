@@ -35,6 +35,7 @@ const (
 	dbBackupName    = "restic-db"
 
 	kindScheduledBackup = "ScheduledBackup"
+	kindCronJob         = "CronJob"
 	moreBackupName      = "restic-more"
 	elsewhereBackupName = "restic-elsewhere"
 	reportingTag        = "db-reporting"
@@ -723,7 +724,7 @@ func TestACronJobThatCannotBeRebuiltIsSuspended(t *testing.T) {
 		ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption,
 	) error {
 		if cj, ok := obj.(*batchv1.CronJob); ok && cj.Spec.TimeZone != nil && *cj.Spec.TimeZone == "Mars/Olympus" {
-			return apierrors.NewInvalid(schema.GroupKind{Group: "batch", Kind: "CronJob"}, cj.Name,
+			return apierrors.NewInvalid(schema.GroupKind{Group: "batch", Kind: kindCronJob}, cj.Name,
 				field.ErrorList{field.Invalid(field.NewPath("spec", "timeZone"), *cj.Spec.TimeZone, "unknown time zone")})
 		}
 		return cl.Update(ctx, obj, opts...)

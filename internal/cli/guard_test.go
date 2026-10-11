@@ -17,6 +17,8 @@ import (
 )
 
 const (
+	flagYes          = "--yes"
+	targetInPlace    = "in place"
 	notRendered      = "has not rendered"
 	inATagConflict   = "tag conflict"
 	renderedFromKey  = "b2backup.mcswain.dev/rendered-from"
@@ -53,7 +55,7 @@ func currentBackup(t *testing.T, mutate ...func(*b2backupv1.ScheduledBackup)) cu
 	}
 	cj := &batchv1.CronJob{
 		Namespace: testNS, Name: backup.CronJobName(sb), UID: testCronJobUID,
-		Labels: map[string]string{"app.kubernetes.io/managed-by": "b2-backup-operator"},
+		Labels: map[string]string{labelManagedBy: operatorManagedBy},
 		Annotations: map[string]string{
 			specHashKey:     "0123abcd",
 			renderedFromKey: "scheduledbackup=3,repository=2",
@@ -142,7 +144,7 @@ func TestPruneRefusesToActOnStaleStatus(t *testing.T) {
 			extra := tt.edit(&fx)
 			f := factoryWithClient(t, newClient(t, fx.objects(extra...)...))
 			cmd := newPruneCommand(f)
-			cmd.SetArgs([]string{subjectBackup, "--yes"})
+			cmd.SetArgs([]string{subjectBackup, flagYes})
 			cmd.SilenceUsage, cmd.SilenceErrors = true, true
 			checkStalenessError(t, cmd.Execute(), tt.wants)
 		})
@@ -156,7 +158,7 @@ func TestOverwritingRestoresRefuseToActOnStaleStatus(t *testing.T) {
 		mutate  func(*b2backupv1.ScheduledBackup)
 		restore func(context.Context, *Factory, client.Client, *b2backupv1.ScheduledBackup) error
 	}{
-		{"in place", withVolume, func(ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup) error {
+		{targetInPlace, withVolume, func(ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup) error {
 			return restoreInPlace(ctx, f, c, sb, &restoreOptions{snapshot: latest, yes: true})
 		}},
 		{"to the database", withDatabase, func(ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup) error {
@@ -182,7 +184,7 @@ func TestARepositoryWithSeveralBackupsNeedsOneNamed(t *testing.T) {
 	other := newBackup("other", testRepoName)
 	c := newClient(t, fx.objects(other)...)
 	cmd := newPruneCommand(factoryWithClient(t, c))
-	cmd.SetArgs([]string{subjectRepo, "--yes"})
+	cmd.SetArgs([]string{subjectRepo, flagYes})
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "other") || !strings.Contains(err.Error(), testBackupName) {
@@ -198,7 +200,7 @@ func TestRestoreOfARepositoryWithSeveralBackupsNeedsOneNamed(t *testing.T) {
 	fx := currentBackup(t, withVolume)
 	other := newBackup("other", testRepoName)
 	cmd := newRestoreCommand(factoryWithClient(t, newClient(t, fx.objects(other)...)))
-	cmd.SetArgs([]string{subjectRepo, "--in-place", "--yes"})
+	cmd.SetArgs([]string{subjectRepo, "--in-place", flagYes})
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	if err := cmd.Execute(); !errors.Is(err, ErrSeveralBackupsForRepository) {
 		t.Errorf("err = %v, want the restore refused until one ScheduledBackup is named", err)
