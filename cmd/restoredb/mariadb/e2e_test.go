@@ -594,3 +594,27 @@ func TestMariaDBSwapAppliedDespiteAnError(t *testing.T) {
 	}
 	sql(t, "DROP DATABASE app__b2bk_old")
 }
+
+// A foreign key name is unique per database. When a schema change moved one
+// from table to table, the swap must move every live table out before any
+// staged table moves in, or the constraint would be in the live database twice
+// partway through the RENAME TABLE.
+func TestMariaDBSwapsAForeignKeyThatMovedTable(t *testing.T) {
+	sql(t, `DROP DATABASE IF EXISTS app; DROP DATABASE IF EXISTS app__b2bk_restore; DROP DATABASE IF EXISTS app__b2bk_old;
+CREATE DATABASE app;
+CREATE TABLE app.p (id INT PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE app.a (id INT, CONSTRAINT fk1 FOREIGN KEY (id) REFERENCES app.p (id)) ENGINE=InnoDB;
+CREATE TABLE app.b (id INT) ENGINE=InnoDB;
+INSERT INTO app.p VALUES (1); INSERT INTO app.a VALUES (1);`)
+	want := fingerprint(t, appDB)
+	backup := dump(t)
+	sql(t, `ALTER TABLE app.a DROP FOREIGN KEY fk1;
+ALTER TABLE app.b ADD CONSTRAINT fk1 FOREIGN KEY (id) REFERENCES app.p (id);`)
+
+	if _, err := restore(t, backup, argDropOld); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := fingerprint(t, appDB); got != want {
+		t.Errorf("app does not match the backup:\n%s", got)
+	}
+}

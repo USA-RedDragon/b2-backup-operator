@@ -84,21 +84,20 @@ func literal(s string) string {
 }
 
 // RenameStatement returns one RENAME TABLE statement that moves every table in
-// current out of live into out, and every table in incoming from in into live.
-// MariaDB applies a multi-table RENAME TABLE atomically: if any part fails,
-// none of it happens. It returns "" when there is nothing to move.
+// current out of live into out, and then every table in incoming from in into
+// live. MariaDB applies a multi-table RENAME TABLE atomically: if any part
+// fails, none of it happens. It also applies the parts in order, and a foreign
+// key name is unique per database, so every table leaves live before any
+// arrives: a constraint a schema change moved to another table would otherwise
+// be in live twice partway through. It returns "" when there is nothing to move.
 func RenameStatement(live, in, out string, current, incoming []string) string {
-	names := slices.Concat(current, incoming)
-	slices.Sort(names)
-	names = slices.Compact(names)
+	current, incoming = slices.Sorted(slices.Values(current)), slices.Sorted(slices.Values(incoming))
 	moves := make([]string, 0, len(current)+len(incoming))
-	for _, name := range names {
-		if slices.Contains(current, name) {
-			moves = append(moves, qualified(live, name)+" TO "+qualified(out, name))
-		}
-		if slices.Contains(incoming, name) {
-			moves = append(moves, qualified(in, name)+" TO "+qualified(live, name))
-		}
+	for _, name := range current {
+		moves = append(moves, qualified(live, name)+" TO "+qualified(out, name))
+	}
+	for _, name := range incoming {
+		moves = append(moves, qualified(in, name)+" TO "+qualified(live, name))
 	}
 	if len(moves) == 0 {
 		return ""

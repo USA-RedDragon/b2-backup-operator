@@ -153,7 +153,7 @@ func TestRestoreSwapsOnlyAfterACompleteDump(t *testing.T) {
 	if !strings.Contains(out, "DROP DATABASE `app__b2bk_old`;") {
 		t.Errorf("output does not say how to drop the rollback copy:\n%s", out)
 	}
-	back := "RENAME TABLE `app__b2bk_old`.`extra` TO `app`.`extra`, `app`.`t` TO `app__b2bk_restore`.`t`, " +
+	back := "RENAME TABLE `app`.`t` TO `app__b2bk_restore`.`t`, `app__b2bk_old`.`extra` TO `app`.`extra`, " +
 		"`app__b2bk_old`.`t` TO `app`.`t`;"
 	if !strings.Contains(out, back) {
 		t.Errorf("output does not give the rollback:\n%s", out)
