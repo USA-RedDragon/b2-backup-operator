@@ -14,6 +14,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -274,23 +275,20 @@ func restoreToNewPVC(
 	if err != nil {
 		return err
 	}
+	if err := refuseExistingClaim(ctx, c, sb.Namespace, o.toNewPVC); err != nil {
+		return err
+	}
 
 	spec, err := newClaimSpec(ctx, c, sb, claim, o.size)
 	if err != nil {
 		return err
 	}
 
-	run, err := f.Runner()
-	if err != nil {
-		return err
-	}
 	var plan volumePlan
-	err = run.Attach(ctx, sb, runner.Options{Purpose: purposeRestore}, defaultResticTimeout,
-		func(pod *corev1.Pod) error {
-			plan, err = o.planVolumes(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, src,
-				newClaimTarget(sb, claim, restoreMountPath))
-			return err
-		})
+	err = f.attachRestorePod(ctx, sb, runner.Options{Purpose: purposeRestore}, func(pod restorePod, _ string) error {
+		plan, err = o.planVolumes(ctx, pod, src, newClaimTarget(sb, claim, restoreMountPath))
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -318,16 +316,68 @@ func restoreToNewPVC(
 		}},
 		ExtraMounts: []corev1.VolumeMount{{Name: "restore-target", MountPath: restoreMountPath}},
 	}
-	err = run.Attach(ctx, sb, opts, defaultResticTimeout, func(pod *corev1.Pod) error {
-		return o.runVolumes(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, src, plan, f.Streams.Out)
+	wrote := false
+	err = f.attachRestorePod(ctx, sb, opts, func(pod restorePod, _ string) error {
+		wrote = true
+		return o.runVolumes(ctx, pod, src, plan, f.Streams.Out)
 	})
 	if err != nil {
+		releaseRestoreClaim(c, pvc, wrote, f.Streams.ErrOut)
 		return err
 	}
 
 	done := newPrinter(f.Streams.ErrOut)
 	done.printf("restored into pvc/%s; the claim is ready to mount\n", pvc.Name)
 	return done.Err()
+}
+
+// refuseExistingClaim stops --to-new-pvc before it starts anything when the
+// claim it would create is already there. A claim an earlier b2bk restore left
+// may hold part of a restore, and restic restore into it would merge two
+// snapshots' files, so it is never reused.
+func refuseExistingClaim(ctx context.Context, c client.Client, namespace, name string) error {
+	var existing corev1.PersistentVolumeClaim
+	err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing)
+	switch {
+	case apierrors.IsNotFound(err):
+		return nil
+	case err != nil:
+		return fmt.Errorf("checking for an existing pvc/%s: %w", name, err)
+	case existing.Labels[labelManagedBy] == runner.ManagedByValue:
+		return fmt.Errorf("%w: pvc/%s already exists; b2bk created it %s ago for an earlier restore, and it may "+
+			"hold all or part of that restore. Mount it to check it, delete it with kubectl delete pvc -n %s %s, "+
+			"or pass another name", ErrClaimExists, name, Age(existing.CreationTimestamp), namespace, name)
+	default:
+		return fmt.Errorf("%w: pvc/%s already exists and b2bk did not create it; pass another name",
+			ErrClaimExists, name)
+	}
+}
+
+// releaseRestoreClaim handles the claim --to-new-pvc created when the restore
+// into it failed: an empty one is deleted, one restic may have written to is
+// kept for the user to check.
+func releaseRestoreClaim(c client.Client, pvc *corev1.PersistentVolumeClaim, wrote bool, errOut io.Writer) {
+	p := newPrinter(errOut)
+	if wrote {
+		p.printf("! pvc/%s may hold a partial restore; check it, or delete it with: kubectl delete pvc -n %s %s\n",
+			pvc.Name, pvc.Namespace, pvc.Name)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), cleanupTimeout)
+	defer cancel()
+	var opts []client.DeleteOption
+	if pvc.UID != "" {
+		opts = append(opts, client.Preconditions{UID: &pvc.UID})
+	}
+	err := c.Delete(ctx, pvc, opts...)
+	switch {
+	case err == nil, apierrors.IsNotFound(err):
+		p.printf("deleted pvc/%s, which b2bk created for this restore; nothing was written to it\n", pvc.Name)
+	default:
+		p.printf("! could not delete pvc/%s, which b2bk created for this restore and wrote nothing to: %v\n",
+			pvc.Name, err)
+		p.printf("! delete it with: kubectl delete pvc -n %s %s\n", pvc.Namespace, pvc.Name)
+	}
 }
 
 // newRestoreClaim is the claim --to-new-pvc restores into. It owns nothing and

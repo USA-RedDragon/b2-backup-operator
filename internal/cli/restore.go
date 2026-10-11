@@ -23,6 +23,7 @@ var (
 	ErrNoFilesSource  = errors.New("this backup has no files source to restore")
 	ErrWrongSnapshot  = errors.New("the snapshot is not one this source took")
 	ErrBackupRunning  = errors.New("a backup is running")
+	ErrClaimExists    = errors.New("the claim already exists")
 )
 
 const restoreMountPath = "/restore"
@@ -110,6 +111,11 @@ dump, and names the dump, its tag and its snapshot.
 source path. --include and --exclude patterns are relative to the source path.
 --to downloads with restic dump, which selects with --path alone, so
 --include, --exclude and --delete are refused rather than ignored there.
+
+--to-new-pvc refuses a NAME that already exists, even a claim an earlier
+b2bk restore left: it may hold part of that restore. If the restore fails
+before restic starts writing, b2bk deletes the claim it created; after that,
+it keeps the claim and says how to delete it.
 
 With no target and a terminal, b2bk asks. Without a terminal it lists the
 targets and exits, so a script never restores somewhere it did not name.
