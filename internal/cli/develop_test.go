@@ -807,3 +807,28 @@ func TestParityCatchesADumpThatReadsNoSecret(t *testing.T) {
 			err, out.String())
 	}
 }
+
+func TestParityRefusesAReleaseItCannotRenderWhole(t *testing.T) {
+	t.Parallel()
+	for name, spec := range map[string]string{
+		"a post-renderer":       "spec:\n  postRenderers:\n    - kustomize: {patches: []}\n",
+		"values from elsewhere": "spec:\n  valuesFrom:\n    - kind: ConfigMap\n      name: extra\n",
+		"another chart":         "spec:\n  chartRef:\n    kind: OCIRepository\n    name: other\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			hr := filepath.Join(dir, "helmrelease.yaml")
+			gen := filepath.Join(dir, "generated.yaml")
+			if err := os.WriteFile(hr, []byte(strings.Replace(parityRelease, "spec:\n", spec, 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(gen, []byte(parityGenerated), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := runParity(&bytes.Buffer{}, gen, hr, migrateOptions{}); !errors.Is(err, ErrAppTemplateUnmodeled) {
+				t.Errorf("parity = %v, want ErrAppTemplateUnmodeled", err)
+			}
+		})
+	}
+}
