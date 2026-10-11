@@ -396,7 +396,7 @@ func TestForeignDataStopsEverything(t *testing.T) {
 	}{
 		{"a hidden file under the path", prefixRepo(nil), []string{"restic/myapp/keys/abc"}, "restic/myapp/keys/abc"},
 		{"a parent of other repositories", prefixRepo(func(r *b2backupv1.Repository) {
-			r.Spec.Path = "restic"
+			r.Spec.Path = resticName
 			usePasswordSeed(r)
 		}), []string{"restic/app1/config", "restic/app1/data/00/aa", "restic/app2/config"}, ""},
 		{"a shared bucket adopted in Bucket mode", bucketRepo(func(r *b2backupv1.Repository) {
@@ -543,13 +543,13 @@ func TestRefusesToWriteAnUnmanagedSecretBeforeCreatingAKey(t *testing.T) {
 	f := newFakeB2(t)
 	foreign := &corev1.Secret{
 		Name: credsSecretName, Namespace: testNS,
-		Data: map[string][]byte{"unmanaged": []byte("data")},
+		Data: map[string][]byte{"unmanaged": []byte(relativeDir)},
 	}
 	r, c := newHarness(t, f, bucketRepo(nil), foreign)
 	if err := reconcileErr(r); err == nil {
 		t.Fatal("reconcile wrote over a Secret it does not manage")
 	}
-	if got := getSecret(t, c, credsSecretName); string(got.Data["unmanaged"]) != "data" || len(got.Data) != 1 {
+	if got := getSecret(t, c, credsSecretName); string(got.Data["unmanaged"]) != relativeDir || len(got.Data) != 1 {
 		t.Error("the unmanaged Secret was modified")
 	}
 	if f.CountCalls("b2_create_key") != 0 {
@@ -597,11 +597,11 @@ func TestLifecycleRuleIsMergedWithTheBucketsOtherRules(t *testing.T) {
 	for _, rule := range rules {
 		byPrefix[rule.FileNamePrefix] = *rule.DaysFromHidingToDeleting
 	}
-	if byPrefix[mediaPrefix] != 7 || byPrefix["restic/other/"] != 30 || byPrefix["restic/myapp/"] != 30 {
+	if byPrefix[mediaPrefix] != 7 || byPrefix["restic/other/"] != 30 || byPrefix[myappPrefix] != 30 {
 		t.Errorf("rules = %v", byPrefix)
 	}
 	if cond := condition(t, c, b2backupv1.RepositoryConditionLifecycleRule); cond == nil ||
-		cond.Status != metav1.ConditionTrue || cond.Reason != "Managed" {
+		cond.Status != metav1.ConditionTrue || cond.Reason != reasonManaged {
 		t.Errorf("LifecycleRule = %+v", cond)
 	}
 
@@ -614,7 +614,7 @@ func TestLifecycleRuleIsMergedWithTheBucketsOtherRules(t *testing.T) {
 func TestLifecycleRuleOnAParentPrefixCoversTheRepository(t *testing.T) {
 	f := newFakeB2(t)
 	one := 1
-	f.AddBucket(sharedBucket, b2.LifecycleRule{FileNamePrefix: "restic/", DaysFromHidingToDeleting: &one})
+	f.AddBucket(sharedBucket, b2.LifecycleRule{FileNamePrefix: resticPrefix, DaysFromHidingToDeleting: &one})
 	r, c := newHarness(t, f, prefixRepo(nil))
 	reconcileN(t, r, 1)
 
@@ -622,7 +622,7 @@ func TestLifecycleRuleOnAParentPrefixCoversTheRepository(t *testing.T) {
 		t.Error("a rule was added under a parent rule that already covers it")
 	}
 	cond := condition(t, c, b2backupv1.RepositoryConditionLifecycleRule)
-	if cond.Reason != reasonCovered || !strings.Contains(cond.Message, `"restic/"`) ||
+	if cond.Reason != reasonCovered || !strings.Contains(cond.Message, `"`+resticPrefix+`"`) ||
 		!strings.Contains(cond.Message, "after 1 day(s)") {
 		t.Errorf("LifecycleRule = %+v, want %s naming the rule and its days", cond, reasonCovered)
 	}
@@ -918,7 +918,7 @@ func TestRepositoryConflicts(t *testing.T) {
 			r.Status = b2backupv1.RepositoryStatus{BucketID: "b", BucketName: sharedBucket, Path: myappPath}
 		}, true},
 		{"sibling path", func(r *b2backupv1.Repository) { r.Spec.Path = "restic/myapp2" }, false},
-		{"another bucket", func(r *b2backupv1.Repository) { r.Spec.Bucket = "acme-other" }, false},
+		{"another bucket", func(r *b2backupv1.Repository) { r.Spec.Bucket = otherBucket }, false},
 		{"being deleted", func(r *b2backupv1.Repository) {
 			r.DeletionTimestamp = ptr.To(metav1.Now())
 			r.Finalizers = []string{FinalizerName}
@@ -1117,13 +1117,13 @@ func TestDeleteInBucketModeKeepsABucketHoldingOtherFiles(t *testing.T) {
 	provisionForDeletion(t, r, c)
 	bucket := f.Bucket(ownBucket)
 	f.PutFile(bucket.BucketID, "repo/config", 1)
-	f.PutFile(bucket.BucketID, "notes.txt", 1)
+	f.PutFile(bucket.BucketID, notesFile, 1)
 
 	reconcileUntilGone(t, r, c)
 	if f.Bucket(ownBucket) == nil {
 		t.Fatal("a bucket holding files outside the repository was deleted")
 	}
-	if got := f.FileNames(bucket.BucketID); !slices.Equal(got, []string{"notes.txt"}) {
+	if got := f.FileNames(bucket.BucketID); !slices.Equal(got, []string{notesFile}) {
 		t.Errorf("remaining files = %v, want only notes.txt", got)
 	}
 	if !hasEvent(recordedEvents(t, r), "BucketRetained") {

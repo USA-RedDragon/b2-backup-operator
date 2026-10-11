@@ -74,6 +74,7 @@ const (
 	reasonForeign  = "ForeignData"
 	reasonCovered  = "CoveredByExistingRule"
 	reasonScope    = "DeletionScopeMismatch"
+	reasonManaged  = "Managed"
 
 	// SecretFinalizer keeps a credentials Secret holding the only copy of an
 	// operator-generated restic password from being deleted with its namespace.
@@ -268,7 +269,7 @@ func (r *RepositoryReconciler) reconcile(
 
 	dataExists := false
 	if !repo.Status.Initialized {
-		exists, err := b2.FileExists(ctx, api, bucket.BucketID, joinPath(path, "config"))
+		exists, err := b2.FileExists(ctx, api, bucket.BucketID, configPath(path))
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("checking for an existing restic repository: %w", err)
 		}
@@ -284,7 +285,7 @@ func (r *RepositoryReconciler) reconcile(
 					"%s/%s holds files but no restic config at %s, so it is not a restic repository "+
 						"this operator can adopt; nothing was created or changed. Point spec.path "+
 						"somewhere else, or empty the path",
-					bucket.BucketName, displayPath(path), joinPath(path, "config")),
+					bucket.BucketName, displayPath(path), configPath(path)),
 			})
 			return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
 		}
@@ -516,7 +517,7 @@ func (r *RepositoryReconciler) setLifecycleCondition(
 	repo *b2backupv1.Repository, bucket *b2.Bucket, prefix string, outcome b2.RuleOutcome, decider b2.LifecycleRule,
 ) {
 	cond := metav1.Condition{
-		Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionTrue, Reason: "Managed",
+		Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionTrue, Reason: reasonManaged,
 	}
 	effective, _ := b2.EffectiveHidingDays(bucket.LifecycleRules, prefix)
 	switch outcome {

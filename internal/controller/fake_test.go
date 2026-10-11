@@ -37,6 +37,11 @@ const (
 	teamSecret      = "team-b2"
 	missingSecret   = "gone"
 	myappPath       = "restic/myapp"
+	resticPrefix    = "restic/"
+	myappPrefix     = myappPath + "/"
+	otherBucket     = "acme-other"
+	notesFile       = "notes.txt"
+	relativeDir     = "data"
 
 	wantInitPoll = 15 * time.Second
 )

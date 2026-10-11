@@ -317,4 +317,3 @@ func RemoveLifecycleRule(rules []LifecycleRule, prefix string) ([]LifecycleRule,
 	})
 	return out, len(out) != len(rules)
 }
-
