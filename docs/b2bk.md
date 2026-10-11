@@ -725,7 +725,7 @@ What maps across:
 | `restic backup --tag=T --stdin-from-command -- backup-cnpg.sh [--dbname=D]` | A `cnpg` source, which dumps with `dumpdb cnpg`; see `parity` for what that changes |
 | `restic backup ... -- dumpdb <engine>` | A source of that engine |
 | `restic forget --prune --keep-...` | `spec.retention`, which the operator scopes to the backup's own tags |
-| Every `existingClaim` mounted in the restic container | `spec.volumes`, with the mount path and read-only flag app-template gives each, the working directory's claim first |
+| Every `existingClaim` mounted in the restic container | `spec.volumes`, with the mount path and read-only flag app-template gives each, the working directory's claim first. Like app-template, `globalMounts` and the container's `advancedMounts` both apply |
 | An `emptyDir` mounted in the restic container | `spec.scratch`, with its `sizeLimit` |
 | The volume restic keeps its cache on: mounted where `--cache-dir`, then `RESTIC_CACHE_DIR`, then the image's `/cache` points, and not backed up by the script | Nothing, or `spec.cache.storageClass` for a claim the chart created. The operator mounts a cache claim of its own at `/cache`, and `RESTIC_CACHE_DIR` is dropped. A volume anywhere else is data, whatever its name |
 | The container's `workingDir` | `spec.workingDir`, when it is not the default the operator would use |
@@ -754,7 +754,8 @@ any other controller than that `restic init` Job, rather than drop them.
 
 `migrate` refuses what a ScheduledBackup cannot mount: data at `/cache`, where
 the operator mounts restic's cache, more than one Secret, more
-than one `emptyDir`, any other volume type, or a `subPath`.
+than one `emptyDir`, any other volume type, a `subPath` or `subPathExpr`, or
+`mountPropagation`.
 
 The Repository it writes has no `lifecycle` block and the default
 `deletionPolicy: Retain`. A bucket rule on a parent prefix, such as `k8s/`,

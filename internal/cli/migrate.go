@@ -323,8 +323,12 @@ func migratedRepository(namespace string, loc s3Location) *b2backupv1.Repository
 func mountedVolumes(hr *helmRelease, container hrContainer, script string, m *migration) ([]hrVolume, *hrVolume, error) {
 	sb := m.backup
 	cacheDir := container.cacheDir(script)
+	volumes, err := hr.volumes()
+	if err != nil {
+		return nil, nil, err
+	}
 	var claims, secretVolumes, scratch, others []hrVolume
-	for _, v := range hr.volumes() {
+	for _, v := range volumes {
 		mountPath := path.Clean(v.path)
 		switch {
 		case v.kind != volumeSecret && cacheDir != "" && mountPath == cacheDir && !scriptNames(script, cacheDir):
@@ -370,9 +374,6 @@ func mountedVolumes(hr *helmRelease, container hrContainer, script string, m *mi
 		return boolOrder(path.Clean(a.path) != workingDir, path.Clean(b.path) != workingDir)
 	})
 	for _, claim := range claims {
-		if claim.subPath != "" {
-			return nil, nil, fmt.Errorf("%w: %s mounts subPath %s", ErrUnsupportedMount, claim.key, claim.subPath)
-		}
 		volume := b2backupv1.VolumeSpec{ExistingClaim: claim.name, ReadOnly: claim.readOnly}
 		if path.Clean(claim.path) != "/"+claim.name {
 			volume.MountPath = path.Clean(claim.path)

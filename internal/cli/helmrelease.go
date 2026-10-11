@@ -101,9 +101,11 @@ type hrPersistence struct {
 }
 
 type hrMount struct {
-	Path     string `json:"path"`
-	ReadOnly bool   `json:"readOnly"`
-	SubPath  string `json:"subPath"`
+	Path             string `json:"path"`
+	ReadOnly         bool   `json:"readOnly"`
+	SubPath          string `json:"subPath"`
+	SubPathExpr      string `json:"subPathExpr"`
+	MountPropagation string `json:"mountPropagation"`
 }
 
 const (
@@ -118,7 +120,6 @@ type hrVolume struct {
 	name     string
 	path     string
 	readOnly bool
-	subPath  string
 }
 
 func resolveHelmRelease(arg string) (string, error) {
@@ -301,7 +302,10 @@ func (c hrContainer) env(name string) string {
 	}
 }
 
-func (hr *helmRelease) volumes() []hrVolume {
+// volumes returns what the restic container mounts. Like app-template, it
+// applies globalMounts and the container's advancedMounts together, and a
+// mount without a path reuses the path of the one before it.
+func (hr *helmRelease) volumes() ([]hrVolume, error) {
 	var out []hrVolume
 	for _, key := range sortedKeys(hr.Spec.Values.Persistence) {
 		p := hr.Spec.Values.Persistence[key]
@@ -309,30 +313,31 @@ func (hr *helmRelease) volumes() []hrVolume {
 			continue
 		}
 		kind, name := p.Type, p.Name
-		if p.ExistingClaim != "" {
+		if p.ExistingClaim != "" && (kind == "" || kind == volumeClaim) {
 			kind, name = volumeClaim, p.ExistingClaim
 		}
 
-		var mounts []hrMount
-		switch {
-		case len(p.AdvancedMounts) > 0:
-			mounts = p.AdvancedMounts[resticController][resticController]
-		case len(p.GlobalMounts) > 0:
-			mounts = p.GlobalMounts
-		default:
-			mounts = []hrMount{{}}
+		mounts := []hrMount{{}}
+		if len(p.GlobalMounts) > 0 || len(p.AdvancedMounts) > 0 {
+			mounts = append(slices.Clone(p.GlobalMounts), p.AdvancedMounts[resticController][resticController]...)
 		}
+		path := "/" + key
 		for _, m := range mounts {
-			path := m.Path
-			if path == "" {
-				path = "/" + key
+			switch {
+			case m.SubPath != "":
+				return nil, fmt.Errorf("%w: %s mounts subPath %s", ErrUnsupportedMount, key, m.SubPath)
+			case m.SubPathExpr != "":
+				return nil, fmt.Errorf("%w: %s mounts subPathExpr %s", ErrUnsupportedMount, key, m.SubPathExpr)
+			case m.MountPropagation != "":
+				return nil, fmt.Errorf("%w: %s sets mountPropagation", ErrUnsupportedMount, key)
 			}
-			out = append(out, hrVolume{
-				key: key, kind: kind, name: name, path: path, readOnly: m.ReadOnly, subPath: m.SubPath,
-			})
+			if m.Path != "" {
+				path = m.Path
+			}
+			out = append(out, hrVolume{key: key, kind: kind, name: name, path: path, readOnly: m.ReadOnly})
 		}
 	}
-	return out
+	return out, nil
 }
 
 func volumeKeys(volumes []hrVolume) string {
