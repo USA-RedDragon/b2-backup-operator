@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 )
 
 // ErrUnsupportedDump is returned for a plain dump the restore cannot follow.
@@ -21,7 +22,9 @@ var ErrUnsupportedDump = errors.New("the plain dump has something restoredb cann
 // any transaction. PlainFilter turns those lines into comments when they stand
 // alone between statements, outside COPY data, so the whole dump stays in the
 // one transaction psql commits at the end. Any other statement that ends,
-// rolls back or prepares a transaction is refused.
+// rolls back or prepares a transaction is refused, and so is every psql
+// meta-command but the \restrict and \unrestrict lines pg_dump writes, and the
+// \. that ends COPY data.
 type PlainFilter struct {
 	lex       *lexer
 	inCopy    bool
@@ -40,10 +43,19 @@ func (f *PlainFilter) Copy(dst io.Writer, src io.Reader) error {
 	if !ok {
 		in = bufio.NewReaderSize(src, 64<<10)
 	}
+	var held []byte
 	for {
 		chunk, err := in.ReadSlice('\n')
+		full := errors.Is(err, bufio.ErrBufferFull)
+		if held != nil || f.lineStart && full {
+			held = append(held, chunk...)
+			if full && len(held) < maxHeldLine {
+				continue
+			}
+			chunk, held = held, nil
+		}
 		if len(chunk) > 0 {
-			out, ferr := f.line(chunk, err == nil || errors.Is(err, io.EOF))
+			out, ferr := f.line(chunk, !full)
 			if ferr != nil {
 				return ferr
 			}
@@ -52,7 +64,7 @@ func (f *PlainFilter) Copy(dst io.Writer, src io.Reader) error {
 			}
 		}
 		switch {
-		case err == nil, errors.Is(err, bufio.ErrBufferFull):
+		case err == nil, full:
 		case errors.Is(err, io.EOF):
 			return nil
 		default:
@@ -82,6 +94,9 @@ func (f *PlainFilter) line(chunk []byte, whole bool) ([]byte, error) {
 		if bytes.Equal(trimEOL(chunk), []byte("BEGIN;")) || bytes.Equal(trimEOL(chunk), []byte("COMMIT;")) {
 			return append([]byte("-- "), chunk...), nil
 		}
+		if restrictLine.Match(trimEOL(chunk)) {
+			return chunk, nil
+		}
 	}
 	if err := f.lex.feed(chunk); err != nil {
 		return nil, fmt.Errorf("%w; at %.200q", err, chunk)
@@ -92,6 +107,12 @@ func (f *PlainFilter) line(chunk []byte, whole bool) ([]byte, error) {
 	}
 	return chunk, nil
 }
+
+// maxHeldLine is how much of a long line is gathered before it is passed on in
+// parts. Every line PlainFilter has to see whole is shorter.
+const maxHeldLine = 4 << 10
+
+var restrictLine = regexp.MustCompile(`^\\(un)?restrict [^\s]+[ \t]*$`)
 
 func trimEOL(line []byte) []byte {
 	return bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))

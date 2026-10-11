@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+// ErrMetaCommand is returned for a psql meta-command in a plain dump other than
+// \restrict and \unrestrict. psql runs it itself, and one such as \connect
+// would carry on outside the restore's transaction.
+var ErrMetaCommand = errors.New("the dump has a psql meta-command, which could run outside the restore's transaction")
+
 // ErrTransactionControl is returned for a statement in a plain dump that would
 // end or abandon the transaction the restore runs in.
 var ErrTransactionControl = errors.New("the dump ends or rolls back a transaction itself, " +
@@ -78,9 +83,6 @@ type lexer struct {
 	// copyPending is set by a statement that is COPY ... FROM STDIN, whose
 	// data starts on the next line.
 	copyPending bool
-	// meta is set while psql would read the rest of the line as a
-	// meta-command.
-	meta bool
 }
 
 func newLexer() *lexer {
@@ -88,9 +90,9 @@ func newLexer() *lexer {
 }
 
 // idle reports whether the lexer is between statements, outside any string,
-// block comment or meta-command.
+// or block comment.
 func (l *lexer) idle() bool {
-	return (l.state == stNormal || l.state == stLineComment) && l.empty && l.pending == 0 && l.dollar == nil && !l.uAmp && !l.meta &&
+	return (l.state == stNormal || l.state == stLineComment) && l.empty && l.pending == 0 && l.dollar == nil && !l.uAmp &&
 		!l.copyPending && l.tok == tokNone
 }
 
@@ -218,12 +220,6 @@ func (l *lexer) dollarQuoted(c byte) {
 }
 
 func (l *lexer) normal(c byte) error {
-	if l.meta {
-		if c == '\n' {
-			l.meta = false
-		}
-		return nil
-	}
 	if l.copyPending {
 		if c != '\n' && c != ' ' && c != '\t' && c != '\r' {
 			return fmt.Errorf("%w: text follows COPY FROM stdin on the same line", ErrUnsupportedDump)
@@ -406,7 +402,7 @@ func (l *lexer) start(c byte) error {
 	case c == '-' || c == '/':
 		l.pending = c
 	case c == '\\':
-		return l.backslash()
+		return ErrMetaCommand
 	case c == ';':
 		l.token(c)
 		if l.parenDepth == 0 && l.beginDepth == 0 {
@@ -423,12 +419,6 @@ func (l *lexer) start(c byte) error {
 	default:
 		l.token(c)
 	}
-	return nil
-}
-
-// backslash starts a psql meta-command, which takes the rest of the line.
-func (l *lexer) backslash() error {
-	l.meta = true
 	return nil
 }
 
