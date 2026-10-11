@@ -14,12 +14,15 @@ import (
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/controller"
 )
 
 // Errors returned when a destructive command finds the operator behind.
 var (
 	ErrNotCurrent  = errors.New("the operator has not rendered this backup's current spec")
 	ErrTagConflict = errors.New("the backup is in a tag conflict")
+
+	ErrRepositoryNotUsable = errors.New("the repository is not Ready as its own")
 )
 
 const (
@@ -90,6 +93,22 @@ func requireCurrent(
 	if conflict := backup.FindConflict(sb, backups.Items, cronJobs.Items, jobs.Items); conflict != nil {
 		return fmt.Errorf("%w: %s also backs up into repository/%s, under %s", ErrTagConflict,
 			conflict.With, sb.Spec.RepositoryRef.Name, conflict.Under)
+	}
+	return nil
+}
+
+// requireOwnRepository refuses a command that changes the repository behind
+// the Repository's credentials Secret unless the Repository is Ready and that
+// Secret is the one it recorded writing, so the command cannot reach another
+// Repository's restic repository.
+func requireOwnRepository(repo *b2backupv1.Repository) error {
+	if why := controller.RepositoryNotOwn(repo); why != "" {
+		return fmt.Errorf("%w: repository/%s %s", ErrRepositoryNotUsable, repo.Name, why)
+	}
+	cond := apimeta.FindStatusCondition(repo.Status.Conditions, b2backupv1.RepositoryConditionReady)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		return fmt.Errorf("%w: repository/%s is not Ready; check b2bk status repo/%s",
+			ErrRepositoryNotUsable, repo.Name, repo.Name)
 	}
 	return nil
 }

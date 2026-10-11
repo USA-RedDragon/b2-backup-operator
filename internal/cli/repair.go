@@ -150,6 +150,9 @@ func runRotatePassword(
 	if !repo.Status.Initialized {
 		return fmt.Errorf("%w: repository/%s has nothing to rotate yet", ErrNotInitialized, repo.Name)
 	}
+	if err := requireOwnRepository(repo); err != nil {
+		return err
+	}
 
 	current, err := credentials(ctx, c, repo)
 	if err != nil {
