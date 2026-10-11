@@ -574,14 +574,26 @@ func sourceVolume(sb *b2backupv1.ScheduledBackup, src restoreSource) (*b2backupv
 
 func (o *restoreOptions) databaseSource(sb *b2backupv1.ScheduledBackup) (restoreSource, error) {
 	src := restoreSource{tag: o.tag, host: sb.EffectiveResticHost(), database: o.database}
+	var tags []string
+	var chosen *b2backupv1.BackupSource
 	for i := range sb.Spec.Sources {
 		s := &sb.Spec.Sources[i]
-		if s.Type == b2backupv1.SourceTypeFiles || (o.tag != "" && s.EffectiveTag() != o.tag) {
+		if s.Type == b2backupv1.SourceTypeFiles {
 			continue
 		}
-		src.tag = s.EffectiveTag()
+		tags = append(tags, s.EffectiveTag())
+		if o.tag == "" || s.EffectiveTag() == o.tag {
+			chosen = s
+		}
+	}
+	if chosen != nil {
+		if o.tag == "" && len(tags) > 1 {
+			return restoreSource{}, fmt.Errorf("%w: scheduledbackup/%s has database sources tagged %s; pass --tag",
+				ErrNoDatabase, sb.Name, strings.Join(tags, ", "))
+		}
+		src.tag = chosen.EffectiveTag()
 		if src.database == "" {
-			src.database = s.Database
+			src.database = chosen.Database
 		}
 		return src, nil
 	}

@@ -219,8 +219,12 @@ never restores somewhere it did not name.
 
 **Which snapshot.** Every target restores one source. A files target takes the
 backup's files source, or the one `--tag` names when there are several. The
-database target takes the database source, or the one `--tag` names, or, for a
-`spec.script` backup that has none, the dump tagged `--tag`. Without `--snapshot`, b2bk lists the
+database target takes the database source, or the one `--tag` names when there
+are several, or, for a `spec.script` backup that has none, the dump tagged
+`--tag`. With several sources of the kind and no `--tag`, the restore is refused
+with the tags listed. `--to-database` asks for confirmation only after it has
+found the dump, and the prompt names the dump's path, tag, snapshot, time and
+host as well as the database it overwrites. Without `--snapshot`, b2bk lists the
 repository's snapshots and picks the newest one that carries the source's tag,
 was taken on the backup's host (`spec.resticHost` or the namespace) and, for
 files, holds exactly the source's paths. A database dump is a snapshot of one

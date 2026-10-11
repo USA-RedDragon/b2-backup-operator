@@ -390,7 +390,7 @@ func TestDatabaseRestoreReadsTheDumpTheSnapshotHolds(t *testing.T) {
 				t.Fatal(err)
 			}
 			pod := &fakePod{}
-			if err := o.restoreDatabase(context.Background(), pod, sb, src, "the database", io.Discard, io.Discard); err != nil {
+			if err := o.restoreDatabase(context.Background(), pod, sb, src, "the database", io.Discard, io.Discard, nil); err != nil {
 				t.Fatal(err)
 			}
 			script := pod.commands[len(pod.commands)-1]
@@ -502,7 +502,7 @@ func TestDatabaseRestoreGoesIntoTheSourcesDatabase(t *testing.T) {
 				t.Errorf("confirmation names %q, want %q in it", got, tt.target)
 			}
 			pod := &fakePod{}
-			if err := o.restoreDatabase(context.Background(), pod, sb, src, "x", io.Discard, io.Discard); err != nil {
+			if err := o.restoreDatabase(context.Background(), pod, sb, src, "x", io.Discard, io.Discard, nil); err != nil {
 				t.Fatal(err)
 			}
 			script := pod.commands[len(pod.commands)-1]
@@ -548,7 +548,7 @@ func TestDatabaseRestoreRefusesWhatIsNotOneDump(t *testing.T) {
 				t.Fatal(err)
 			}
 			pod := &listedPod{files: tt.files, snaps: tt.snaps}
-			err = o.restoreDatabase(context.Background(), pod, sb, src, "x", io.Discard, io.Discard)
+			err = o.restoreDatabase(context.Background(), pod, sb, src, "x", io.Discard, io.Discard, nil)
 			if !errors.Is(err, ErrWrongSnapshot) || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("err = %v, want ErrWrongSnapshot saying %q", err, tt.want)
 			}
@@ -762,5 +762,56 @@ func TestAScriptDumpNeedsItsDatabaseNamed(t *testing.T) {
 	src, err := (&restoreOptions{tag: schedulerDB, database: schedulerDB}).databaseSource(sb)
 	if err != nil || src.tag != schedulerDB || src.database != schedulerDB {
 		t.Errorf("source = %+v, %v", src, err)
+	}
+}
+
+func TestADatabaseRestoreAmongSeveralDumpsNeedsATag(t *testing.T) {
+	t.Parallel()
+	sb := newBackup(testBackupName, testRepoName)
+	withDatabase(sb)
+	sb.Spec.Sources = []b2backupv1.BackupSource{
+		{Type: b2backupv1.SourceTypeCNPG, Tag: "db-app"},
+		{Type: b2backupv1.SourceTypeCNPG, Tag: "db-auth"},
+	}
+	_, err := (&restoreOptions{database: "auth"}).databaseSource(sb)
+	if !errors.Is(err, ErrNoDatabase) || !strings.Contains(err.Error(), "db-app, db-auth") {
+		t.Errorf("err = %v, want --tag asked for, listing both dumps", err)
+	}
+	src, err := (&restoreOptions{tag: "db-auth", database: "auth"}).databaseSource(sb)
+	if err != nil || src.tag != "db-auth" || src.database != "auth" {
+		t.Errorf("source = %+v, %v; want the db-auth dump into auth", src, err)
+	}
+}
+
+func TestADatabaseRestoreConfirmsTheDumpBeforeRestoringIt(t *testing.T) {
+	t.Parallel()
+	sb := newBackup(testBackupName, testRepoName)
+	withDatabase(sb)
+	sb.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}}
+	o := &restoreOptions{snapshot: latest}
+	src, err := o.databaseSource(sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := &fakePod{}
+	var asked string
+	declined := errors.New("declined")
+	err = o.restoreDatabase(context.Background(), pod, sb, src, "the database", io.Discard, io.Discard,
+		func(snap resticSnapshot) error {
+			asked = dumpConfirmation("the database", src, snap)
+			return declined
+		})
+	if !errors.Is(err, declined) {
+		t.Fatalf("err = %v, want the declined confirmation", err)
+	}
+	for _, want := range []string{"/" + testNS + ".dmp", "tagged db", snapDB[:8]} {
+		if !strings.Contains(asked, want) {
+			t.Errorf("confirmation %q does not name %q", asked, want)
+		}
+	}
+	for _, cmd := range pod.commands {
+		if strings.Contains(cmd, "restoredb") {
+			t.Errorf("restored after the confirmation was declined: %s", cmd)
+		}
 	}
 }
