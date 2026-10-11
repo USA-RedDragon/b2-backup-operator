@@ -84,7 +84,12 @@ pg_restore. Anything else is taken as a plain SQL dump from pg_dump and run with
 psql. Both run in a single transaction, so a failed restore leaves the database
 untouched. pg_restore reads the whole archive before it commits; psql commits
 when its input ends, so a plain dump that ends without pg_dump's "dump complete"
-trailer stops psql first, and nothing is committed.`,
+trailer stops psql first, and nothing is committed.
+
+A plain dump with large objects has its own BEGIN; and COMMIT; lines around
+them. The COMMIT would end the restore's transaction partway, so those lines
+reach psql as comments, and any other statement that ends, rolls back or
+prepares a transaction is refused before psql runs it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := fs.Resolve(); err != nil {
 				return err
@@ -108,10 +113,11 @@ trailer stops psql first, and nothing is committed.`,
 				key = RestrictKey(more)
 			}
 			complete := func(tail []byte) bool { return PlainDumpComplete(key, tail) }
+			filter := NewPlainFilter().Copy
 			if IsCustomFormat(head) {
 				name = "pg_restore"
 				opts = []string{"--clean", "--if-exists", "--no-owner", "--single-transaction"}
-				complete = nil
+				complete, filter = nil, nil
 			}
 			conn := []string{
 				"--host=" + host,
@@ -125,6 +131,7 @@ trailer stops psql first, and nothing is committed.`,
 				DryRun:   dryRun,
 				Stdin:    in,
 				Complete: complete,
+				Filter:   filter,
 			})
 		},
 	}

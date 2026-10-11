@@ -217,3 +217,32 @@ func firstDiff(want, got string) string {
 	}
 	return "no difference"
 }
+
+// largeObjectSQL makes enough large objects that pg_dump writes their data in
+// more than one BEGIN ... COMMIT block.
+const largeObjectSQL = "SELECT lo_from_bytea(0, convert_to('large object ' || g, 'UTF8')) " +
+	"FROM generate_series(1, 1500) g;"
+
+// pg_dump wraps large-object data in its own BEGIN and COMMIT. Under psql
+// --single-transaction that COMMIT would commit everything before it, and the
+// rest of the dump would run outside any transaction.
+func TestPostgresKeepsALargeObjectDumpInOneTransaction(t *testing.T) {
+	backup, want := seed(t, largeObjectSQL, "--clean", "--if-exists")
+	if !strings.Contains(backup, "\nBEGIN;\n") || !strings.Contains(backup, "\nCOMMIT;\n") {
+		t.Fatal("the dump has no BEGIN and COMMIT around its large objects")
+	}
+
+	t.Run("cut after the large objects", func(t *testing.T) {
+		at := strings.Index(backup, "\nCOMMIT;\n") + len("\nCOMMIT;\n")
+		refused(t, []byte(backup[:at]))
+	})
+
+	t.Run("complete", func(t *testing.T) {
+		restored(t, []byte(backup), want)
+		got := sql(t, appDB, "SELECT count(*) FROM pg_constraint "+
+			"WHERE conrelid = 'public.t'::regclass AND contype IN ('p', 'f')")
+		if got != "2\n" {
+			t.Errorf("t has %s constraints, want 2", got)
+		}
+	})
+}
