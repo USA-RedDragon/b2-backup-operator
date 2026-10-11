@@ -22,6 +22,7 @@ var (
 	ErrMultipleClaims     = errors.New("more than one persistent volume claim is mounted in the restic container")
 	ErrMultipleDBSecrets  = errors.New("more than one secret is mounted in the restic container")
 	ErrUnsupportedMount   = errors.New("the restic container mounts a volume a ScheduledBackup cannot")
+	ErrUnsupportedCommand = errors.New("the restic container does not run sh -c <script>")
 )
 
 const resticController = "restic"
@@ -60,6 +61,7 @@ type hrController struct {
 
 type hrContainer struct {
 	Command         []string                     `json:"command"`
+	Args            []string                     `json:"args"`
 	WorkingDir      string                       `json:"workingDir"`
 	Resources       *corev1.ResourceRequirements `json:"resources"`
 	SecurityContext *corev1.SecurityContext      `json:"securityContext"`
@@ -171,11 +173,20 @@ func (hr *helmRelease) podSecurityContext() *corev1.PodSecurityContext {
 	return hr.Spec.Values.DefaultPodOptions.SecurityContext
 }
 
+var scriptShells = []string{"sh", "/bin/sh"}
+
+// script returns the shell script the container runs: app-template appends
+// args to command, and the operator runs its script as sh -c, so that is the
+// only shape read.
 func (c hrContainer) script() (string, error) {
 	if len(c.Command) == 0 {
-		return "", ErrNoResticScript
+		return "", fmt.Errorf("%w: it sets no command, so the image's entrypoint runs", ErrUnsupportedCommand)
 	}
-	return c.Command[len(c.Command)-1], nil
+	argv := append(slices.Clone(c.Command), c.Args...)
+	if len(argv) != 3 || !slices.Contains(scriptShells, argv[0]) || argv[1] != "-c" {
+		return "", fmt.Errorf("%w: it runs %q", ErrUnsupportedCommand, argv)
+	}
+	return argv[2], nil
 }
 
 func (c hrContainer) env(name string) string {

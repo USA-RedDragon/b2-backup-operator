@@ -798,3 +798,38 @@ func TestMigrateCarriesSecurityContextsAndParityChecksReadAccess(t *testing.T) {
 		t.Errorf("a backup that can no longer read every file passed parity: %v\n%s", err, out.String())
 	}
 }
+
+func TestMigrateReadsTheScriptFromArgs(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "            command:\n              - sh\n              - -c\n              - |\n",
+		"            command: [sh, -c]\n            args:\n              - |\n", 1)
+	dir := writeHomeClusterRelease(t, body)
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, buf.String())
+	if sb.Spec.Script != "" || len(sb.Spec.Sources) != 2 || sb.Spec.Sources[1].Paths[0] != mirrorPath {
+		t.Errorf("script %q, sources %+v; want the script in args read as sources", sb.Spec.Script, sb.Spec.Sources)
+	}
+}
+
+func TestMigrateRefusesACommandItCannotRead(t *testing.T) {
+	t.Parallel()
+	for name, command := range map[string]string{
+		"extra arguments after the script": "            command: [sh, -c]\n            args:\n              - restic backup /mirror\n              - argv0\n",
+		"another shell":                    "            command: [bash, -c]\n            args:\n              - restic backup /mirror\n",
+		"the image's entrypoint":           "            args: [backup, /mirror]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			before, rest, _ := strings.Cut(homeClusterRelease, "            command:\n")
+			_, after, _ := strings.Cut(rest, "            resources:\n")
+			body := before + command + "            resources:\n" + after
+			err := runMigrate(&bytes.Buffer{}, writeHomeClusterRelease(t, body), migrateOptions{repository: sopsRepoURL})
+			if !errors.Is(err, ErrUnsupportedCommand) {
+				t.Errorf("err = %v, want ErrUnsupportedCommand", err)
+			}
+		})
+	}
+}

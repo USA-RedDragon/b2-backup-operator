@@ -700,6 +700,11 @@ command that is not restic, is kept verbatim as `spec.script` instead, minus the
 `CNPG_SECRET_PATH` is pointed at the operator's database mount. b2bk's tag
 filtering does not work on a script backup.
 
+The script is read from the container's `command` and `args` together, as
+app-template joins them. They must come to `sh -c <script>`, which is how the
+operator runs its own; another shell, arguments after the script, or no
+`command` at all is refused.
+
 `migrate` refuses what a ScheduledBackup cannot mount: more than one Secret, more
 than one `emptyDir`, any other volume type, or a `subPath`.
 
