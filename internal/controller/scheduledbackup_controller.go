@@ -264,7 +264,11 @@ func (r *ScheduledBackupReconciler) tagConflict(
 	if err := r.List(ctx, &cronJobs, client.InNamespace(sb.Namespace), managed); err != nil {
 		return nil, err
 	}
-	return backup.FindConflict(sb, backups.Items, cronJobs.Items), nil
+	var jobs batchv1.JobList
+	if err := r.List(ctx, &jobs, client.InNamespace(sb.Namespace), managed); err != nil {
+		return nil, err
+	}
+	return backup.FindConflict(sb, backups.Items, cronJobs.Items, jobs.Items), nil
 }
 
 // suspendOwnCronJob stops this ScheduledBackup's CronJob from firing. It runs
@@ -426,14 +430,22 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.siblingBackups),
 			builder.WithPredicates(unownedOrNew()),
 		).
+		Watches(
+			&batchv1.Job{},
+			handler.EnqueueRequestsFromMapFunc(r.siblingBackups),
+			builder.WithPredicates(predicate.Funcs{
+				UpdateFunc: func(event.UpdateEvent) bool { return false },
+			}),
+		).
 		Named("scheduledbackup").
 		Complete(r)
 }
 
 // siblingBackups re-checks every other ScheduledBackup in the namespace when one
 // is created, changed or deleted, so a tag conflict an edit causes, or ends, is
-// seen by both sides at once. It does the same when a CronJob loses its owner,
-// since it may carry a forget scope the specs no longer show.
+// seen by both sides at once. It does the same when a backup Job starts or ends
+// and when a CronJob loses its owner, since either may carry a forget scope the
+// specs no longer show.
 func (r *ScheduledBackupReconciler) siblingBackups(ctx context.Context, obj client.Object) []reconcile.Request {
 	var list b2backupv1.ScheduledBackupList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {

@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -92,15 +93,17 @@ type Conflict struct {
 
 // FindConflict looks for anything that writes into the backup's Repository with
 // a forget that would reach its snapshots, or the other way round: another
-// ScheduledBackup's spec, or a CronJob that is not suspended and was rendered
-// from another spec or outlived its ScheduledBackup. backups and cronJobs are
-// everything of the kind in the namespace; the operator's own CronJobs carry
+// ScheduledBackup's spec, a CronJob that is not suspended and was rendered from
+// another spec or outlived its ScheduledBackup, and a backup Job still running
+// under the scope it started with. backups, cronJobs and jobs are everything of
+// the kind in the namespace; the operator's own CronJobs and Jobs carry
 // AnnotationForgetScope, and one that does not and that no live ScheduledBackup
 // owns has an unknown scope, which conflicts with everything.
 func FindConflict(
 	sb *b2backupv1.ScheduledBackup,
 	backups []b2backupv1.ScheduledBackup,
 	cronJobs []batchv1.CronJob,
+	jobs []batchv1.Job,
 ) *Conflict {
 	own := ScopeOf(sb)
 	live := map[types.UID]bool{}
@@ -115,13 +118,19 @@ func FindConflict(
 		}
 	}
 
+	ownCronJobs := map[types.UID]bool{}
+	liveCronJobs := map[types.UID]bool{}
 	for i := range cronJobs {
 		cj := &cronJobs[i]
 		owner := metav1.GetControllerOf(cj)
 		if cj.Name == CronJobName(sb) {
+			ownCronJobs[cj.UID] = true
 			continue
 		}
 		ownedByLive := owner != nil && live[owner.UID]
+		if ownedByLive {
+			liveCronJobs[cj.UID] = true
+		}
 		if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
 			continue
 		}
@@ -143,5 +152,36 @@ func FindConflict(
 		return c
 	}
 
+	for i := range jobs {
+		job := &jobs[i]
+		owner := metav1.GetControllerOf(job)
+		if JobFinished(job) || (owner != nil && (owner.UID == sb.UID || ownCronJobs[owner.UID])) {
+			continue
+		}
+		scope, ok := ScopeFrom(job.Annotations)
+		under := ""
+		switch {
+		case ok:
+			under = overlap(own, scope)
+		case owner == nil || (!live[owner.UID] && !liveCronJobs[owner.UID]):
+			under = unknownScope
+		}
+		if under != "" {
+			return &Conflict{With: "running Job " + job.Name, Under: under}
+		}
+	}
 	return nil
+}
+
+// JobFinished reports whether a Job has completed or failed.
+func JobFinished(job *batchv1.Job) bool {
+	if job.Status.CompletionTime != nil {
+		return true
+	}
+	for _, cond := range job.Status.Conditions {
+		if (cond.Type == batchv1.JobComplete || cond.Type == batchv1.JobFailed) && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
