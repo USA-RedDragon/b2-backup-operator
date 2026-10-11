@@ -22,8 +22,10 @@ var customMagic = []byte("PGDMP")
 // PlainDumpComplete reports whether a plain SQL dump ends the way pg_dump ends
 // one: the "dump complete" comment block, then at most blank lines and the
 // \unrestrict line pg_dump 17.6 and later add. A dump cut short by a failed
-// download does not, even if the same text appears earlier in its data.
-func PlainDumpComplete(tail []byte) bool {
+// download does not, even if the same text appears earlier in its data. key is
+// the dump's \restrict key, when its head has one; the \unrestrict line must
+// then carry the same key, which no data row can.
+func PlainDumpComplete(key string, tail []byte) bool {
 	lines := strings.Split(string(tail), "\n")
 	last := func() string {
 		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
@@ -37,10 +39,27 @@ func PlainDumpComplete(tail []byte) bool {
 		return line
 	}
 	line := last()
-	if strings.HasPrefix(line, `\unrestrict `) {
+	switch {
+	case key != "":
+		if line != `\unrestrict `+key {
+			return false
+		}
+		line = last()
+	case strings.HasPrefix(line, `\unrestrict `):
 		line = last()
 	}
 	return line == "--" && last() == "-- PostgreSQL database dump complete"
+}
+
+// RestrictKey returns the key of the \restrict line at the head of a plain dump,
+// or "" when it has none.
+func RestrictKey(head []byte) string {
+	for line := range strings.SplitSeq(string(head), "\n") {
+		if key, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), `\restrict `); ok {
+			return strings.TrimSpace(key)
+		}
+	}
+	return ""
 }
 
 // IsCustomFormat reports whether head starts with the pg_dump custom-format
@@ -84,7 +103,11 @@ trailer stops psql first, and nothing is committed.`,
 
 			name := "psql"
 			opts := []string{"-v", "ON_ERROR_STOP=1", "--single-transaction", "--no-psqlrc", "--quiet"}
-			complete := PlainDumpComplete
+			key := ""
+			if more, _ := in.Peek(in.Size()); len(more) > 0 {
+				key = RestrictKey(more)
+			}
+			complete := func(tail []byte) bool { return PlainDumpComplete(key, tail) }
 			if IsCustomFormat(head) {
 				name = "pg_restore"
 				opts = []string{"--clean", "--if-exists", "--no-owner", "--single-transaction"}
