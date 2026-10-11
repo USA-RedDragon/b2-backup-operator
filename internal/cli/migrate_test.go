@@ -1477,3 +1477,31 @@ func TestMigrateNotesItCouldNotParseTheScriptWithoutBash(t *testing.T) {
 		t.Errorf("no note that the script went unparsed:\n%s", out)
 	}
 }
+
+func TestMigrateReadsThePruneFlagsValue(t *testing.T) {
+	t.Parallel()
+	for flag, wantNote := range map[string]bool{"--prune=true": false, "--prune=false": true} {
+		t.Run(flag, func(t *testing.T) {
+			t.Parallel()
+			out, err := migrate(t, strings.Replace(homeClusterRelease, "restic forget --prune ", "restic forget "+flag+" ", 1))
+			if err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			_, sb := migrated(t, out)
+			if sb.Spec.Retention == nil || strings.Contains(out, "# prune: ") != wantNote {
+				t.Errorf("retention %+v, prune note %t; want the policy read and the note only when forget did not prune:\n%s",
+					sb.Spec.Retention, !wantNote, out)
+			}
+		})
+	}
+}
+
+func TestParityReadsPruneTrueAsPrune(t *testing.T) {
+	t.Parallel()
+	if normalized("restic forget --prune=true --keep-daily=7") != normalized("restic forget --prune --keep-daily=7") {
+		t.Error("--prune=true and --prune compared differently")
+	}
+	if normalized("restic forget --prune=false --keep-daily=7") == normalized("restic forget --prune --keep-daily=7") {
+		t.Error("--prune=false compared equal to --prune")
+	}
+}

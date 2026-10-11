@@ -406,6 +406,9 @@ func unquoteExclude(m string) string {
 	return m
 }
 
+// pruneTrue is --prune= with a value strconv.ParseBool reads as true.
+var pruneTrue = regexp.MustCompile(`--prune=(?:1|t|T|TRUE|true|True)(\s|$)`)
+
 // groupByFlag is a forget's grouping, which parity compares on its own.
 var groupByFlag = regexp.MustCompile(` --group-by[= ](\S+)`)
 
@@ -420,6 +423,7 @@ func normalizeScript(s string) (string, []string) {
 		line = quotedExclude.ReplaceAllStringFunc(line, unquoteExclude)
 		if strings.HasPrefix(strings.TrimSpace(line), "restic forget ") {
 			line = groupByFlag.ReplaceAllString(line, "")
+			line = pruneTrue.ReplaceAllString(line, "--prune$1")
 		}
 		if m := cnpgDump.FindStringSubmatchIndex(line); m != nil {
 			command := "dumpdb cnpg"
