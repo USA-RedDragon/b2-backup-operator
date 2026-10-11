@@ -7,11 +7,12 @@ import (
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -110,6 +111,51 @@ func TestSecretFinalizerProtectsAnUnseededPassword(t *testing.T) {
 			t.Error("a seed holding another password was taken as a copy of this one")
 		}
 	})
+}
+
+func TestAMissingSeedNeverDropsTheProtection(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	r, c := newHarness(t, f, bucketRepo(nil))
+	reconcileN(t, r, 2)
+	repo := getRepo(t, c)
+	repo.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: "not-applied-yet", Key: KeyResticPassword}
+	if err := c.Update(context.Background(), repo); err != nil {
+		t.Fatal(err)
+	}
+	reconcileN(t, r, 1)
+	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Fatal("a seed that does not exist was taken as a copy of a generated password")
+	}
+	deleteRepo(t, c)
+	reconcileUntilGone(t, r, c)
+	if !slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Error("finalize released the only copy because the seed it never confirmed is missing")
+	}
+}
+
+func TestASeedGoneWithItsNamespaceStillCounts(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	bucket := f.AddBucket(ownBucket)
+	f.PutFile(bucket.BucketID, "config", 1)
+	r, c := newHarness(t, f, bucketRepo(usePasswordSeed), seedSecretFixture())
+	reconcileN(t, r, 2)
+	if slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Fatal("precondition: a matching seed needs no finalizer")
+	}
+	seed := &corev1.Secret{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: seedSecret}, seed); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(context.Background(), seed); err != nil {
+		t.Fatal(err)
+	}
+	deleteRepo(t, c)
+	reconcileUntilGone(t, r, c)
+	if slices.Contains(getSecret(t, c, credsSecretName).Finalizers, SecretFinalizer) {
+		t.Error("a seed confirmed before its namespace went was not trusted at finalize")
+	}
 }
 
 func TestTwoRepositoriesNeverShareACredentialsSecret(t *testing.T) {
