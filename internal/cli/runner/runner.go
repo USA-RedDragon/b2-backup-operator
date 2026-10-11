@@ -121,7 +121,7 @@ type Options struct {
 // Standard; the restricted one allows none, and rejects the pod.
 var RestoreCapabilities = []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID"}
 
-var idleCommand = []string{"sleep", "infinity"}
+var idleCommand = []string{"sh", "-c", `trap "exit 0" TERM INT; sleep infinity & wait`}
 
 // Subject is what a one-off Job is built for: a ScheduledBackup, whose
 // CronJob it copies, or else a Repository no ScheduledBackup uses.
