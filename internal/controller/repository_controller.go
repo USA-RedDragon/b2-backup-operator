@@ -1376,7 +1376,7 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "CredentialsUnavailable", "Delete", "%s", err.Error())
 			return ctrl.Result{}, err
 		}
-		done, err := r.deleteRemote(ctx, repo, api)
+		done, retained, err := r.deleteRemote(ctx, repo, api)
 		var scope *scopeError
 		switch {
 		case errors.As(err, &scope):
@@ -1391,7 +1391,7 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 		case !done:
 			return ctrl.Result{RequeueAfter: deleteRequeueDelay}, nil
 		default:
-			dataDeleted = true
+			dataDeleted = !retained
 		}
 
 	case repo.Status.BucketID != "":
@@ -1543,46 +1543,47 @@ func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backup
 // deleteRemote deletes the Repository's application key and restic repository.
 // A bucket the credentials cannot find counts as gone only when they belong to
 // the account recorded in status.accountID: a bucket in another account is
-// invisible, not deleted.
+// invisible, not deleted. retained is true when it finished without deleting
+// the restic repository, because another Repository still uses the path.
 func (r *RepositoryReconciler) deleteRemote(
 	ctx context.Context, repo *b2backupv1.Repository, api b2.API,
-) (bool, error) {
+) (done, retained bool, err error) {
 	auth, err := api.Authorize(ctx)
 	if err != nil {
-		return false, fmt.Errorf("authorizing with B2: %w", err)
+		return false, false, fmt.Errorf("authorizing with B2: %w", err)
 	}
 	if err := accountMismatch(repo, auth.AccountID); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := deleteOwnKeys(ctx, repo, api); err != nil {
-		return false, err
+		return false, false, err
 	}
 
 	if other, err := r.sharedWith(ctx, repo); err != nil {
-		return false, err
+		return false, false, err
 	} else if other != "" {
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DataRetained", "Delete",
 			"Deleted application key %s but left %s/%s in place, because Repository %s still uses it",
 			repo.Status.ApplicationKeyID, repo.Status.BucketName, displayPath(repo.Status.Path), other)
-		return true, nil
+		return true, true, nil
 	}
 
 	bucket, err := api.FindBucket(ctx, repo.Spec.Bucket)
 	if errors.Is(err, b2.ErrNotFound) {
 		if repo.Status.AccountID == "" {
-			return false, &scopeError{reason: reasonAccountMismatch, msg: fmt.Sprintf(
+			return false, false, &scopeError{reason: reasonAccountMismatch, msg: fmt.Sprintf(
 				"bucket %s is not in account %s, and no status.accountID records which account holds it, "+
 					"so it cannot be confirmed gone", repo.Spec.Bucket, auth.AccountID)}
 		}
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 			"Bucket %s is already gone", repo.Spec.Bucket)
-		return true, nil
+		return true, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("looking up bucket %s: %w", repo.Spec.Bucket, err)
+		return false, false, fmt.Errorf("looking up bucket %s: %w", repo.Spec.Bucket, err)
 	}
 	if bucket.BucketID != repo.Status.BucketID {
-		return false, &scopeError{msg: fmt.Sprintf("bucket %s has ID %s but status.bucketID is %s",
+		return false, false, &scopeError{msg: fmt.Sprintf("bucket %s has ID %s but status.bucketID is %s",
 			repo.Spec.Bucket, bucket.BucketID, repo.Status.BucketID)}
 	}
 
@@ -1590,15 +1591,15 @@ func (r *RepositoryReconciler) deleteRemote(
 	deleted, done, err := b2.DeleteResticRepository(ctx, api, bucket.BucketID, path, deleteBudget)
 	switch {
 	case err != nil:
-		return false, fmt.Errorf("deleting the restic repository at %s/%s: %w", bucket.BucketName, displayPath(path), err)
+		return false, false, fmt.Errorf("deleting the restic repository at %s/%s: %w", bucket.BucketName, displayPath(path), err)
 	case !done:
 		log.FromContext(ctx).Info("Deleted file versions, more remain", "deleted", deleted)
-		return false, nil
+		return false, false, nil
 	}
 
 	others, err := b2.AnyVersionUnder(ctx, api, bucket.BucketID, filePrefix(path))
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if others {
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "OtherFilesRetained", "Delete",
@@ -1611,25 +1612,25 @@ func (r *RepositoryReconciler) deleteRemote(
 				if errors.Is(err, b2.ErrBucketNotEmpty) {
 					r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "BucketRetained", "Delete",
 						"Bucket %s is not empty, so it was left in place", bucket.BucketName)
-					return true, nil
+					return true, false, nil
 				}
-				return false, fmt.Errorf("deleting bucket %s: %w", bucket.BucketName, err)
+				return false, false, fmt.Errorf("deleting bucket %s: %w", bucket.BucketName, err)
 			}
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 				"Deleted application key %s, the restic repository and bucket %s",
 				repo.Status.ApplicationKeyID, bucket.BucketName)
-			return true, nil
+			return true, false, nil
 		}
 		if remaining, err := b2.AnyVersionUnder(ctx, api, bucket.BucketID, ""); err != nil {
-			return false, err
+			return false, false, err
 		} else if !remaining {
 			if err := api.DeleteBucket(ctx, bucket.BucketID); err != nil && !errors.Is(err, b2.ErrNotFound) {
-				return false, fmt.Errorf("deleting bucket %s: %w", bucket.BucketName, err)
+				return false, false, fmt.Errorf("deleting bucket %s: %w", bucket.BucketName, err)
 			}
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 				"Deleted application key %s, the restic repository under %s and bucket %s",
 				repo.Status.ApplicationKeyID, displayPath(path), bucket.BucketName)
-			return true, nil
+			return true, false, nil
 		}
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "BucketRetained", "Delete",
 			"Bucket %s holds files outside restic's repository layout, so it was left in place", bucket.BucketName)
@@ -1638,13 +1639,13 @@ func (r *RepositoryReconciler) deleteRemote(
 	prefix := filePrefix(path)
 	if rules, removed := b2.RemoveLifecycleRule(bucket.LifecycleRules, prefix); removed && prefix != "" {
 		if _, err := api.UpdateLifecycleRules(ctx, bucket, rules); err != nil {
-			return false, fmt.Errorf("removing the lifecycle rule for %q: %w", prefix, err)
+			return false, false, fmt.Errorf("removing the lifecycle rule for %q: %w", prefix, err)
 		}
 	}
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 		"Deleted application key %s and the restic repository at %s/%s",
 		repo.Status.ApplicationKeyID, bucket.BucketName, displayPath(path))
-	return true, nil
+	return true, false, nil
 }
 
 // accountMismatch refuses credentials for another B2 account than the one
