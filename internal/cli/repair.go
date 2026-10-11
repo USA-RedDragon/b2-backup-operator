@@ -174,7 +174,11 @@ func runRotatePassword(
 		return fmt.Errorf("creating the temporary key Secret: %w", err)
 	}
 
+	keepTemp := false
 	defer func() {
+		if keepTemp {
+			return
+		}
 		if err := deleteTempKeySecret(c, temp); err != nil {
 			p := newPrinter(f.Streams.ErrOut)
 			p.printf("! could not delete the temporary key secret/%s: %v\n", temp.Name, err)
@@ -211,7 +215,9 @@ func runRotatePassword(
 	}
 
 	if err := pointSecretAtPassword(ctx, c, repo, current, password); err != nil {
-		return err
+		var failure error
+		failure, keepTemp = rotateWriteFailure(sb, current, temp, err)
+		return failure
 	}
 
 	done := newPrinter(f.Streams.Out)
@@ -223,6 +229,29 @@ func runRotatePassword(
 	done.printf("  the old key still works; remove it with:\n")
 	done.printf("    b2bk exec %s -- restic key list\n", sb.Name)
 	return done.Err()
+}
+
+// rotateWriteFailure explains a failed write of the new password after restic
+// accepted the new key. keep is true when the write may have gone through, so
+// the temporary Secret holding the new password must not be deleted.
+func rotateWriteFailure(
+	sb *b2backupv1.ScheduledBackup, current, temp *corev1.Secret, err error,
+) (failure error, keep bool) {
+	removeKey := fmt.Sprintf("find it with b2bk exec %s -- restic key list and remove it with "+
+		"b2bk exec %s -- restic key remove <id>", sb.Name, sb.Name)
+	switch {
+	case apierrors.IsConflict(err), apierrors.IsForbidden(err), apierrors.IsInvalid(err),
+		apierrors.IsNotFound(err), apierrors.IsBadRequest(err), apierrors.IsUnauthorized(err):
+		return fmt.Errorf("a new key was added to the repository, but secret/%s was not changed and still "+
+			"holds the old password, which still works; run rotate-password again, and %s: %w",
+			current.Name, removeKey, err), false
+	default:
+		return fmt.Errorf("a new key was added to the repository, and the write of its password into "+
+			"secret/%s may or may not have gone through. The new password is kept in secret/%s: compare it "+
+			"with RESTIC_PASSWORD in secret/%s, archive whichever that holds, then delete secret/%s. If the "+
+			"Secret still holds the old password, %s: %w",
+			current.Name, temp.Name, current.Name, temp.Name, removeKey, err), true
+	}
 }
 
 // pointSecretAtPassword writes the new password into the credentials Secret,

@@ -11,6 +11,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -365,6 +366,47 @@ func TestRotatePasswordRefusesARepositoryThatIsNotItsOwn(t *testing.T) {
 			}
 			if left := tempKeySecrets(t, c); len(left) > 0 {
 				t.Errorf("a key Secret was created: %v", left)
+			}
+		})
+	}
+}
+
+func TestAFailedPasswordWriteAfterKeyAddSaysWhatHappened(t *testing.T) {
+	t.Parallel()
+	sb := newBackup(testBackupName, testRepoName)
+	current := credentialsSecret("restic-credentials")
+	temp := &corev1.Secret{Namespace: testNS, Name: "restic-b2bk-newkey-abcde"}
+	secretsResource := corev1.Resource("secrets")
+	tests := []struct {
+		name string
+		err  error
+		keep bool
+	}{
+		{"a conflicting write", apierrors.NewConflict(secretsResource, current.Name,
+			errors.New("modified")), false},
+		{"a write refused outright", apierrors.NewForbidden(secretsResource, current.Name,
+			errors.New("no")), false},
+		{"a write that timed out", apierrors.NewTimeoutError("slow", 1), true},
+		{"a dropped connection", errors.New("connection reset by peer"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			failure, keep := rotateWriteFailure(sb, current, temp, tt.err)
+			if keep != tt.keep {
+				t.Errorf("keep the temporary Secret = %t, want %t", keep, tt.keep)
+			}
+			msg := failure.Error()
+			for _, want := range []string{"a new key was added", "restic key remove", sb.Name} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("message %q does not mention %q", msg, want)
+				}
+			}
+			if tt.keep && !strings.Contains(msg, temp.Name) {
+				t.Errorf("message %q does not say where the new password is kept", msg)
+			}
+			if !errors.Is(failure, tt.err) {
+				t.Error("the write's own error was dropped")
 			}
 		})
 	}
