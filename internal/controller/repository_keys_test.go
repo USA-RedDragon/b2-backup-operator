@@ -212,3 +212,43 @@ func TestAJobReadingTheOldKeyUnderAnotherSecretNameHoldsIt(t *testing.T) {
 		t.Error("a Job still reading the old key from a Secret under an earlier name lost it")
 	}
 }
+
+func TestAnUnrecordedRotationStartsTheGraceNow(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	now := time.Now().Truncate(time.Second)
+	repo := prefixRepo(usePasswordSeed)
+	stale := f.AddKey(keyName(repo), "", "")
+	r, c := newHarness(t, f, repo, seedSecretFixture())
+	r.Now = func() time.Time { return now }
+	reconcileN(t, r, 1)
+	succeedInitJob(t, c)
+
+	live := getRepo(t, c)
+	base := live.DeepCopy()
+	live.Status.KeyRotationTime = nil
+	if err := c.Status().Patch(context.Background(), live, client.MergeFrom(base)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(context.Background(), runningJob("web-backup-1", managedByValue, now.Add(-time.Minute),
+		credsSecretName)); err != nil {
+		t.Fatal(err)
+	}
+	kept := func() bool {
+		return slices.ContainsFunc(ownKeys(f), func(k b2.Key) bool { return k.ApplicationKeyID == stale })
+	}
+
+	reconcileOnce(t, r)
+	if !kept() {
+		t.Fatal("a superseded key was deleted at once because no rotation time was recorded")
+	}
+	if got := getRepo(t, c).Status.KeyRotationTime; got == nil || !got.Time.Equal(now) {
+		t.Errorf("keyRotationTime = %v, want the grace to start now", got)
+	}
+	now = now.Add(time.Hour)
+	reconcileOnce(t, r)
+	if !kept() {
+		t.Error("a Job running since before the recorded rotation lost the key")
+	}
+}
