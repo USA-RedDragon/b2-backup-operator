@@ -949,3 +949,23 @@ func TestParityCatchesACacheDirClaimTheScriptBacksUpRelatively(t *testing.T) {
 			err, out.String())
 	}
 }
+
+func TestShellOptionsAddedOnlyCountWhatTheScriptUses(t *testing.T) {
+	t.Parallel()
+	const operator = "set -o pipefail\n{\nset -euo pipefail\nBODY\nrestic cache --cleanup\n} 2>&1 | ts '%H:%M:%S'\n"
+	tests := []struct{ original, want string }{
+		{"set -eu\nrestic backup /a\nrestic forget --keep-daily=1\n", ""},
+		{"restic backup /a\n", ""},
+		{"restic backup /a\nrestic forget --keep-daily=1\n", "errexit"},
+		{"set -e\nrestic backup \"$X\"\nrestic forget --keep-daily=1\n", "nounset"},
+		{"set -eu\npg_dump | restic backup --stdin\nrestic forget --keep-daily=1\n", "pipefail"},
+		{"set -euo pipefail\nset +e\nrestic backup /a\nrestic forget --keep-daily=1\n", ""},
+		{"set -o errexit -o nounset\nrestic backup \"$X\" || true\nrestic forget --keep-daily=1\n", ""},
+	}
+	for _, tt := range tests {
+		generated := strings.Replace(operator, "BODY\n", scriptBody(tt.original), 1)
+		if got := strings.Join(shellOptionsAdded(tt.original, generated), ", "); got != tt.want {
+			t.Errorf("shellOptionsAdded(%q) = %q, want %q", tt.original, got, tt.want)
+		}
+	}
+}

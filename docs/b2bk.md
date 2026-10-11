@@ -640,9 +640,9 @@ affinity, node selector, tolerations, priority class, pod labels and
 annotations, every other container, and whatever else is left in the pod and
 container spec. It compares the namespace and the key the Repository opens the repository
 with, and, given the original `RESTIC_REPOSITORY`, the Repository's bucket and
-path. Both scripts are compared without the preamble
-and postamble around them, the hand-written `exec > >(ts ...)` and `set -eu` on
-one side and the operator's on the other.
+path. Both scripts are compared without the preamble and postamble around
+them, the hand-written `exec > >(ts ...)` and `set -eu` on one side and the
+operator's on the other; the shell options they set are compared on their own.
 
 Some differences are the operator's by design and are normalized away: its
 restic cache claim, and a cache volume on the original side mounted where restic
@@ -706,6 +706,7 @@ printed with the time of day in the schedule's time zone, such as
 | `INIT JOB REPLACED` | note | The release's `restic init` Job; the Repository initializes or adopts the repository itself |
 | `SCRIPT DIFFERS` | 1 | Followed by both scripts |
 | `COMMAND DIFFERS` | 1 | The original does not run `sh -c <script>` |
+| `SHELL OPTIONS ADDED` | 1 | The operator runs every script under `set -euo pipefail`, and the original did not turn on `errexit` (with more than one command), `nounset` (with a variable) or `pipefail` (with a pipe). A failure now stops what the original ran on after it, such as the dump or the forget. `migrate` notes the same |
 | `DUMP FORMAT CHANGES` | 1 | A cnpg dump moves from `backup-cnpg.sh` to `dumpdb cnpg` |
 | `CADENCE DIFFERS` | 1 | It no longer runs as often |
 | `TIMEZONE DIFFERS` | 1 | |

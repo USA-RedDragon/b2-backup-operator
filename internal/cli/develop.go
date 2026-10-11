@@ -261,6 +261,64 @@ func normalizeRendered(s string, tags []string) (string, []string, string) {
 	return out, dumps, note
 }
 
+const (
+	optErrexit  = "errexit"
+	optNounset  = "nounset"
+	optPipefail = "pipefail"
+)
+
+// shellOptions returns which of errexit, nounset and pipefail the script's set
+// commands leave on, read in order.
+func shellOptions(script string) map[string]bool {
+	letters := map[rune]string{'e': optErrexit, 'u': optNounset}
+	on := map[string]bool{}
+	for _, line := range joinContinuations(script) {
+		words := strings.Fields(line)
+		if len(words) == 0 || words[0] != "set" {
+			continue
+		}
+		for i := 1; i < len(words); i++ {
+			w := words[i]
+			if len(w) < 2 || (w[0] != '-' && w[0] != '+') {
+				continue
+			}
+			enable := w[0] == '-'
+			for _, r := range w[1:] {
+				switch {
+				case r == 'o' && i+1 < len(words):
+					i++
+					on[words[i]] = enable
+				case letters[r] != "":
+					on[letters[r]] = enable
+				}
+			}
+		}
+	}
+	return on
+}
+
+var pipeline = regexp.MustCompile(`(^|[^|])\|([^|]|$)`)
+
+// shellOptionsAdded lists the shell options the generated script runs under
+// that the original did not, where the original's body could notice: errexit
+// with more than one command, nounset with a variable, pipefail with a pipe.
+func shellOptionsAdded(original, generated string) []string {
+	body := scriptBody(original)
+	matters := map[string]bool{
+		optErrexit:  len(joinContinuations(body)) > 1,
+		optNounset:  strings.Contains(body, "$"),
+		optPipefail: pipeline.MatchString(body),
+	}
+	was, now := shellOptions(original), shellOptions(generated)
+	var out []string
+	for _, name := range []string{optErrexit, optNounset, optPipefail} {
+		if now[name] && !was[name] && matters[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // groupByFlag is a forget's grouping, which parity compares on its own.
 var groupByFlag = regexp.MustCompile(` --group-by[= ](\S+)`)
 

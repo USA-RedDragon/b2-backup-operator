@@ -49,6 +49,7 @@ const (
 var (
 	preambleLines  = []string{"exec > >(ts '%H:%M:%S') 2>&1", "set -o pipefail", "{", "set -eu", "set -euo pipefail"}
 	postambleLines = []string{"} 2>&1 | ts '%H:%M:%S'", "restic cache --cleanup"}
+	operatorShell  = "set -euo pipefail"
 	handledEnvVars = []string{"TZ", envResticHost, cnpgSecretPathEnv, envResticCacheDir}
 )
 
@@ -271,6 +272,11 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]s
 		return nil, err
 	}
 
+	if added := shellOptionsAdded(script, operatorShell); len(added) > 0 {
+		m.notes = append(m.notes, fmt.Sprintf("shell: the operator runs the script under set -euo pipefail, and the\n"+
+			"HelmRelease's did not turn on %s. A failing command, unset variable or failing\n"+
+			"pipe stage now stops the rest of the script, dump and forget included.", strings.Join(added, ", ")))
+	}
 	parsed, err := parseBackupScript(script, mounts)
 	var unstructured *notStructuredError
 	switch {
