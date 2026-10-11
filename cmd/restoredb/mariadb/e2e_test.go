@@ -665,6 +665,11 @@ func TestMariaDBKeepsCraftedDumpsInsideStaging(t *testing.T) {
 			"INSERT INTO \"other\".\"mt\" VALUES (44);\n", mariadb.ErrUnsupportedStatement},
 		"an engine named at the end of a statement": {"ALTER TABLE `keep` ENGINE=MERGE;\n",
 			mariadb.ErrOtherDatabase},
+		"NAMES after another SET item":         {"SET @a=1, NAMES gbk;\n", mariadb.ErrUnsupportedStatement},
+		"NAMES after a system variable":        {"SET autocommit=1, NAMES gbk;\n", mariadb.ErrUnsupportedStatement},
+		"CHARACTER SET after another SET item": {"SET @a=1, CHARACTER SET gbk;\n", mariadb.ErrUnsupportedStatement},
+		"CHARSET after another SET item":       {"SET @a=1, CHARSET gbk;\n", mariadb.ErrUnsupportedStatement},
+		"a second NAMES":                       {"SET NAMES utf8mb4, NAMES gbk;\n", mariadb.ErrUnsupportedStatement},
 		"a default engine": {"SET default_storage_engine=MRG_MyISAM;\n" +
 			"CREATE TABLE `m2` (`id` INT) COMMENT='wrapper \"mysql\", database \"other\"';\n",
 			mariadb.ErrUnsupportedStatement},
