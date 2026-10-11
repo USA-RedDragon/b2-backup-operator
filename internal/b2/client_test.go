@@ -2,8 +2,10 @@ package b2_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -207,6 +209,10 @@ func TestTypedErrors(t *testing.T) {
 	}
 	if err := c.DeleteBucket(context.Background(), "nosuchbucket"); !errors.Is(err, b2.ErrNotFound) {
 		t.Errorf("DeleteBucket on a missing bucket: %v, want ErrNotFound", err)
+	}
+	fake.Fail("b2_list_file_versions", b2fake.Failure{Status: 400, Code: b2.CodeInvalidBucketID, Message: "Invalid bucketId"})
+	if _, err := c.ListFileVersions(context.Background(), b2.ListFilesRequest{BucketID: "x"}); !errors.Is(err, b2.ErrNotFound) {
+		t.Errorf("listing a bucket B2 calls invalid: %v, want ErrNotFound", err)
 	}
 	if err := c.DeleteFileVersion(context.Background(), "a", "b"); !errors.Is(err, b2.ErrNotFound) {
 		t.Errorf("DeleteFileVersion on a missing file: %v, want ErrNotFound", err)
@@ -538,5 +544,80 @@ func TestDeleteVersionsUnderCancelsUnfinishedFilesItLists(t *testing.T) {
 	}
 	if got := fake.FileNames(bucket.BucketID); len(got) != 0 {
 		t.Errorf("left %v", got)
+	}
+}
+
+func TestLifecycleRulesRoundTripEveryField(t *testing.T) {
+	t.Parallel()
+	var sent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "b2_authorize_account"):
+			_, _ = fmt.Fprintf(w, `{"accountId":"a","authorizationToken":"t","apiInfo":{"storageApi":{`+
+				`"apiUrl":"http://%s","s3ApiUrl":"https://s3.us-east-005.backblazeb2.com"}}}`, r.Host)
+		case strings.HasSuffix(r.URL.Path, "b2_list_buckets"):
+			_, _ = io.WriteString(w, `{"buckets":[{"bucketId":"b","bucketName":"shared","revision":4,"lifecycleRules":[`+
+				`{"fileNamePrefix":"","daysFromStartingToCancelingUnfinishedLargeFiles":7,`+
+				`"daysFromHidingToDeleting":null,"daysFromUploadingToHiding":null,"futureField":{"x":1}}]}]}`)
+		case strings.HasSuffix(r.URL.Path, "b2_update_bucket"):
+			b, _ := io.ReadAll(r.Body)
+			sent = string(b)
+			_, _ = io.WriteString(w, `{"bucketId":"b","bucketName":"shared","revision":5}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := b2.NewClient("id", "key")
+	c.AuthURL = srv.URL
+	ctx := context.Background()
+
+	bucket, err := c.FindBucket(ctx, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bucket.LifecycleRules[0].DaysFromStartingToCancelingUnfinishedLargeFiles; got == nil || *got != 7 {
+		t.Fatalf("daysFromStartingToCancelingUnfinishedLargeFiles = %v, want 7", got)
+	}
+	thirty := 30
+	rules, outcome, _ := b2.MergeLifecycleRule(bucket.LifecycleRules, b2.LifecycleRule{FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &thirty})
+	if outcome != b2.RuleAdded {
+		t.Fatalf("outcome = %v, want RuleAdded", outcome)
+	}
+	if _, err := c.UpdateLifecycleRules(ctx, bucket, rules); err != nil {
+		t.Fatal(err)
+	}
+
+	var body struct {
+		LifecycleRules []map[string]json.RawMessage `json:"lifecycleRules"`
+	}
+	if err := json.Unmarshal([]byte(sent), &body); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		field string
+		want  string
+	}{
+		{"daysFromStartingToCancelingUnfinishedLargeFiles", "7"},
+		{"futureField", `{"x":1}`},
+		{"fileNamePrefix", `""`},
+	}
+	for _, tt := range tests {
+		if got := string(body.LifecycleRules[0][tt.field]); got != tt.want {
+			t.Errorf("the other tool's rule sent %s=%s, want %s", tt.field, got, tt.want)
+		}
+	}
+	if got := string(body.LifecycleRules[1]["daysFromHidingToDeleting"]); got != "30" {
+		t.Errorf("the added rule sent daysFromHidingToDeleting=%s, want 30", got)
+	}
+}
+
+func TestListFileVersionsNeverSendsAStartIDAlone(t *testing.T) {
+	t.Parallel()
+	c, fake, _ := newTestClient(t)
+	bucket := fake.AddBucket("list-bucket")
+	fake.PutFile(bucket.BucketID, "a", 1)
+	if _, err := c.ListFileVersions(context.Background(), b2.ListFilesRequest{
+		BucketID: bucket.BucketID, StartFileID: "stray-id",
+	}); err != nil {
+		t.Errorf("a start file ID without a start name was sent: %v", err)
 	}
 }
