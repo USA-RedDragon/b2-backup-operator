@@ -32,6 +32,8 @@ const (
 
 	envResticHost     = "RESTIC_HOST"
 	envResticCacheDir = "RESTIC_CACHE_DIR"
+	envResticGroupBy  = "RESTIC_GROUP_BY"
+	imageGroupBy      = "tags"
 	volumeDiffers     = "VOLUME DIFFERS"
 	verdictEquivalent = "EQUIVALENT"
 
@@ -564,6 +566,7 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 		return err
 	}
 	compareScripts(&r, o, g, backup.SourceTags(sb.Spec.Sources))
+	compareGrouping(&r, o, g)
 	compareJob(&r, o, g)
 	compareContainer(&r, o, g)
 	comparePod(&r, o, g)
@@ -586,8 +589,8 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 // its envFrom, so a name the container sets keeps its value.
 func addResticEnvs(r *parityReport, env, resticEnvs map[string]string) {
 	if resticEnvs == nil {
-		r.note("RESTIC-ENVS UNCHECKED: %s may hold keys besides RESTIC_REPOSITORY and RESTIC_PASSWORD "+
-			"that set the original's environment; pass --from-secret to compare them", passwordSecretName)
+		r.note("RESTIC-ENVS UNCHECKED: %s may hold keys besides RESTIC_REPOSITORY and RESTIC_PASSWORD, "+
+			"such as RESTIC_GROUP_BY, that set the original's environment; pass --from-secret to compare them", passwordSecretName)
 		return
 	}
 	for k, v := range resticEnvs {
@@ -686,6 +689,38 @@ func compareScripts(r *parityReport, o, g parityView, tags []string) {
 	if scoped != "" {
 		r.note("%s", scoped)
 	}
+}
+
+// forgetGrouping is how the script's forget groups snapshots: its own
+// --group-by, else the image's restic wrapper adds RESTIC_GROUP_BY, which the
+// upstream image and the operator's set to tags. Without either restic groups
+// by host and paths.
+func forgetGrouping(v parityView) string {
+	for _, line := range joinContinuations(scriptBody(v.script)) {
+		if !strings.HasPrefix(line, "restic forget ") {
+			continue
+		}
+		if m := groupByFlag.FindStringSubmatch(line); m != nil {
+			return strings.Trim(m[1], `'"`)
+		}
+		if value, set := v.env[envResticGroupBy]; set {
+			return cmpOr(value, "host,paths")
+		}
+		if isUpstreamImage(v.image) || isOperatorImage(v.image) {
+			return imageGroupBy
+		}
+		return "whatever the RESTIC_GROUP_BY of " + v.image + " says"
+	}
+	return ""
+}
+
+func compareGrouping(r *parityReport, o, g parityView) {
+	original, generated := forgetGrouping(o), forgetGrouping(g)
+	if original == "" || generated == "" || original == generated {
+		return
+	}
+	r.differ("GROUPING DIFFERS: the original's forget grouped by %s, the generated one by %s; retention "+
+		"keeps its counts per group", original, generated)
 }
 
 func compareJob(r *parityReport, o, g parityView) {

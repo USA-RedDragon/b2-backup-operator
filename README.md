@@ -362,7 +362,7 @@ It must provide `restic`, `ts` and `dumpdb` on PATH. `b2bk restore --to-database
 
 The part that is easy to miss: **`restic` in this image is a wrapper** sitting ahead of the real binary, and it injects two things that appear nowhere in the script the operator renders.
 
-- `--group-by=$RESTIC_GROUP_BY`. Without it restic groups a `forget` by `host,paths`, and every database source has the same empty path, so two database sources in one repository collapse into a single retention group and expire each other's snapshots.
+- `--group-by=$RESTIC_GROUP_BY`, for `backup`, `forget` and `snapshots` when no `--group-by` is given. Without it restic groups a `forget` by `host,paths`, and every database source has the same empty path, so two database sources in one repository collapse into a single retention group and expire each other's snapshots. The image sets `RESTIC_GROUP_BY=tags`, and `RESTIC_CACHE_DIR=/cache`, where the operator mounts the cache claim.
 - `--stdin-filename` derived from `$RESTIC_HOST`. That is what names the dump inside a snapshot (`<host>.dmp` for cnpg, `<host>.sql` for mariadb). `b2bk restore --to-database` reads the name back from the snapshot itself, so a dump stored under another name, such as the plain SQL `backup-cnpg.sh` wrote as `<host>`, still restores.
 
 So a custom image without the wrapper does not error. It changes retention grouping and restore paths, and you find out at the point you need the snapshot. If you pin `spec.image`, pin a tag of the same image rather than a different one.

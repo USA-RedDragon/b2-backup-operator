@@ -261,6 +261,9 @@ func normalizeRendered(s string, tags []string) (string, []string, string) {
 	return out, dumps, note
 }
 
+// groupByFlag is a forget's grouping, which parity compares on its own.
+var groupByFlag = regexp.MustCompile(` --group-by[= ](\S+)`)
+
 // normalizeScript drops the preamble and postamble around a backup script,
 // both the operator's and the one hand-written scripts carried, and what the
 // operator adds to each line, so two scripts compare equal when they run the
@@ -270,6 +273,9 @@ func normalizeScript(s string) (string, []string) {
 	for _, line := range joinContinuations(scriptBody(s)) {
 		line = ignoredFlags.ReplaceAllString(line, "")
 		line = quotedExclude.ReplaceAllString(line, "--exclude=$1$2")
+		if strings.HasPrefix(strings.TrimSpace(line), "restic forget ") {
+			line = groupByFlag.ReplaceAllString(line, "")
+		}
 		if m := cnpgDump.FindStringSubmatchIndex(line); m != nil {
 			command := "dumpdb cnpg"
 			if strings.Contains(line[m[0]:m[2]], "backup-cnpg.sh") {
