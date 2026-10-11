@@ -10,14 +10,12 @@ they are.
 ```
 cmd/main.go                    Manager entry and operator-level flags
 cmd/kubectl-b2bk/              b2bk CLI entry, also the kubectl plugin
-cmd/restoredb/                 restoredb, added to the backup image
 api/v1/*_types.go              CRD schemas (+kubebuilder markers)
 api/v1/zz_generated.*          Auto-generated (DO NOT EDIT)
 internal/controller/           Reconciliation for both kinds
 internal/backup/               Rendering: CronJob, schedule, backup script
 internal/b2/                   B2 native API client for management calls
 internal/b2/b2fake/            In-memory B2 API, used by unit tests and the e2e stub
-internal/dbtools/              Shared code for restoredb
 internal/secrets/              Restic password generation
 internal/cli/                  b2bk commands, including migrate and parity
 internal/cli/runner/           Ephemeral Jobs for one-off restic commands
@@ -26,7 +24,6 @@ config/rbac/role.yaml          Generated RBAC (DO NOT EDIT)
 config/rbac/b2bk_user_role.yaml Roles for people running the CLI
 config/samples/                Example CRs, checked by make test-crd
 Dockerfile                     Manager image
-Dockerfile.restic              Backup image: ghcr.io/gabe565/restic plus restoredb
 PROJECT                        Kubebuilder metadata (DO NOT EDIT)
 ```
 
@@ -155,40 +152,14 @@ one of these:
   operator suspend their CronJobs and skip triggers whatever `spec.suspend`
   says. Only a complete restore of the same target, or `b2bk resume`, clears a
   partial entry.
-- **A plain-SQL restore commits only a complete dump.** psql
-  `--single-transaction` commits at end of input, so `restoredb` runs it through
-  `dumpdb.RunOpts.Complete` and kills it before closing stdin unless the dump
-  ends with pg_dump's `dump complete` trailer. A `COMMIT` inside the dump would
-  commit early, so `postgres.PlainFilter` follows the dump with a copy of
-  psql's lexer rules, comments out pg_dump's own `BEGIN;`/`COMMIT;` lines around
-  large objects and refuses any other transaction control and every psql
-  meta-command but `\restrict` and `\unrestrict`. Verify changes with
-  `make test-postgres`, which runs `restoredb` inside a real Postgres container.
-- **A MariaDB restore never touches the live database until the swap.**
-  mariadb-dump output cannot run in a transaction, so `restoredb mariadb`
-  restores into `<db>__b2bk_restore` with the dump's `USE` and `CREATE
-  DATABASE` statements left out, checks the `-- Dump completed` trailer, and only
-  then moves every table with one multi-table `RENAME TABLE`, which MariaDB
-  applies atomically, every live table out before any staged one in, since a
-  foreign key name must stay unique in the live database. MariaDB refuses to
-  move views and tables with triggers across databases, so those are refused
-  up front. The dump is split into
-  statements by `clientLexer`, a copy of the client's own rules (`add_line` in
-  `client/mysql.cc`), and each statement is held back until `allowStatement`
-  (`allow.go`) has matched it, by tokens and never by a text prefix, against
-  the shapes mariadb-dump writes. Anything else is refused: the allowlist, not
-  a list of known-bad statements, is the barrier. A statement the head cuts
-  short is refused unless its shape says the rest is data, which the value and
-  name watchers check as it streams. `qualifiedNames` watches the whole of every statement, since a
-  name qualified with a database anywhere outside CREATE TABLE, a server,
-  replication or account statement, or dynamic SQL would reach past the
-  staging database. `sqlModes` holds the dump to an sql_mode, a client charset
-  and a default engine the filter can read the dump under; the client connects
-  with `--default-character-set=utf8mb4`. `<db>__b2bk_old` is the rollback copy: never drop it
-  unless it is empty or `--drop-old` was given.
-  Both are created with `mariadb.SchemaComment`, and a database by either name
-  without it is never dropped (`ErrForeignSchema`).
-  Verify changes with `make test-mariadb`, which runs a real server in Docker.
+- **`restoredb` lives in the backup image, not here.** It is developed in
+  [USA-RedDragon/dockers](https://github.com/USA-RedDragon/dockers/tree/main/images/restic)
+  with its Docker tests. b2bk relies on two of its guarantees: a plain-SQL
+  Postgres restore commits only a dump that ends with pg_dump's `dump complete`
+  trailer, and a MariaDB restore stages into `<db>__b2bk_restore` and swaps
+  every table in with one atomic `RENAME TABLE`, keeping the replaced tables in
+  `<db>__b2bk_old`. A change to how b2bk calls `restoredb` must be checked
+  against the version the default image ships.
 - **The backup image's `restic` is a wrapper** ahead of the real binary on PATH.
   It supplies `--group-by` from `RESTIC_GROUP_BY` and the `--stdin-filename` a
   database dump lands under from `RESTIC_HOST`, neither of which is in the
@@ -214,8 +185,6 @@ Never hand-edit `config/crd/bases/*`, `config/rbac/role.yaml` or
 make test        # unit tests: plain go test, no cluster, no envtest binaries
 make test-crd    # CRD validation against a real API server (envtest)
 make test-e2e    # full deploy against a throwaway Kind cluster
-make test-mariadb # restoredb mariadb against a throwaway MariaDB container
-make test-postgres # restoredb postgres against a throwaway Postgres container
 make lint        # golangci-lint with the logcheck plugin
 ```
 
@@ -229,9 +198,8 @@ does not recognize.
 
 Tests are standard `testing`, not Ginkgo, except the e2e suite: it is Ginkgo, and
 its `test/e2e/e2e_suite_test.go` is the only `suite_test.go` in the tree. Both it
-and the envtest CRD tests sit behind build tags (`e2e` and `envtest`), as do the
-Docker MariaDB and Postgres tests (`mariadb`, `postgres`), so `make test` -- a
-plain `go test` over everything but `/e2e` -- compiles none of them.
+and the envtest CRD tests sit behind build tags (`e2e` and `envtest`), so
+`make test` -- a plain `go test` over everything but `/e2e` -- compiles neither.
 
 **Validation lives in CEL on the CRDs**, so `make test` cannot see it. A rule
 that fails to compile makes every CRD install fail, and one that never fires is

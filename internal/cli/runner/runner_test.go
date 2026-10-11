@@ -25,7 +25,7 @@ import (
 const (
 	testNS     = "prod"
 	testName   = "web-files"
-	testImage  = "ghcr.io/usa-reddragon/b2-backup-operator-restic:test"
+	testImage  = "ghcr.io/usa-reddragon/restic:test"
 	testRepo   = "store"
 	testDBName = "app"
 )

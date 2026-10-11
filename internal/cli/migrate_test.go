@@ -1077,7 +1077,7 @@ func TestMigrateCarriesWhatTheCRDHolds(t *testing.T) {
 		t.Errorf("resources = %+v, want empty, as the original sets none, not the operator's limits", s.Resources)
 	}
 	if s.Image != "" || !strings.Contains(migrateOut, "image: ghcr.io/gabe565/restic") {
-		t.Errorf("image = %q; want the operator's image, built on the upstream one, and the switch noted:\n%s",
+		t.Errorf("image = %q; want the operator's image, a fork of the upstream one, and the switch noted:\n%s",
 			s.Image, migrateOut)
 	}
 	if !errors.Is(err, ErrParityDiffers) || strings.Contains(parityOut, "DIFFER") ||

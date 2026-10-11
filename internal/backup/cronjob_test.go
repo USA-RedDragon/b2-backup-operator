@@ -25,7 +25,7 @@ const (
 
 func testConfig() Config {
 	return Config{
-		Image:             "ghcr.io/usa-reddragon/b2-backup-operator-restic:test",
+		Image:             "ghcr.io/usa-reddragon/restic:test",
 		CacheStorageClass: "longhorn",
 	}
 }

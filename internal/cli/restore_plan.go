@@ -635,7 +635,7 @@ func restoreDatabaseCommand(sb *b2backupv1.ScheduledBackup, snap resticSnapshot,
 	}
 	guarded := fmt.Sprintf(
 		"set -o pipefail\ncommand -v restoredb >/dev/null 2>&1 || { echo %s >&2; exit 1; }\n%s",
-		shellQuote("this backup image has no restoredb; re-pull ghcr.io/usa-reddragon/b2-backup-operator-restic "+
+		shellQuote("this backup image has no restoredb; use ghcr.io/usa-reddragon/restic "+
 			"or unpin spec.image"), pipeline)
 	return []string{"sh", "-c", guarded}
 }

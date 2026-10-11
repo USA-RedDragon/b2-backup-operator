@@ -786,7 +786,7 @@ printed with the time of day in the schedule's time zone, such as
 | `DAYLIGHT SAVING` | note | A daily schedule fires other than once a day in its zone: a time the clocks skip does not fire that day, and a time they repeat fires twice, as the CronJob controller's cron library reads it |
 | `FORGET SCOPED` | note | forget now expires only the backup's own tags |
 | `JOB SETTINGS CHANGE` | note | `backoffLimit`, `startingDeadlineSeconds`, the Job history limits or `ttlSecondsAfterFinished` changed. app-template retries a failed run 6 times and skips a run 30 seconds late; the operator does neither |
-| `IMAGE CHANGES` | note | `ghcr.io/gabe565/restic`, directly or through a mirror, becomes the operator's image, which is built on it |
+| `IMAGE CHANGES` | note | `ghcr.io/gabe565/restic`, directly or through a mirror, becomes the operator's image, a fork of it with `restoredb` added |
 | `AFFINITY ADDED` | note | The original sets none and the operator adds only a preference |
 | `POD LABELS CHANGE` | note | app-template's own `app.kubernetes.io/controller`, `name` or `instance` label is gone |
 | `TIMEZONE UNSET` | note | The original CronJob sets no `timeZone`; it is compared as UTC, the kube-controller-manager's zone |
@@ -888,7 +888,7 @@ What maps across:
 | `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` and `labels`, from the controller's `pod` or else `defaultPodOptions` | `spec.affinity`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` and `spec.podLabels`, verbatim |
 | Container `resources`, CronJob `timeZone`, `concurrencyPolicy` and `suspend` | The same fields. No `resources` becomes `resources: {}`, so the operator's default limits do not apply. No `timeZone` becomes the restic container's `TZ`, or `UTC` without one. app-template then sets none, and the schedule runs in the kube-controller-manager's zone, which is UTC unless its container sets `TZ`. The operator sets the container's `TZ` from `timeZone`, so taking the container's `TZ` keeps the zone the container ran in, and a jittered schedule moves its time anyway; `parity` reports the move as `RESCHEDULED`, or a schedule kept as it was as `TIMEZONE DIFFERS`. A `timeZone` the CronJob does set is kept, and `parity` reports a `TZ` that differed from it |
 | CronJob `successfulJobsHistory` and `failedJobsHistory` | `spec.successfulJobsHistoryLimit` and `spec.failedJobsHistoryLimit` |
-| An image from `ghcr.io/gabe565/restic`, directly or through a mirror | Nothing: the operator's image is built on it. Any other image becomes `spec.image`, and must meet the image contract in the README |
+| An image from `ghcr.io/gabe565/restic`, directly or through a mirror | Nothing: the operator's image is a fork of it. Any other image becomes `spec.image`, and must meet the image contract in the README |
 | `envFrom` of `restic-envs` and `restic-b2` | The Repository's Secret, with `restic-envs` as the password's source. Given `--from-secret`, every other `RESTIC_*` key in `restic-envs` goes into `spec.env`; without it, the output warns that those keys went unchecked |
 | `DB_HOST`, `DB_DATABASE` and `DB_USERNAME` beside a mariadb dump | `spec.database.host`, `name` and `user`, and not `spec.env`, where the operator refuses them |
 | Plain `env` values other than `TZ`, `RESTIC_HOST`, `RESTIC_CACHE_DIR` and `CNPG_SECRET_PATH` | `spec.env` |

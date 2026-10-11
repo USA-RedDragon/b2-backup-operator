@@ -56,7 +56,7 @@ const (
 const controllerManagerZone = "UTC"
 
 // upstreamImage is the image hand-written backups ran, pulled directly or
-// through a mirror. The operator's own image is built on it.
+// through a mirror. The operator's own image is a fork of it.
 const upstreamImage = "ghcr.io/gabe565/restic"
 
 // parityView is everything parity compares, read the same way from the
@@ -959,7 +959,7 @@ func compareContainer(r *parityReport, o, g parityView) {
 	switch {
 	case o.image == g.image:
 	case isUpstreamImage(o.image) && isOperatorImage(g.image):
-		r.note("IMAGE CHANGES: %s -> %s, the operator's image, built on %s with restoredb added",
+		r.note("IMAGE CHANGES: %s -> %s, the operator's image, a fork of %s with restoredb added",
 			o.image, g.image, upstreamImage)
 	default:
 		r.differ("IMAGE DIFFERS: original %s, generated %s", o.image, g.image)
@@ -1060,7 +1060,7 @@ func comparePod(r *parityReport, o, g parityView) {
 }
 
 // imageZone is the zone a container runs in without TZ. The upstream image,
-// and the operator's built on it, set no TZ and ship no /etc/localtime, so UTC.
+// and the operator's fork of it, set no TZ and ship no /etc/localtime, so UTC.
 func imageZone(image string) string {
 	if isUpstreamImage(image) || isOperatorImage(image) {
 		return controllerManagerZone

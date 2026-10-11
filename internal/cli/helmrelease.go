@@ -459,7 +459,7 @@ type hrImage struct {
 }
 
 // cacheDir is where restic keeps its cache in the container: --cache-dir, then
-// RESTIC_CACHE_DIR, then the default of the image the operator's is built on.
+// RESTIC_CACHE_DIR, then the default of the image the operator's is forked from.
 // It is empty when that cannot be told.
 func (c hrContainer) cacheDir(script string) string {
 	if m := cacheDirFlag.FindStringSubmatch(script); m != nil {

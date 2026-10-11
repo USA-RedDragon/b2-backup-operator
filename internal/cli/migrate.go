@@ -379,8 +379,8 @@ func migrateImage(img hrImage, m *migration) error {
 	}
 	if isUpstreamImage(image) {
 		m.notes = append(m.notes, fmt.Sprintf("image: %s is replaced by the operator's backup image, which is\n"+
-			"built on %s with restoredb added. spec.image is left unset so it\n"+
-			"follows the operator's version.", image, upstreamImage))
+			"a fork of %s with restoredb added. spec.image is left unset so it\n"+
+			"follows the operator's default.", image, upstreamImage))
 		return nil
 	}
 	m.backup.Spec.Image = image

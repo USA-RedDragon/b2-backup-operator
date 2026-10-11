@@ -324,7 +324,7 @@ What to expect:
 | --- | --- | --- |
 | `--b2-credentials-secret` | `b2-credentials` | Secret holding the operator's B2 application key, as `name` in the operator's namespace or `namespace/name`. See below |
 | `--b2-auth-url` | `https://api.backblazeb2.com` | Where `b2_authorize_account` is called. Only tests change it |
-| `--backup-image` | `ghcr.io/usa-reddragon/b2-backup-operator-restic:<operator version>` | The image every backup pod runs. More than a list of binaries; see the contract below |
+| `--backup-image` | `ghcr.io/usa-reddragon/restic:0.19.1` | The image every backup pod runs. More than a list of binaries; see the contract below |
 | `--cache-storage-class` | *(none)* | StorageClass for restic cache volumes. **Cache claims request `ReadWriteMany`**, which most cluster default classes cannot satisfy; see below |
 
 `/manager --help` lists the rest.
@@ -356,7 +356,7 @@ Backblaze documents `writeKeys` as granting full access to the account, since a 
 
 `spec.image` and `--backup-image` are not just "an image with restic in it". The default image satisfies a contract the operator and `b2bk` both rely on, and a substitute that does not will fail quietly rather than loudly.
 
-The default image is `ghcr.io/usa-reddragon/b2-backup-operator-restic`, tagged with the operator's own version. It is built from `Dockerfile.restic`: [`ghcr.io/gabe565/restic`](https://github.com/gabe565/docker-restic) with this repository's `restoredb` added.
+The default image is [`ghcr.io/usa-reddragon/restic`](https://github.com/USA-RedDragon/dockers/tree/main/images/restic), tagged with the restic version it ships. Each operator release pins one tag, and Renovate bumps it. The image is a fork of [`ghcr.io/gabe565/restic`](https://github.com/gabe565/docker-restic) with `restoredb` added, and `restoredb` is developed there.
 
 It must provide `restic`, `ts` and `dumpdb` on PATH. `b2bk restore --to-database` additionally needs `restoredb`, which it probes for, and a `/bin/sh` that supports `set -o pipefail`, so a dump that dies mid-stream cannot be reported as a successful restore. BusyBox ash, bash, zsh and Debian trixie's dash do; older dash exits with `Illegal option -o pipefail`.
 
@@ -399,7 +399,7 @@ make build-installer IMG=...   # render dist/install.yaml
 
 Most of the validation lives in CEL rules on the CRDs, which no Go test can reach: a rule that fails to compile makes every CRD install fail, and one that never fires is invisible. `make test-crd` runs them against a real API server.
 
-Pushes to `main` publish `beta` images. A `v*` tag publishes the manager image to `ghcr.io/usa-reddragon/b2-backup-operator`, the backup image to `ghcr.io/usa-reddragon/b2-backup-operator-restic`, the rendered manifests to `ghcr.io/usa-reddragon/b2-backup-operator-manifests`, and the `b2bk` archives and checksums to the GitHub release.
+Pushes to `main` publish `beta` images. A `v*` tag publishes the manager image to `ghcr.io/usa-reddragon/b2-backup-operator`, the rendered manifests to `ghcr.io/usa-reddragon/b2-backup-operator-manifests`, and the `b2bk` archives and checksums to the GitHub release.
 
 ## b2bk, the CLI
 

@@ -57,7 +57,7 @@ func backupHarness(t *testing.T, objs ...client.Object) (*ScheduledBackupReconci
 		Scheme:   scheme,
 		Recorder: events.NewFakeRecorder(100),
 		Config: backup.Config{
-			Image: "ghcr.io/usa-reddragon/b2-backup-operator-restic:test",
+			Image: "ghcr.io/usa-reddragon/restic:test",
 		},
 	}, c
 }

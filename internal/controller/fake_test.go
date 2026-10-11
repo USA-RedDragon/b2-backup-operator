@@ -115,7 +115,7 @@ func newHarnessWithInterceptor(
 			return cl
 		},
 		DefaultCredentialsSecret: types.NamespacedName{Namespace: credsNS, Name: credsName},
-		BackupImage:              "ghcr.io/usa-reddragon/b2-backup-operator-restic:test",
+		BackupImage:              "ghcr.io/usa-reddragon/restic:test",
 	}, c
 }
 
