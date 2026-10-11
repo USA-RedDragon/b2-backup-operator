@@ -5,7 +5,9 @@ import (
 	"hash/fnv"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+	_ "time/tzdata"
 )
 
 var cronFieldChars = [5]*regexp.Regexp{
@@ -16,9 +18,17 @@ var cronFieldChars = [5]*regexp.Regexp{
 	regexp.MustCompile(`^(?i:[0-9*/,?-]|sun|mon|tue|wed|thu|fri|sat)+$`),
 }
 
-// ResolveSchedule expands a cron shorthand such as @daily or @every 6h into a 5-field cron
-// expression, jittered by key so backups do not all fire at once. Plain cron passes through.
+// ResolveSchedule is ResolveScheduleIn for UTC, which has no daylight saving.
 func ResolveSchedule(schedule, key string) (string, error) {
+	return ResolveScheduleIn(schedule, key, "UTC")
+}
+
+// ResolveScheduleIn expands a cron shorthand such as @daily or @every 6h into a 5-field
+// cron expression, jittered by key so backups do not all fire at once. Plain cron passes
+// through. A jittered time of day that daylight saving skips or repeats in zone, such as
+// 01:xx or 02:xx in America/Chicago, is moved to another hour at the same minute; every
+// other schedule is the same in every zone. An empty zone counts as UTC.
+func ResolveScheduleIn(schedule, key, zone string) (string, error) {
 	schedule = strings.TrimSpace(schedule)
 	if schedule == "" {
 		return "", fmt.Errorf("schedule is empty")
@@ -40,10 +50,24 @@ func ResolveSchedule(schedule, key string) (string, error) {
 
 	h := jitter(key)
 	minute := h % 60
-	hour := (h / 60) % 24
+	phase := (h / 60) % 24
+	unsafe, err := transitionMinutes(zone)
+	if err != nil {
+		return "", err
+	}
+	hour := phase
+	if unsafe[hour*60+minute] {
+		var safe []int
+		for i := range 24 {
+			if !unsafe[i*60+minute] {
+				safe = append(safe, i)
+			}
+		}
+		hour = safe[jitter(key+"\x00dst")%len(safe)]
+	}
 
 	if d, ok := everyDuration(schedule); ok {
-		return resolveEvery(d, minute, hour)
+		return resolveEvery(d, minute, phase, hour)
 	}
 
 	switch schedule {
@@ -84,7 +108,7 @@ func everyDuration(schedule string) (string, bool) {
 // The steps are phase-shifted ("M-59/15", not "*/15") so a stepped schedule is
 // jittered like every other shorthand. A plain step always starts at zero, which
 // is the top-of-the-hour stampede jitter exists to avoid.
-func resolveEvery(d string, minute, hour int) (string, error) {
+func resolveEvery(d string, minute, phase, hour int) (string, error) {
 	dur, err := time.ParseDuration(d)
 	if err != nil {
 		return "", fmt.Errorf("parsing @every duration %q: %w", d, err)
@@ -114,7 +138,7 @@ func resolveEvery(d string, minute, hour int) (string, error) {
 		if 24%hours != 0 {
 			return "", fmt.Errorf("@every duration %q must divide evenly into a day", d)
 		}
-		return fmt.Sprintf("%d %d-23/%d * * *", minute, hour%hours, hours), nil
+		return fmt.Sprintf("%d %d-23/%d * * *", minute, phase%hours, hours), nil
 
 	case dur == 24*time.Hour:
 
@@ -129,4 +153,48 @@ func jitter(key string) int {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(key))
 	return int(h.Sum32() % (1 << 24))
+}
+
+var transitionCache sync.Map
+
+// transitionMinutes returns the local minutes of the day, counted from
+// midnight, that a daylight saving transition of zone skips or repeats in any
+// year from 2020 to 2050. A stepped schedule shorter than a day cannot avoid
+// them, so only a schedule that fires at one time of the day is moved.
+func transitionMinutes(zone string) (map[int]bool, error) {
+	if zone == "" {
+		zone = "UTC"
+	}
+	if minutes, ok := transitionCache.Load(zone); ok {
+		return minutes.(map[int]bool), nil
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return nil, fmt.Errorf("time zone %q: %w", zone, err)
+	}
+	minutes := map[int]bool{}
+	end := time.Date(2050, 1, 1, 0, 0, 0, 0, time.UTC)
+	for at := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC); at.Before(end); {
+		_, next := at.In(loc).ZoneBounds()
+		if next.IsZero() || !next.Before(end) {
+			break
+		}
+		if !next.After(at) {
+			at = at.Add(time.Second)
+			continue
+		}
+		_, before := next.Add(-time.Second).In(loc).Zone()
+		_, after := next.In(loc).Zone()
+		lo, hi := next.Unix()+int64(before), next.Unix()+int64(after)
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		for wall := lo - lo%60; wall < hi; wall += 60 {
+			t := time.Unix(wall, 0).UTC()
+			minutes[t.Hour()*60+t.Minute()] = true
+		}
+		at = next
+	}
+	transitionCache.Store(zone, minutes)
+	return minutes, nil
 }

@@ -254,6 +254,8 @@ A mariadb restore (`b2bk restore --to-database`) stages the dump in `<db>__b2bk_
 
 A five-field cron expression is passed through untouched. A shorthand is expanded with a jitter derived from the resource's namespace and name, so copy-pasted backups spread across the period instead of all firing on the hour. The result appears in `status.effectiveSchedule`. The jitter is stable: a backup keeps its slot unless it is renamed.
 
+The jitter never lands on a local time that daylight saving skips or repeats in `spec.timeZone`. In `America/Chicago` that is 02:00 to 02:59 in March, which does not exist, and 01:00 to 01:59 in November, which happens twice, so a schedule that fires at one time of day (`@daily`, `@weekly`, `@monthly`, `@yearly`, `@every 24h`) is moved off 01:xx and 02:xx to another hour at the same minute. The windows come from the zone's own transitions from 2020 to 2050, so a zone that shifts by 30 minutes, or at another hour, is handled the same way. A schedule whose slot is outside them is the same as in UTC. A step shorter than a day, such as `@every 6h` or `@hourly`, fires in every part of the day and cannot avoid them, so it is not moved. Backups created before this rule whose slot was in such a window moved once, to the new hour.
+
 Accepted shorthands are `@hourly`, `@daily` (`@midnight`), `@weekly`, `@monthly`, `@yearly` (`@annually`) and `@every <duration>`. Stepped schedules are phase-shifted rather than started at zero, so `@every 15m` renders as `7-59/15 * * * *` rather than `*/15 * * * *`.
 
 Steps that do not divide their period evenly (`@every 7h`) are rejected, since cron restarts the sequence each period and would leave an irregular gap.

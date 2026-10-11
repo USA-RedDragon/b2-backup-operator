@@ -383,7 +383,7 @@ func BuildCronJob(
 	repo *b2backupv1.Repository,
 	cfg Config,
 ) (*batchv1.CronJob, error) {
-	schedule, err := ResolveSchedule(sb.Spec.Schedule, sb.Namespace+"/"+sb.Name)
+	schedule, err := ResolveScheduleIn(sb.Spec.Schedule, sb.Namespace+"/"+sb.Name, sb.Spec.TimeZone)
 	if err != nil {
 		return nil, err
 	}

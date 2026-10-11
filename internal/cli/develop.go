@@ -160,7 +160,7 @@ server owns.`,
 func validateBackup(out io.Writer, sb *b2backupv1.ScheduledBackup) error {
 	p := newPrinter(out)
 
-	schedule, err := backup.ResolveSchedule(sb.Spec.Schedule, sb.Namespace+"/"+sb.Name)
+	schedule, err := backup.ResolveScheduleIn(sb.Spec.Schedule, sb.Namespace+"/"+sb.Name, sb.Spec.TimeZone)
 	if err != nil {
 		return fmt.Errorf("spec.schedule: %w", err)
 	}
