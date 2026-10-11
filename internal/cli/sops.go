@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -19,6 +20,8 @@ var (
 	// ErrNoRepositoryURL means no usable s3: repository URL was given or found.
 	ErrNoRepositoryURL = errors.New("could not determine the restic repository URL")
 )
+
+var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{4,61}[a-z0-9]$`)
 
 type decryptedSecret struct {
 	StringData map[string]string `json:"stringData"`
@@ -77,6 +80,9 @@ func parseS3Repository(raw string) (s3Location, error) {
 	if !ok {
 		return s3Location{}, fmt.Errorf("%w: %q is not an s3: repository URL", ErrNoRepositoryURL, raw)
 	}
+	if !strings.Contains(rest, "://") {
+		rest = "https://" + rest
+	}
 	u, err := url.Parse(rest)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return s3Location{}, fmt.Errorf("%w: %q does not name an https endpoint", ErrNoRepositoryURL, raw)
@@ -88,6 +94,10 @@ func parseS3Repository(raw string) (s3Location, error) {
 	bucket, prefix, _ := strings.Cut(strings.TrimPrefix(u.Path, "/"), "/")
 	if bucket == "" {
 		return s3Location{}, fmt.Errorf("%w: no bucket in %q", ErrNoRepositoryURL, raw)
+	}
+	if !bucketName.MatchString(bucket) || strings.HasPrefix(bucket, "b2-") {
+		return s3Location{}, fmt.Errorf("%w: %q is not a bucket name a Repository accepts: 6 to 63 "+
+			"lowercase letters, digits and dashes, not starting with b2-", ErrNoRepositoryURL, bucket)
 	}
 	if strings.HasPrefix(prefix, "/") || strings.Contains(prefix, "//") {
 		return s3Location{}, fmt.Errorf("%w: empty path segment in %q", ErrNoRepositoryURL, raw)
