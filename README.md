@@ -133,7 +133,7 @@ restic always talks to B2 through the S3-compatible API and never through its na
 
 Each Repository gets its own application key, named `b2bk-<namespace>-<name>-<first 12 hex digits of the UID>`, restricted to its bucket, and to its path with a trailing `/` when it has one. Its capabilities are `listBuckets`, `listFiles`, `readFiles` and `writeFiles`. It has no `deleteFiles`: restic's S3 backend never names a version when it deletes, so on B2 every restic delete only hides the file, which needs `writeFiles` alone. A key without `deleteFiles` cannot destroy a file version, so whatever a leaked key hides stays recoverable with the account key until the lifecycle rule below deletes it.
 
-The key's secret half is shown only once, when the key is created, and the operator writes it into the Secret at once and records the key ID in `status.applicationKeyID`. If the Secret is lost, or the key no longer exists in B2, or its restrictions no longer match, the operator creates a new key, writes it, and then deletes every other key carrying this Repository's name. The name ends in the Repository's UID, so this never touches a key that another Repository, or another cluster sharing the account, relies on.
+The key's secret half is shown only once, when the key is created, and the operator writes it into the Secret at once and records the key ID in `status.applicationKeyID`. If the Secret is lost, or the key no longer exists in B2, or its restrictions no longer match, the operator creates a new key and writes it. On a later pass, one interval on, it deletes every other key carrying this Repository's name, so a backup that started with the old key can finish. The name ends in the Repository's UID, so this never touches a key that another Repository, or another cluster sharing the account, relies on. The same rule means a Repository that is deleted under `Retain` and created again gets a new key and leaves the old one in B2; delete it by hand once nothing uses the old Secret.
 
 #### The restic password
 
@@ -145,7 +145,7 @@ Without it, the operator generates a password once, and only for a path that hol
 
 Because restic's deletes only hide files, a bucket keeps every pack restic has ever pruned until something deletes the hidden versions. By default the operator keeps a bucket lifecycle rule that deletes hidden files under the repository's path one day after they are hidden: scoped to `<path>/` in Prefix mode, and to the whole bucket in Bucket mode without a path.
 
-The rule is merged into the bucket's existing rules. Rules for every other prefix are left exactly as they are, and a rule on a parent prefix that already deletes hidden files at least as soon covers the repository, so no rule is added. The result is in the `LifecycleRule` condition. A rule that hides live files under the path after some days (`daysFromUploadingToHiding`) would eventually hide data that snapshots still need, so it turns the condition `False` with reason `HidesLiveFiles`.
+The rule is merged into the bucket's existing rules. Rules for every other prefix are left exactly as they are, and a rule on a parent prefix that already deletes hidden files at least as soon covers the repository, so no rule is added. The result is in the `LifecycleRule` condition. A rule that hides live files under the path after some days (`daysFromUploadingToHiding`) would eventually hide data that snapshots still need, so it turns the condition `False` with reason `HidesLiveFiles` and `Ready` `False` with reason `LifecycleHidesData`.
 
 ```yaml
 spec:
@@ -164,11 +164,11 @@ A longer `daysFromHidingToDeleting` is the B2 form of append-only: B2 has no res
 
 `deletionPolicy` defaults to `Retain`: deleting the resource leaves the data, the application key and the credentials Secret in place.
 
-Under `Delete`, deleting the Repository deletes its application key, then every file version and unfinished large file under its path, in batches, and in Prefix mode its lifecycle rule. In Bucket mode it then deletes the bucket, unless the bucket holds files outside the repository's path, in which case it leaves the bucket and emits `BucketRetained`. Nothing outside the path is ever touched. The finalizer is released only once that is done. Annotate the Repository with `b2backup.mcswain.dev/force-finalize=true` to release it anyway; the operator emits a `RepositoryOrphaned` warning naming what it left behind.
+Under `Delete`, deleting the Repository deletes its application key, then every file version and unfinished large file under its path, in batches, and in Prefix mode its lifecycle rule. In Bucket mode it then deletes the bucket, unless the bucket holds files outside the repository's path, in which case it leaves the bucket and emits `BucketRetained`. Nothing outside the path is ever touched, and if another Repository has recorded an overlapping path in the same bucket, only the application key is deleted and the data is left with a `DataRetained` warning. The finalizer is released only once that is done. Annotate the Repository with `b2backup.mcswain.dev/force-finalize=true` to release it anyway; the operator emits a `RepositoryOrphaned` warning naming what it left behind, and takes its ownership off the credentials Secret first, so garbage collection does not delete the only password for the data left behind.
 
 #### Conflicts
 
-Two Repositories whose paths in the same bucket are equal or nested, or one of which covers the whole bucket, would write into one repository. The newer one goes `Ready=False` with reason `RepositoryConflict` and makes no B2 calls at all until the conflict is resolved.
+Two Repositories whose paths in the same bucket are equal or nested, or one of which covers the whole bucket, would write into one repository. One of them goes `Ready=False` with reason `RepositoryConflict` and makes no B2 calls at all until the conflict is resolved: the one that has not yet recorded the location in status, or, when both or neither have, the newer one. A path that a Repository under `deletionPolicy: Delete` is deleting blocks every other Repository from it until the deletion finishes.
 
 `kubectl explain repository.spec` lists every field.
 
