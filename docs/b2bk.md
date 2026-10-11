@@ -411,9 +411,11 @@ the dump: in one where a character can end in a backslash, such as `gbk`,
 `big5`, `sjis`, `cp932`, `gb18030` or `euckr`, the server would end a quoted
 string where `restoredb` does not. So `SET NAMES`, `SET CHARACTER SET` and
 `character_set_client` are allowed only to `utf8mb4`, `utf8mb3`, `utf8`,
-`latin1`, `ascii`, `binary` or the value the dump saved at its start, and
-`restoredb` connects with `--default-character-set=utf8mb4`, so the server's
-own default cannot be a multibyte one before the dump's own `SET NAMES`. Also refused: one that changes the server, replication or accounts, such as
+`latin1`, `ascii`, `binary` or the value the dump saved at its start, wherever
+they are in a `SET` list, and a `SET` item `restoredb` does not know how to
+check is refused. `restoredb` connects with `--default-character-set=utf8mb4`,
+so the server's own default cannot be a multibyte one before the dump's own
+`SET NAMES`. Also refused: one that changes the server, replication or accounts, such as
 `SET GLOBAL`, `CHANGE MASTER TO` (from `--master-data` or `--dump-slave`) or
 `GRANT`; one that builds SQL at run time, such as `PREPARE` or `EXECUTE`; one
 that writes a file on the server, such as `SELECT ... INTO OUTFILE`; one too long

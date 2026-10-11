@@ -747,3 +747,32 @@ func TestFilterFollowsTheClientCharset(t *testing.T) {
 		t.Errorf("a re-assigned variable: err = %v", err)
 	}
 }
+
+// MariaDB takes NAMES and CHARACTER SET anywhere in a SET list, so every item
+// of a SET is checked, and one the filter does not understand is refused.
+func TestFilterChecksEveryItemOfASet(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		"SET @a=1, NAMES gbk",
+		"SET autocommit=1, NAMES gbk",
+		"SET @a=1, CHARACTER SET gbk",
+		"SET @a=1, CHARSET gbk",
+		"SET NAMES utf8mb4, NAMES gbk",
+		"SET @a=1, SESSION CHARACTER SET big5",
+		"SET @a=1, TRANSACTION ISOLATION LEVEL READ COMMITTED",
+	} {
+		got, _, err := filterString(t, createTable+stmt+";\n")
+		if !errors.Is(err, ErrUnsupportedStatement) || got != createTable {
+			t.Errorf("%q: err = %v, passed on %q", stmt, err, got)
+		}
+	}
+	for _, stmt := range []string{
+		"SET @a=1, NAMES utf8mb4",
+		"SET NAMES utf8mb4 COLLATE utf8mb4_uca1400_ai_ci, @b=2",
+		"SET autocommit=0, unique_checks=0, foreign_key_checks=0",
+	} {
+		if _, _, err := filterString(t, stmt+";\n"); err != nil {
+			t.Errorf("%q: err = %v", stmt, err)
+		}
+	}
+}

@@ -31,17 +31,21 @@ func (m *sqlModes) set(toks []token, stmt string) error {
 	if m.saved == nil {
 		m.saved = map[string]string{}
 	}
-	if err := m.names(toks, stmt); err != nil {
-		return err
-	}
 	for _, item := range splitTopLevel(toks) {
 		for len(item) > 0 && item[0].kind == tokWord &&
 			(strings.EqualFold(item[0].text, "SESSION") || strings.EqualFold(item[0].text, "LOCAL")) {
 			item = item[1:]
 		}
+		if done, err := m.names(item, stmt); done {
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		eq := slices.IndexFunc(item, func(t token) bool { return t.kind == tokPunct && t.text == "=" })
 		if eq < 0 {
-			continue
+			return fmt.Errorf("%w: a SET item restoredb does not know how to check: %.200s",
+				ErrUnsupportedStatement, stmt)
 		}
 		lhs, rhs := item[:eq], item[eq+1:]
 		if n := len(lhs); n > 0 && lhs[n-1].kind == tokPunct && lhs[n-1].text == ":" {
@@ -84,11 +88,12 @@ func (m *sqlModes) set(toks []token, stmt string) error {
 	return nil
 }
 
-// names checks a SET NAMES, SET CHARACTER SET or SET CHARSET, which all set
-// the charset the server reads the dump in.
-func (m *sqlModes) names(toks []token, stmt string) error {
+// names checks an item of a SET that is NAMES, CHARACTER SET or CHARSET, which
+// all set the charset the server reads the dump in. MariaDB takes them
+// anywhere in the list. done reports whether item is one of them.
+func (m *sqlModes) names(item []token, stmt string) (done bool, err error) {
 	word := func(i int, text string) bool {
-		return len(toks) > i && toks[i].kind == tokWord && strings.EqualFold(toks[i].text, text)
+		return len(item) > i && item[i].kind == tokWord && strings.EqualFold(item[i].text, text)
 	}
 	at := 0
 	switch {
@@ -97,12 +102,12 @@ func (m *sqlModes) names(toks []token, stmt string) error {
 	case word(0, "CHARACTER") && word(1, "SET"):
 		at = 2
 	default:
-		return nil
+		return false, nil
 	}
-	if !m.knownCharset(toks[at:min(at+1, len(toks))]) {
-		return fmt.Errorf("%w: %s", ErrUnsupportedStatement, charsetRefusal(stmt))
+	if !m.knownCharset(item[at:min(at+1, len(item))]) {
+		return true, fmt.Errorf("%w: %s", ErrUnsupportedStatement, charsetRefusal(stmt))
 	}
-	return nil
+	return true, nil
 }
 
 func charsetRefusal(stmt string) string {
