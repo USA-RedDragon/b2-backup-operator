@@ -66,6 +66,11 @@ const (
 	deleteRequeueDelay = time.Second
 
 	keyNameMaxLength = 100
+
+	maxLifecycleUpdates = 3
+
+	hidesLiveFiles = "HidesLiveFiles"
+	reasonConflict = "RepositoryConflict"
 )
 
 // SecretKeys are the keys the operator writes to every credentials Secret.
@@ -156,7 +161,7 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.setCondition(&repo, metav1.Condition{
 			Type:   b2backupv1.RepositoryConditionReady,
 			Status: metav1.ConditionFalse,
-			Reason: "RepositoryConflict",
+			Reason: reasonConflict,
 			Message: fmt.Sprintf(
 				"bucket %s path %s overlaps Repository %s, which claimed it first; "+
 					"point one of them elsewhere, or delete this one",
@@ -307,12 +312,17 @@ func (r *RepositoryReconciler) reconcile(
 		Reason:  "Initialized",
 		Message: "repository is initialized",
 	})
-	r.setCondition(repo, metav1.Condition{
+	ready := metav1.Condition{
 		Type:    b2backupv1.RepositoryConditionReady,
 		Status:  metav1.ConditionTrue,
 		Reason:  "Ready",
 		Message: "repository is ready",
-	})
+	}
+	if lc := apimeta.FindStatusCondition(repo.Status.Conditions, b2backupv1.RepositoryConditionLifecycleRule); lc != nil &&
+		lc.Reason == hidesLiveFiles {
+		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, "LifecycleHidesData", lc.Message
+	}
+	r.setCondition(repo, ready)
 
 	if justInitialized {
 		return ctrl.Result{RequeueAfter: initCleanupDelay}, nil
@@ -354,6 +364,9 @@ func (r *RepositoryReconciler) resolveBucket(
 	}
 	bucket, err = api.CreateBucket(ctx, name, rules)
 	if errors.Is(err, b2.ErrDuplicateBucketName) {
+		if existing, findErr := api.FindBucket(ctx, name); findErr == nil {
+			return existing, nil
+		}
 		return nil, withReason("BucketNameTaken", fmt.Errorf(
 			"bucket name %s is taken by another B2 account; bucket names are global", name))
 	}
@@ -384,7 +397,7 @@ func (r *RepositoryReconciler) reconcileLifecycle(
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "LifecycleHidesData", "Lifecycle", "%s", msg)
 		r.setCondition(repo, metav1.Condition{
 			Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionFalse,
-			Reason: "HidesLiveFiles", Message: msg,
+			Reason: hidesLiveFiles, Message: msg,
 		})
 		return nil
 	}
@@ -398,6 +411,10 @@ func (r *RepositoryReconciler) reconcileLifecycle(
 	}
 
 	for attempt := 0; ; attempt++ {
+		if attempt == maxLifecycleUpdates {
+			return fmt.Errorf("bucket %s still does not hold the lifecycle rule for %q after %d updates",
+				bucket.BucketName, prefix, maxLifecycleUpdates)
+		}
 		rules, outcome, at := b2.MergeLifecycleRule(bucket.LifecycleRules, wantedRule(repo))
 		switch outcome {
 		case b2.RuleCovered:
@@ -417,7 +434,7 @@ func (r *RepositoryReconciler) reconcileLifecycle(
 		}
 
 		updated, err := api.UpdateLifecycleRules(ctx, bucket, rules)
-		if errors.Is(err, b2.ErrConflict) && attempt == 0 {
+		if errors.Is(err, b2.ErrConflict) {
 			if bucket, err = api.FindBucket(ctx, bucket.BucketName); err != nil {
 				return fmt.Errorf("re-reading bucket %s after a conflicting update: %w", repo.Spec.Bucket, err)
 			}
@@ -546,6 +563,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "KeyCreated", "Create",
 			"Created application key %s restricted to %s/%s", created.ApplicationKeyID,
 			bucket.BucketName, displayPath(repo.EffectivePath()))
+		return nil
 	}
 
 	return r.deleteStaleKeys(ctx, repo, api, keys)
@@ -677,15 +695,45 @@ func (r *RepositoryReconciler) repositoryConflict(
 	bucket, path := managedLocation(repo)
 	for i := range list.Items {
 		other := &list.Items[i]
-		if !other.DeletionTimestamp.IsZero() ||
-			(other.Namespace == repo.Namespace && other.Name == repo.Name) {
+		if other.Namespace == repo.Namespace && other.Name == repo.Name {
 			continue
 		}
 		otherBucket, otherPath := managedLocation(other)
 		if otherBucket != bucket || !pathsOverlap(path, otherPath) {
 			continue
 		}
-		if olderRepository(other, repo) {
+		if !other.DeletionTimestamp.IsZero() {
+			if other.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && other.Status.BucketID != "" {
+				return other.Namespace + "/" + other.Name + ", which is deleting it", nil
+			}
+			continue
+		}
+		if claimedFirst(other, repo) {
+			return other.Namespace + "/" + other.Name, nil
+		}
+	}
+	return "", nil
+}
+
+func claimedFirst(a, b *b2backupv1.Repository) bool {
+	if aRecorded, bRecorded := a.Status.BucketID != "", b.Status.BucketID != ""; aRecorded != bRecorded {
+		return aRecorded
+	}
+	return olderRepository(a, b)
+}
+
+func (r *RepositoryReconciler) sharedWith(ctx context.Context, repo *b2backupv1.Repository) (string, error) {
+	var list b2backupv1.RepositoryList
+	if err := r.List(ctx, &list); err != nil {
+		return "", fmt.Errorf("listing repositories: %w", err)
+	}
+	for i := range list.Items {
+		other := &list.Items[i]
+		if (other.Namespace == repo.Namespace && other.Name == repo.Name) ||
+			!other.DeletionTimestamp.IsZero() || other.Status.BucketID == "" {
+			continue
+		}
+		if other.Status.BucketName == repo.Status.BucketName && pathsOverlap(other.Status.Path, repo.Status.Path) {
 			return other.Namespace + "/" + other.Name, nil
 		}
 	}
@@ -936,6 +984,9 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 		api, err := r.apiFor(ctx, repo)
 		if err != nil {
 			if r.forceFinalize(repo, err) {
+				if relErr := r.keepSecret(ctx, repo); relErr != nil {
+					return ctrl.Result{}, relErr
+				}
 				break
 			}
 			r.setCondition(repo, metav1.Condition{
@@ -950,6 +1001,9 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 		done, err := r.deleteRemote(ctx, repo, api)
 		if err != nil {
 			if r.forceFinalize(repo, err) {
+				if relErr := r.keepSecret(ctx, repo); relErr != nil {
+					return ctrl.Result{}, relErr
+				}
 				break
 			}
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
@@ -976,10 +1030,31 @@ func (r *RepositoryReconciler) forceFinalize(repo *b2backupv1.Repository, err er
 	}
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "RepositoryOrphaned", "Delete",
 		"Could not delete %s/%s or application key %s, and %s is set, so they are being left "+
-			"behind; delete them manually, they are still billed: %s",
+			"behind with credentials Secret %s, which keeps the only password for them; delete "+
+			"them manually, they are still billed: %s",
 		repo.Status.BucketName, displayPath(repo.Status.Path), repo.Status.ApplicationKeyID,
-		b2backupv1.AnnotationForceFinalize, err.Error())
+		b2backupv1.AnnotationForceFinalize, repo.SecretName(), err.Error())
 	return true
+}
+
+func (r *RepositoryReconciler) keepSecret(ctx context.Context, repo *b2backupv1.Repository) error {
+	var secret corev1.Secret
+	err := r.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: repo.SecretName()}, &secret)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if secret.Labels[labelManagedBy] != managedByValue || !metav1.IsControlledBy(&secret, repo) {
+		return nil
+	}
+	updated := secret.DeepCopy()
+	syncControllerRef(updated, &corev1.Secret{})
+	if err := r.Update(ctx, updated); err != nil {
+		return fmt.Errorf("releasing secret %s from the Repository: %w", secret.Name, err)
+	}
+	return nil
 }
 
 func (r *RepositoryReconciler) deleteRemote(
@@ -999,14 +1074,26 @@ func (r *RepositoryReconciler) deleteRemote(
 		}
 	}
 
+	if other, err := r.sharedWith(ctx, repo); err != nil {
+		return false, err
+	} else if other != "" {
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DataRetained", "Delete",
+			"Deleted application key %s but left %s/%s in place, because Repository %s still uses it",
+			repo.Status.ApplicationKeyID, repo.Status.BucketName, displayPath(repo.Status.Path), other)
+		return true, nil
+	}
+
 	bucketID, path := repo.Status.BucketID, repo.Status.Path
 	prefix := filePrefix(path)
 	deleted, done, err := b2.DeleteVersionsUnder(ctx, api, bucketID, prefix, deleteBudget)
+	if errors.Is(err, b2.ErrNotFound) {
+		if _, findErr := api.FindBucket(ctx, repo.Status.BucketName); errors.Is(findErr, b2.ErrNotFound) {
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
+				"Bucket %s is already gone", repo.Status.BucketName)
+			return true, nil
+		}
+	}
 	switch {
-	case errors.Is(err, b2.ErrNotFound) && repo.Spec.Mode == b2backupv1.StorageModeBucket:
-		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
-			"Bucket %s is already gone", repo.Status.BucketName)
-		return true, nil
 	case err != nil:
 		return false, fmt.Errorf("deleting files under %s/%s: %w", repo.Status.BucketName, displayPath(path), err)
 	case !done:

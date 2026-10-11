@@ -3,6 +3,7 @@ package b2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -42,7 +43,7 @@ func Usage(ctx context.Context, api API, bucketID, prefix string, maxPages int) 
 			return 0, false, err
 		}
 		for _, f := range page.Files {
-			if f.Action == "" || f.Action == "upload" {
+			if f.Action == "" || f.Action == ActionUpload {
 				total += f.ContentLength
 			}
 		}
@@ -63,12 +64,15 @@ func DeleteVersionsUnder(ctx context.Context, api API, bucketID, prefix string, 
 	start := ""
 	for deleted < budget {
 		page, err := api.ListUnfinishedLargeFiles(ctx, ListFilesRequest{
-			BucketID: bucketID, Prefix: prefix, StartFileID: start,
+			BucketID: bucketID, Prefix: prefix, StartFileID: start, MaxFileCount: min(budget-deleted, 100),
 		})
 		if err != nil {
 			return deleted, false, err
 		}
 		for _, f := range page.Files {
+			if deleted >= budget {
+				return deleted, false, nil
+			}
 			if !strings.HasPrefix(f.FileName, prefix) {
 				continue
 			}
@@ -93,18 +97,27 @@ func DeleteVersionsUnder(ctx context.Context, api API, bucketID, prefix string, 
 		if len(page.Files) == 0 {
 			return deleted, true, nil
 		}
-		before := deleted
+		removed := 0
 		for _, f := range page.Files {
 			if !strings.HasPrefix(f.FileName, prefix) {
 				continue
 			}
-			if err := api.DeleteFileVersion(ctx, f.FileName, f.FileID); err != nil && !errors.Is(err, ErrNotFound) {
+			if f.Action == ActionStart {
+				err = api.CancelLargeFile(ctx, f.FileID)
+			} else {
+				err = api.DeleteFileVersion(ctx, f.FileName, f.FileID)
+			}
+			switch {
+			case err == nil:
+				removed++
+			case !errors.Is(err, ErrNotFound):
 				return deleted, false, err
 			}
-			deleted++
 		}
-		if deleted == before {
-			return deleted, false, nil
+		deleted += removed
+		if removed == 0 {
+			return deleted, false, fmt.Errorf("%w: B2 still lists %d versions under %q that it says are gone",
+				ErrNoProgress, len(page.Files), prefix)
 		}
 	}
 

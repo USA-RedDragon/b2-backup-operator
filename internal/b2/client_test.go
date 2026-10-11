@@ -505,3 +505,38 @@ func TestAuthorizeReadsTheAllowedBlock(t *testing.T) {
 		t.Errorf("region = %q", region)
 	}
 }
+
+func TestDeleteVersionsUnderStopsWhenNothingCanBeDeleted(t *testing.T) {
+	c, fake, _ := newTestClient(t)
+	bucket := fake.AddBucket("stuck-bucket")
+	fake.PutFile(bucket.BucketID, "p/a", 1)
+	fake.Fail("b2_delete_file_version", b2fake.Failure{Status: 400, Code: b2.CodeFileNotPresent, Times: 1000})
+
+	deleted, done, err := b2.DeleteVersionsUnder(context.Background(), c, bucket.BucketID, "p/", 100)
+	if !errors.Is(err, b2.ErrNoProgress) || done || deleted != 0 {
+		t.Errorf("deleted %d, done=%t, err=%v; want ErrNoProgress instead of spinning", deleted, done, err)
+	}
+	if n := fake.CountCalls("b2_delete_file_version"); n != 1 {
+		t.Errorf("tried %d deletes, want 1 before giving up", n)
+	}
+}
+
+func TestDeleteVersionsUnderCancelsUnfinishedFilesItLists(t *testing.T) {
+	c, fake, _ := newTestClient(t)
+	bucket := fake.AddBucket("unfinished-bucket")
+	for i := range 3 {
+		fake.StartLargeFile(bucket.BucketID, fmt.Sprintf("p/big%d", i))
+	}
+	fake.PutFile(bucket.BucketID, "p/small", 1)
+
+	deleted, done, err := b2.DeleteVersionsUnder(context.Background(), c, bucket.BucketID, "p/", 2)
+	if err != nil || done || deleted != 2 {
+		t.Fatalf("deleted %d, done=%t, err=%v; want the budget of 2 spent", deleted, done, err)
+	}
+	if _, done, err = b2.DeleteVersionsUnder(context.Background(), c, bucket.BucketID, "p/", 100); err != nil || !done {
+		t.Fatalf("second pass done=%t, err=%v", done, err)
+	}
+	if got := fake.FileNames(bucket.BucketID); len(got) != 0 {
+		t.Errorf("left %v", got)
+	}
+}

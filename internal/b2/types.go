@@ -12,6 +12,13 @@ const (
 	BucketTypePrivate = "allPrivate"
 )
 
+// File version actions.
+const (
+	ActionUpload = "upload"
+	ActionHide   = "hide"
+	ActionStart  = "start"
+)
+
 // Error codes returned by the B2 native API.
 const (
 	CodeBadAuthToken        = "bad_auth_token"
@@ -47,6 +54,9 @@ var (
 
 	// ErrBucketNotEmpty means a bucket still holds files and cannot be deleted.
 	ErrBucketNotEmpty = errors.New("b2: bucket is not empty")
+
+	// ErrNoProgress means B2 keeps listing file versions that cannot be deleted.
+	ErrNoProgress = errors.New("b2: deletion is making no progress")
 )
 
 // APIError is an error response from the B2 API.
