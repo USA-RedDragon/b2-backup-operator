@@ -64,7 +64,7 @@ spec:
                 value: Europe/Berlin
               - name: RESTIC_HOST
                 value: legacy
-              image: ghcr.io/gabe565/restic:0.19.1
+              image: ghcr.io/gabe565/restic:0.19.1@sha256:495346252a3c601e9c98b216030149db3278a7295d90d0e325c8684419d277ef
               name: restic
               volumeMounts:
               - mountPath: /data
