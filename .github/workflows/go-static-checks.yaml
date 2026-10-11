@@ -1,0 +1,53 @@
+name: Go Static Checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }} @ ${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  golangci:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve golangci-lint version
+        id: golangci
+        run: echo "version=$(sed -n 's/^GOLANGCI_LINT_VERSION[^=]*= *//p' Makefile)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache custom golangci-lint
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: bin/golangci-lint*
+          key: golangci-lint-${{ runner.os }}-${{ steps.golangci.outputs.version }}-${{ hashFiles('.custom-gcl.yml') }}
+
+      - name: golangci-lint
+        run: make lint
+
+  goreleaser-check:
+    name: goreleaser check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the release config
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: "~> v2"
+          args: check

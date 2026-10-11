@@ -3,5 +3,43 @@
     "extends": [
         "local>USA-RedDragon/renovate-configs",
         "local>USA-RedDragon/renovate-configs:golang"
+    ],
+    "customManagers": [
+        {
+            "customType": "regex",
+            "managerFilePatterns": ["/(^|/)Makefile$/"],
+            "matchStrings": ["KUSTOMIZE_VERSION \\?= (?<currentValue>v\\S+)"],
+            "datasourceTemplate": "go",
+            "depNameTemplate": "sigs.k8s.io/kustomize/kustomize/v5"
+        },
+        {
+            "customType": "regex",
+            "managerFilePatterns": ["/(^|/)Makefile$/"],
+            "matchStrings": ["CONTROLLER_TOOLS_VERSION \\?= (?<currentValue>v\\S+)"],
+            "datasourceTemplate": "go",
+            "depNameTemplate": "sigs.k8s.io/controller-tools"
+        },
+        {
+            "customType": "regex",
+            "managerFilePatterns": ["/(^|/)Makefile$/", "/(^|/)\\.custom-gcl\\.yml$/"],
+            "matchStrings": [
+                "GOLANGCI_LINT_VERSION \\?= (?<currentValue>v\\S+)",
+                "(?:^|\\n)version: (?<currentValue>v\\S+)"
+            ],
+            "datasourceTemplate": "go",
+            "depNameTemplate": "github.com/golangci/golangci-lint/v2"
+        },
+        {
+            "customType": "regex",
+            "managerFilePatterns": ["/(^|/)\\.custom-gcl\\.yml$/"],
+            "matchStrings": ["module: \"?(?<depName>sigs\\.k8s\\.io/logtools)\"?\\n(?:.*\\n)*?\\s+version: (?<currentValue>v\\S+)"],
+            "datasourceTemplate": "go"
+        }
+    ],
+    "packageRules": [
+        {
+            "matchPackageNames": ["github.com/golangci/golangci-lint/v2"],
+            "groupName": "golangci-lint"
+        }
     ]
 }
