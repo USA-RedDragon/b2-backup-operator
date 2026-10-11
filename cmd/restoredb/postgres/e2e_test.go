@@ -246,3 +246,31 @@ func TestPostgresKeepsALargeObjectDumpInOneTransaction(t *testing.T) {
 		}
 	})
 }
+
+// keyless drops the \restrict and \unrestrict lines, as a pg_dump older than
+// 17.6 never wrote them.
+func keyless(dump string) string {
+	var b strings.Builder
+	for line := range strings.SplitAfterSeq(dump, "\n") {
+		if !strings.HasPrefix(line, "\\restrict ") && !strings.HasPrefix(line, "\\unrestrict ") {
+			b.WriteString(line)
+		}
+	}
+	return b.String()
+}
+
+// Without a \restrict key only the trailer shows that a plain dump is complete,
+// and COPY rows can spell it out.
+func TestPostgresRefusesAKeylessDumpCutAtRowsThatReadAsTheTrailer(t *testing.T) {
+	trailer := "--\n-- PostgreSQL database dump complete\n--\n"
+	backup, want := seed(t, "CREATE TABLE notes (v text);\n"+
+		"INSERT INTO notes VALUES ('--'), ('-- PostgreSQL database dump complete'), ('--');",
+		"--clean", "--if-exists")
+	backup = keyless(backup)
+	at := strings.Index(backup, "FROM stdin;\n"+trailer)
+	if at < 0 {
+		t.Fatal("the dump has no COPY of the trailer rows")
+	}
+	refused(t, []byte(backup[:at+len("FROM stdin;\n"+trailer)]))
+	restored(t, []byte(backup), want)
+}

@@ -107,7 +107,7 @@ func TestPlainFilterNeutralizesOnlyTopLevelTransactionLines(t *testing.T) {
 			if got != want {
 				t.Errorf("got\n%q\nwant\n%q", got, want)
 			}
-			if !f.lex.idle() || f.inCopy {
+			if !f.Ended() {
 				t.Errorf("the filter does not end between statements: %+v", f.lex)
 			}
 		})
@@ -206,6 +206,30 @@ func TestLexerDollarQuotes(t *testing.T) {
 		}
 		if l.idle() != tt.idle {
 			t.Errorf("%q: idle = %t, want %t (state %d)", tt.sql, l.idle(), tt.idle, l.state)
+		}
+	}
+}
+
+func TestPlainFilterEnded(t *testing.T) {
+	t.Parallel()
+	trailer := "--\n-- PostgreSQL database dump complete\n--\n\n"
+	for _, tt := range []struct {
+		name, dump string
+		ended      bool
+	}{
+		{"after the trailer", "SELECT 1;\n" + trailer, true},
+		{"inside COPY data", "COPY t (v) FROM stdin;\n" + trailer, false},
+		{"inside a string", "SELECT '\n" + trailer, false},
+		{"inside a dollar quote", "SELECT $$\n" + trailer, false},
+		{"inside a comment", "/*\n" + trailer, false},
+		{"inside a statement", "SELECT 1\n" + trailer, false},
+	} {
+		_, f, err := filterPlain(t, tt.dump)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if f.Ended() != tt.ended {
+			t.Errorf("%s: Ended = %t, want %t", tt.name, f.Ended(), tt.ended)
 		}
 	}
 }

@@ -61,6 +61,13 @@ func (f *PlainFilter) Copy(dst io.Writer, src io.Reader) error {
 	}
 }
 
+// Ended reports whether the dump read so far ends between statements, outside
+// COPY data, a string or a comment, as a complete dump does. A trailer that
+// COPY rows or a string spell out does not end the dump.
+func (f *PlainFilter) Ended() bool {
+	return !f.inCopy && f.lex.idle()
+}
+
 // line handles chunk, a whole line when whole is set, or else part of one.
 func (f *PlainFilter) line(chunk []byte, whole bool) ([]byte, error) {
 	start := f.lineStart

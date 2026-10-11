@@ -22,6 +22,7 @@ const (
 	customDump   = "PGDMP\x01\x10\x00\x04\x08\x01\x01\x01"
 	plainDump    = "--\n-- PostgreSQL database dump\n--\n\\restrict abc\nSET statement_timeout = 0;\n"
 	plainTrailer = "--\n-- PostgreSQL database dump complete\n--\n\n\\unrestrict abc\n\n"
+	keylessDump  = "--\n-- PostgreSQL database dump\n--\n\nSET statement_timeout = 0;\n"
 )
 
 func withStdin(s string) *cobra.Command {
@@ -267,6 +268,10 @@ func TestPostgresNeverLetsPsqlCommitATruncatedPlainDump(t *testing.T) {
 		committed bool
 	}{
 		{"cut short", plainDump + strings.Repeat("INSERT INTO t VALUES (1);\n", 1<<12), false},
+		{"keyless, cut inside COPY at rows that read as the trailer", keylessDump + "COPY t (v) FROM stdin;\n" +
+			strings.Repeat("x\n", 1<<12) + "--\n-- PostgreSQL database dump complete\n--\n\n", false},
+		{"keyless, complete", keylessDump + "COPY t (v) FROM stdin;\n--\n-- PostgreSQL database dump complete\n--\n" +
+			"\\.\n\n--\n-- PostgreSQL database dump complete\n--\n\n", true},
 		{"complete", plainDump + strings.Repeat("INSERT INTO t VALUES (1);\n", 1<<12) + plainTrailer, true},
 	}
 	for _, tt := range tests {
