@@ -11,6 +11,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -345,7 +346,14 @@ func checkCronJob(ctx context.Context, c client.Client, sb *b2backupv1.Scheduled
 	if hold != "" {
 		r.add(levelWarn, "backups are held for a restore", hold)
 	}
-	if suspended := cj.Spec.Suspend != nil && *cj.Spec.Suspend; suspended != (sb.Spec.Suspend || hold != "") {
+	suspended := cj.Spec.Suspend != nil && *cj.Spec.Suspend
+	ready := apimeta.FindStatusCondition(sb.Status.Conditions, b2backupv1.ScheduledBackupConditionReady)
+	switch {
+	case suspended == (sb.Spec.Suspend || hold != ""):
+	case suspended && ready != nil && ready.Status != metav1.ConditionTrue:
+		r.add(levelWarn, "the operator suspended the CronJob", fmt.Sprintf(
+			"Ready is %s (%s): %s. It resumes once a reconcile succeeds.", ready.Status, ready.Reason, ready.Message))
+	default:
 		r.add(levelWarn, "CronJob suspend state does not match spec.suspend and the restore hold",
 			fmt.Sprintf("CronJob suspended=%t, spec.suspend=%t, held=%t. The operator has not reconciled yet.",
 				suspended, sb.Spec.Suspend, hold != ""))

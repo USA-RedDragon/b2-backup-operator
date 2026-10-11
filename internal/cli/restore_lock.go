@@ -37,10 +37,15 @@ type restoreHold struct {
 	plan *b2backupv1.ScheduledBackup
 	keys []types.NamespacedName
 
+	// claims and database are what makes another ScheduledBackup share the
+	// restore's target: see sharingBackups.
+	claims   []string
+	database bool
+
 	// targets are the AnnotationRestorePartial entries this restore writes.
 	targets []string
-	// full is true when the restore writes the whole of each target, so its
-	// success makes up for an earlier partial restore of it.
+	// full is true once the restore is known to write the whole of each target,
+	// so its success makes up for an earlier partial restore of it.
 	full bool
 }
 
@@ -82,19 +87,62 @@ func setPartialTargets(sb *b2backupv1.ScheduledBackup, targets []string) {
 	sb.Annotations[b2backupv1.AnnotationRestorePartial] = string(raw)
 }
 
-// claimTargets are the AnnotationRestorePartial entries for files restored to
-// paths: the claim each is on, and where on it.
-func claimTargets(sb *b2backupv1.ScheduledBackup, paths []string) []string {
-	var targets []string
-	for _, p := range paths {
-		v := backup.MountFor(sb, p)
-		if v == nil {
-			continue
+// restoredClaims returns the claims a restore of paths writes to: the one each
+// path is on, and every claim mounted under one of them.
+func restoredClaims(sb *b2backupv1.ScheduledBackup, paths []string) []string {
+	var claims []string
+	for _, v := range claimVolumes(sb, paths) {
+		if !slices.Contains(claims, v.ExistingClaim) {
+			claims = append(claims, v.ExistingClaim)
 		}
-		rel := "/" + strings.TrimLeft(strings.TrimPrefix(p, v.EffectiveMountPath()), "/")
-		targets = append(targets, "pvc/"+v.ExistingClaim+":"+rel)
+	}
+	return claims
+}
+
+type claimVolume struct {
+	b2backupv1.VolumeSpec
+	rel string
+}
+
+func claimVolumes(sb *b2backupv1.ScheduledBackup, paths []string) []claimVolume {
+	var out []claimVolume
+	for _, p := range paths {
+		if v := backup.MountFor(sb, p); v != nil {
+			rel := "/" + strings.TrimLeft(strings.TrimPrefix(p, v.EffectiveMountPath()), "/")
+			out = append(out, claimVolume{VolumeSpec: *v, rel: rel})
+		}
+		for _, v := range sb.Spec.Volumes {
+			if m := v.EffectiveMountPath(); m != p && under(m, p) {
+				out = append(out, claimVolume{VolumeSpec: v, rel: "/"})
+			}
+		}
+	}
+	return out
+}
+
+// claimTargets are the AnnotationRestorePartial entries for files restored to
+// paths: the claim each is on and where on it, and every claim mounted under one.
+func claimTargets(sb *b2backupv1.ScheduledBackup, paths []string) []string {
+	volumes := claimVolumes(sb, paths)
+	targets := make([]string, 0, len(volumes))
+	for _, v := range volumes {
+		targets = append(targets, "pvc/"+v.ExistingClaim+":"+v.rel)
 	}
 	return targets
+}
+
+// databaseHost is the host a database restore writes to, as restoredb resolves
+// it: spec.database.host for mariadb, else DB_HOST from spec.env, else the one
+// the credentials Secret names.
+func databaseHost(sb *b2backupv1.ScheduledBackup) string {
+	db := sb.Spec.Database
+	if db.Engine == b2backupv1.DatabaseEngineMariaDB {
+		return db.Host
+	}
+	if host := sb.Spec.Env["DB_HOST"]; host != "" {
+		return host
+	}
+	return "from-secret"
 }
 
 // databaseKey is the AnnotationRestorePartial entry for a database restore.
@@ -109,7 +157,7 @@ func databaseKey(sb *b2backupv1.ScheduledBackup, database string) string {
 	default:
 		database = "dbname"
 	}
-	return fmt.Sprintf("db/%s/%s/%s", db.Engine, db.EffectiveSecretName(), database)
+	return fmt.Sprintf("db/%s/%s/%s/%s", db.Engine, db.EffectiveSecretName(), databaseHost(sb), database)
 }
 
 // sharingBackups returns the ScheduledBackups in sb's namespace that back up
@@ -134,7 +182,8 @@ func sharingBackups(
 		}
 		if database && other.Spec.Database != nil && sb.Spec.Database != nil &&
 			other.Spec.Database.Engine == sb.Spec.Database.Engine &&
-			other.Spec.Database.EffectiveSecretName() == sb.Spec.Database.EffectiveSecretName() {
+			other.Spec.Database.EffectiveSecretName() == sb.Spec.Database.EffectiveSecretName() &&
+			databaseHost(other) == databaseHost(sb) {
 			shares = true
 		}
 		if shares {
@@ -149,15 +198,21 @@ func sharingBackups(
 // resourceVersion it read, so of two restores racing for one only one wins; one
 // that loses lets go of what it took.
 func holdForRestore(
-	ctx context.Context, c client.Client, plan *b2backupv1.ScheduledBackup, backups []b2backupv1.ScheduledBackup,
-	targets []string, full bool,
+	ctx context.Context, c client.Client, plan *b2backupv1.ScheduledBackup, claims []string, database bool,
+	targets []string,
 ) (*restoreHold, error) {
+	backups, err := sharingBackups(ctx, c, plan, claims, database)
+	if err != nil {
+		return nil, err
+	}
 	for i := range backups {
 		if err := refuseActive(ctx, c, &backups[i], ""); err != nil {
 			return nil, err
 		}
 	}
-	h := &restoreHold{c: c, id: restoreLockID(), plan: plan.DeepCopy(), targets: targets, full: full}
+	h := &restoreHold{
+		c: c, id: restoreLockID(), plan: plan.DeepCopy(), claims: claims, database: database, targets: targets,
+	}
 	for i := range backups {
 		key := types.NamespacedName{Namespace: backups[i].Namespace, Name: backups[i].Name}
 		if err := h.take(ctx, key); err != nil {
@@ -291,6 +346,16 @@ func (h *restoreHold) readyToWrite(ctx context.Context, ownJob string) error {
 	}
 	if err := requireCurrentBackup(ctx, h.c, &latest); err != nil {
 		return err
+	}
+	sharing, err := sharingBackups(ctx, h.c, &latest, h.claims, h.database)
+	if err != nil {
+		return err
+	}
+	for i := range sharing {
+		if !slices.Contains(h.keys, client.ObjectKeyFromObject(&sharing[i])) {
+			return fmt.Errorf("%w: scheduledbackup/%s came to share the restore's target after it was held; "+
+				"nothing was written, try again", ErrNotCurrent, sharing[i].Name)
+		}
 	}
 	for _, key := range h.keys {
 		var sb b2backupv1.ScheduledBackup

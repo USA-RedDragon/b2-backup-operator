@@ -238,13 +238,18 @@ backup started in the meantime, and stops without writing if not.
 
 A restore that fails after it started writing records what it was writing in
 `b2backup.mcswain.dev/restore-partial` on every held ScheduledBackup, as
-`pvc/<claim>:<path>` or `db/<engine>/<secret>/<database>` entries. While any
+`pvc/<claim>:<path>` entries for each claim under the source's paths, nested
+mounts included, or a `db/<engine>/<secret>/<host>/<database>` entry. While any
 entry is recorded the hold stays: the next backup would save the partial
 restore, and retention could then keep it over good snapshots. A later restore
-of the whole of the same target that succeeds removes its entry; one narrowed
-with `--path`, `--include` or `--exclude`, one of another target, and one that
-stops before writing do not. `b2bk resume` removes them all once you have
-checked the data. `b2bk status` and `b2bk doctor` show the hold. A restore
+that succeeds removes the entries it covers only when it restored the whole
+source: a snapshot holding exactly the source's paths, with no `--path`,
+`--include` or `--exclude`. One narrowed by any of these, one of another target,
+and one that stops before writing remove nothing. `b2bk resume` removes the
+backup's entries, from it and from every other ScheduledBackup that carries
+them, once you have checked the data. If another ScheduledBackup comes to share
+the claims or database while the restore runs, the restore stops before
+writing. `b2bk status` and `b2bk doctor` show the hold. A restore
 killed before it lets go leaves the lock behind: once it is gone, remove it
 with `kubectl annotate scheduledbackup NAME b2backup.mcswain.dev/restore-lock-`.
 
@@ -263,8 +268,9 @@ file. A snapshot named with `--snapshot` must carry the source's tag, and every
 path in it must lie under one of the source's paths, or hold one dump for
 `--to-database`; anything else is refused before a byte is written, so a
 database dump is never restored over a volume and a files snapshot never into a
-database. A named snapshot taken under another host is accepted, which is how a
-backup from before a namespace rename is restored. If the latest dumps under the
+database. A named snapshot must also have been taken on the backup's host;
+`--host` names another, which is how a backup from before a namespace rename or
+a `spec.resticHost` change is restored. If the latest dumps under the
 tag are of more than one file, such as two databases a script tags `db`, the
 restore is refused until `--tag` or `--snapshot` picks one; an old plain dump
 stored as `<host>` and a new one stored as `<host>.dmp` count as one database.

@@ -2,11 +2,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -89,20 +93,65 @@ func runSetSuspend(
 		return p.Err()
 	}
 
-	patch := client.MergeFrom(obj.DeepCopyObject().(client.Object))
+	patch := client.MergeFromWithOptions(obj.DeepCopyObject().(client.Object), client.MergeFromWithOptimisticLock{})
 	*current = suspend
 	if len(partial) > 0 {
 		delete(target.ScheduledBackup.Annotations, b2backupv1.AnnotationRestorePartial)
 	}
 	if err := c.Patch(ctx, obj, patch); err != nil {
+		if apierrors.IsConflict(err) {
+			return fmt.Errorf("%s changed while it was being updated; try again: %w", label, err)
+		}
 		return err
 	}
 
 	if len(partial) > 0 {
 		p.printf("%s no longer held for a partial restore of %s\n", label, strings.Join(partial, ", "))
+		released, err := releasePartial(ctx, c, target.ScheduledBackup, partial)
+		for _, name := range released {
+			p.printf("scheduledbackup/%s no longer held for it either\n", name)
+		}
+		if err != nil {
+			return errors.Join(err, p.Err())
+		}
 	}
 	p.printf("%s %s\n", label, past)
 	return p.Err()
+}
+
+// releasePartial removes entries from AnnotationRestorePartial on every other
+// ScheduledBackup in sb's namespace, where the restore that wrote them recorded
+// them too.
+func releasePartial(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, entries []string) ([]string, error) {
+	var list b2backupv1.ScheduledBackupList
+	if err := c.List(ctx, &list, client.InNamespace(sb.Namespace)); err != nil {
+		return nil, err
+	}
+	var released []string
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Name == sb.Name || !slices.ContainsFunc(partialTargets(other), func(e string) bool {
+			return slices.Contains(entries, e)
+		}) {
+			continue
+		}
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var latest b2backupv1.ScheduledBackup
+			if err := c.Get(ctx, client.ObjectKeyFromObject(other), &latest); err != nil {
+				return err
+			}
+			patch := client.MergeFromWithOptions(latest.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			setPartialTargets(&latest, slices.DeleteFunc(partialTargets(&latest), func(e string) bool {
+				return slices.Contains(entries, e)
+			}))
+			return c.Patch(ctx, &latest, patch)
+		})
+		if err != nil {
+			return released, err
+		}
+		released = append(released, other.Name)
+	}
+	return released, nil
 }
 
 func capitalize(s string) string {
