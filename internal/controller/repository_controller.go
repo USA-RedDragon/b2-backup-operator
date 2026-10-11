@@ -76,6 +76,8 @@ const (
 	reasonScope    = "DeletionScopeMismatch"
 	reasonManaged  = "Managed"
 
+	reasonRetainedPassword = "SecretHoldsRetainedPassword"
+
 	// SecretFinalizer keeps a credentials Secret holding the only copy of an
 	// operator-generated restic password from being deleted with its namespace.
 	SecretFinalizer = "b2backup.mcswain.dev/protect-password"
@@ -262,6 +264,11 @@ func (r *RepositoryReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
+	url := resticURL(auth.S3APIURL, repo.Spec.Bucket, path)
+	if err := r.retainedSecretConflict(ctx, repo, url); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	bucket, err := r.resolveBucket(ctx, repo, api)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -305,7 +312,7 @@ func (r *RepositoryReconciler) reconcile(
 	}
 
 	creds := credentials{
-		url:    resticURL(auth.S3APIURL, bucket.BucketName, path),
+		url:    url,
 		region: region,
 	}
 	keyRecheck, err := r.reconcileSecret(ctx, repo, api, bucket, creds, known || dataExists)
@@ -538,6 +545,54 @@ func (r *RepositoryReconciler) setLifecycleCondition(
 	r.setCondition(repo, cond)
 }
 
+// retainedSecretConflict refuses, with reason SecretHoldsRetainedPassword, a
+// credentials Secret holding the only copy of a password this Repository must
+// not take over: it carries the protect-password finalizer and was left behind
+// or protected by another Repository, or no Repository is recorded and it
+// names another restic repository. Such a Secret is never written, and the
+// Repository records nothing in status.
+func (r *RepositoryReconciler) retainedSecretConflict(
+	ctx context.Context, repo *b2backupv1.Repository, url string,
+) error {
+	var secret corev1.Secret
+	err := r.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: repo.SecretName()}, &secret)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if secret.Labels[labelManagedBy] != managedByValue || !controllerutil.ContainsFinalizer(&secret, SecretFinalizer) {
+		return nil
+	}
+	held := string(secret.Data[KeyResticRepository])
+	var why string
+	switch holder := protectionHolder(&secret); {
+	case holder == string(repo.UID):
+		return nil
+	case holder != "":
+		if released := secret.Annotations[b2backupv1.AnnotationReleasedRepository]; released != "" {
+			held = released
+		}
+		why = fmt.Sprintf("Repository UID %s left it holding the only copy of the password for %s", holder, held)
+	case held != url:
+		why = fmt.Sprintf("it holds the only copy of the password for %s, not %s", held, url)
+	default:
+		return nil
+	}
+	return withReason(reasonRetainedPassword, fmt.Errorf(
+		"secret %s/%s carries finalizer %s because %s; this Repository will not take it over or change it. "+
+			"Archive its RESTIC_PASSWORD and remove the finalizer to let this Repository reuse it, "+
+			"or set spec.secretName to another name", secret.Namespace, secret.Name, SecretFinalizer, why))
+}
+
+func protectionHolder(secret *corev1.Secret) string {
+	if uid := secret.Annotations[b2backupv1.AnnotationReleasedBy]; uid != "" {
+		return uid
+	}
+	return secret.Annotations[b2backupv1.AnnotationProtectedBy]
+}
+
 type credentials struct {
 	url    string
 	region string
@@ -630,7 +685,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 		controllerutil.AddFinalizer(desired, SecretFinalizer)
 	}
 
-	op, err := r.createOrPatch(ctx, desired, &existing)
+	op, err := r.createOrPatch(ctx, repo, desired, &existing)
 	if err != nil {
 		if created != nil {
 			if delErr := api.DeleteKey(ctx, created.ApplicationKeyID); delErr != nil {
@@ -1024,9 +1079,15 @@ func olderRepository(a, b *b2backupv1.Repository) bool {
 	return a.Name < b.Name
 }
 
+// createOrPatch writes the credentials Secret. The protect-password finalizer
+// is added with the Repository's UID in AnnotationProtectedBy, and removed only
+// when this Repository set it or no Repository is recorded as having set it.
 func (r *RepositoryReconciler) createOrPatch(
-	ctx context.Context, desired *corev1.Secret, existing *corev1.Secret,
+	ctx context.Context, repo *b2backupv1.Repository, desired *corev1.Secret, existing *corev1.Secret,
 ) (string, error) {
+	if controllerutil.ContainsFinalizer(desired, SecretFinalizer) {
+		desired.Annotations = map[string]string{b2backupv1.AnnotationProtectedBy: string(repo.UID)}
+	}
 	if existing.Name == "" {
 		if err := r.Create(ctx, desired); err != nil {
 			return "", fmt.Errorf("creating secret %s: %w", desired.Name, err)
@@ -1044,10 +1105,19 @@ func (r *RepositoryReconciler) createOrPatch(
 	}
 	maps.Copy(updated.Data, desired.Data)
 	syncControllerRef(updated, desired)
-	if controllerutil.ContainsFinalizer(desired, SecretFinalizer) {
+	holder := protectionHolder(updated)
+	delete(updated.Annotations, b2backupv1.AnnotationReleasedBy)
+	delete(updated.Annotations, b2backupv1.AnnotationReleasedRepository)
+	switch {
+	case controllerutil.ContainsFinalizer(desired, SecretFinalizer):
 		controllerutil.AddFinalizer(updated, SecretFinalizer)
-	} else {
+		if updated.Annotations == nil {
+			updated.Annotations = map[string]string{}
+		}
+		maps.Copy(updated.Annotations, desired.Annotations)
+	case holder == "" || holder == string(repo.UID):
 		controllerutil.RemoveFinalizer(updated, SecretFinalizer)
+		delete(updated.Annotations, b2backupv1.AnnotationProtectedBy)
 	}
 
 	if equality.Semantic.DeepEqual(existing, updated) {
@@ -1372,6 +1442,10 @@ func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backup
 	if secret.Labels[labelManagedBy] != managedByValue {
 		return nil
 	}
+	if holder := protectionHolder(&secret); (holder != "" && holder != string(repo.UID)) ||
+		(repo.Status.SecretName != secret.Name && !metav1.IsControlledBy(&secret, repo)) {
+		return nil
+	}
 
 	updated := secret.DeepCopy()
 	protect := false
@@ -1399,8 +1473,21 @@ func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backup
 	}
 	if protect {
 		controllerutil.AddFinalizer(updated, SecretFinalizer)
+		if updated.Annotations == nil {
+			updated.Annotations = map[string]string{}
+		}
+		maps.Copy(updated.Annotations, map[string]string{
+			b2backupv1.AnnotationProtectedBy:        string(repo.UID),
+			b2backupv1.AnnotationReleasedBy:         string(repo.UID),
+			b2backupv1.AnnotationReleasedRepository: string(secret.Data[KeyResticRepository]),
+		})
 	} else {
 		controllerutil.RemoveFinalizer(updated, SecretFinalizer)
+		for _, key := range []string{
+			b2backupv1.AnnotationProtectedBy, b2backupv1.AnnotationReleasedBy, b2backupv1.AnnotationReleasedRepository,
+		} {
+			delete(updated.Annotations, key)
+		}
 	}
 	if equality.Semantic.DeepEqual(&secret, updated) {
 		return nil

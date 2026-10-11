@@ -76,6 +76,10 @@ one of these:
   takes the ownerReference off first. Under Retain, a Secret holding the only
   copy of the password (generated, or a seed that no longer matches) carries the
   `protect-password` finalizer, so a namespace deletion cannot take it.
+  A Repository never removes that finalizer when another Repository set it
+  (`protected-by`, `released-by` annotations), and never takes over a Secret
+  carrying it for another Repository or another `RESTIC_REPOSITORY`: it stops
+  at `SecretHoldsRetainedPassword` before recording anything in status.
 - **The operator only writes to Secrets it created**, identified by the
   `app.kubernetes.io/managed-by` label.
 - **The B2 credentials are resolved lazily**, so a Retain deletion works without them.
