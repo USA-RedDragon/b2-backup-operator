@@ -11,6 +11,7 @@ import (
 
 	"github.com/USA-RedDragon/b2-backup-operator/cmd/restoredb/postgres"
 	"github.com/USA-RedDragon/b2-backup-operator/cmd/restoredb/sqlite"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/dbtools/dumpdb"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/dbtools/testutil"
 	"github.com/spf13/cobra"
 )
@@ -47,22 +48,24 @@ func TestPostgresPicksRestoreToolFromDumpFormat(t *testing.T) {
 		},
 		{
 			name:  "plain sql uses psql",
-			stdin: plainDump,
+			stdin: plainDump + plainTrailer,
 			want:  "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + "\n",
 		},
 		{
-			name:  "input shorter than the magic is plain sql",
-			stdin: "PGD",
-			want:  "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + "\n",
+			name:    "input shorter than the magic is plain sql",
+			stdin:   "PGD",
+			want:    "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + "\n",
+			wantErr: dumpdb.ErrIncomplete,
 		},
 		{
-			name:  "lowercase magic is plain sql",
-			stdin: "pgdmp",
-			want:  "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + "\n",
+			name:    "lowercase magic is plain sql",
+			stdin:   "pgdmp",
+			want:    "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + "\n",
+			wantErr: dumpdb.ErrIncomplete,
 		},
 		{
 			name:  "psql passthrough after separator",
-			stdin: plainDump,
+			stdin: plainDump + plainTrailer,
 			extra: []string{"--", "--echo-errors"},
 			want:  "+ psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc --quiet" + conn + " --echo-errors\n",
 		},
@@ -78,16 +81,10 @@ func TestPostgresPicksRestoreToolFromDumpFormat(t *testing.T) {
 			testutil.ClearEnv(t)
 			args := append([]string{engineCNPG, argDryRun, "-H", "db", "-d", testDB, "-u", testDB}, tt.extra...)
 			got, err := testutil.RunGolden(t, withStdin(tt.stdin), args...)
-			if tt.wantErr != nil {
-				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("expected %v, got %v", tt.wantErr, err)
-				}
-				if got != "" {
-					t.Errorf("nothing should be traced, got %q", got)
-				}
-				return
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, err)
 			}
-			if err != nil {
+			if tt.wantErr == nil && err != nil {
 				t.Fatalf("execute: %v", err)
 			}
 			if got != tt.want {
@@ -335,5 +332,48 @@ func TestPsqlFailingOnItsOwnKeepsItsExitStatus(t *testing.T) {
 	exitErr, ok := errors.AsType[*exec.ExitError](err)
 	if !ok || exitErr.ExitCode() != 3 {
 		t.Errorf("err = %v, want psql's own exit status 3", err)
+	}
+}
+
+// eofReader records whether it was read to the end.
+type eofReader struct {
+	r    io.Reader
+	done bool
+}
+
+func (e *eofReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if errors.Is(err, io.EOF) {
+		e.done = true
+	}
+	return n, err
+}
+
+// A dry run reads all of its input, as restic dump writes it into a pipeline
+// under set -o pipefail, and reports a plain dump a real run would stop.
+func TestPostgresDryRunReadsItsInput(t *testing.T) {
+	big := strings.Repeat("SELECT 1;\n", 1<<14)
+	for _, tt := range []struct {
+		name, stdin string
+		want        error
+	}{
+		{"custom", customDump + strings.Repeat("x", 1<<18), nil},
+		{"plain", plainDump + big + plainTrailer, nil},
+		{"plain, cut", plainDump + big, dumpdb.ErrIncomplete},
+		{"plain, meta-command", plainDump + "\\connect other\n" + big + plainTrailer, postgres.ErrMetaCommand},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.ClearEnv(t)
+			in := &eofReader{r: strings.NewReader(tt.stdin)}
+			cmd := New()
+			cmd.SetIn(in)
+			_, err := testutil.RunGolden(t, cmd, engineCNPG, argDryRun, "-H", "db")
+			if !errors.Is(err, tt.want) || (tt.want == nil) != (err == nil) {
+				t.Errorf("err = %v, want %v", err, tt.want)
+			}
+			if !in.done {
+				t.Error("the dry run did not read its input to the end")
+			}
+		})
 	}
 }
