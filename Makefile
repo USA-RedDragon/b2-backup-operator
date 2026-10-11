@@ -58,6 +58,12 @@ test-crd: manifests generate setup-envtest ## Run CRD validation tests against a
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
 		go test -tags envtest ./internal/controller/ -run TestCRD -count=1
 
+MARIADB_IMAGE ?= mariadb:11
+
+.PHONY: test-mariadb
+test-mariadb: ## Run the restoredb mariadb tests against a throwaway MariaDB container. Needs Docker.
+	MARIADB_IMAGE=$(MARIADB_IMAGE) go test -tags mariadb ./cmd/restoredb/mariadb/ -count=1 -v
+
 KIND_CLUSTER ?= b2-backup-operator-test-e2e
 
 .PHONY: setup-test-e2e

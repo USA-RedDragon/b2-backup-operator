@@ -4,6 +4,7 @@ run:
   build-tags:
     - e2e
     - envtest
+    - mariadb
 linters:
   default: none
   enable:
