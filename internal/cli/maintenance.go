@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
@@ -140,6 +141,11 @@ writing into the same repository keeps its own retention.`,
 }
 
 func pruneArgs(sb *b2backupv1.ScheduledBackup, keep []string) ([]string, error) {
+	if cond := apimeta.FindStatusCondition(sb.Status.Conditions, b2backupv1.ScheduledBackupConditionReady); cond != nil &&
+		cond.Reason == "TagConflict" {
+		return nil, fmt.Errorf("scheduledbackup/%s is in a tag conflict, so its forget would reach another "+
+			"backup's snapshots: %s", sb.Name, cond.Message)
+	}
 	tags := backup.SourceTags(sb.Spec.Sources)
 	if len(tags) == 0 {
 		return nil, fmt.Errorf("scheduledbackup/%s runs a script and has no source tags to scope forget to; "+
