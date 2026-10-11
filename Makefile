@@ -188,7 +188,7 @@ ENVTEST_VERSION ?= $(call required,$(call gomodver,sigs.k8s.io/controller-runtim
 
 ENVTEST_K8S_VERSION ?= $(shell printf '%s' '$(call required,$(call gomodver,k8s.io/api),Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag))' | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
-GOLANGCI_LINT_VERSION ?= v2.13.2
+GOLANGCI_LINT_VERSION ?= v2.14.0
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
