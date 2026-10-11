@@ -153,6 +153,15 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "retention beside a script",
+			mutate: func(s *b2backupv1.ScheduledBackup) {
+				s.Spec.Sources = nil
+				s.Spec.Script = testScript
+				s.Spec.Retention = &b2backupv1.Retention{Daily: ptr.To(int32(7))}
+			},
+			wantErr: true,
+		},
+		{
 			name:    "both sources and a script",
 			mutate:  func(s *b2backupv1.ScheduledBackup) { s.Spec.Script = testScript },
 			wantErr: true,

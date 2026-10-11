@@ -31,6 +31,7 @@ const (
 	dbBackupName    = "restic-db"
 
 	kindScheduledBackup = "ScheduledBackup"
+	moreBackupName      = "restic-more"
 
 	hourlySchedule = "@hourly"
 	testScript     = "restic backup /data"
@@ -356,6 +357,7 @@ func TestTwoBackupsInOneNamespaceAreBothScheduled(t *testing.T) {
 	first.Name = filesBackupName
 	second := scheduledBackup()
 	second.Name = dbBackupName
+	second.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: "db-second"}}
 
 	r, c := backupHarness(t, initializedRepo(), first, second)
 
@@ -504,5 +506,48 @@ func TestAnUnownedCronJobIsNeverTakenOver(t *testing.T) {
 	if cond := apimeta.FindStatusCondition(sb.Status.Conditions, b2backupv1.ScheduledBackupConditionReady); cond == nil ||
 		cond.Status != metav1.ConditionFalse || cond.Reason != "CronJobNotManaged" {
 		t.Errorf("Ready = %+v, want False CronJobNotManaged", cond)
+	}
+}
+
+func TestTwoBackupsIntoOneRepositoryNeedTagsOfTheirOwn(t *testing.T) {
+	t.Parallel()
+	older := scheduledBackup()
+	older.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	newer := scheduledBackup()
+	newer.Name = moreBackupName
+	newer.CreationTimestamp = metav1.NewTime(time.Now())
+	r, c := backupHarness(t, initializedRepo(), older, newer)
+	for _, name := range []string{resticName, moreBackupName} {
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var got b2backupv1.ScheduledBackup
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: moreBackupName}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, b2backupv1.ScheduledBackupConditionReady); cond == nil ||
+		cond.Reason != "TagConflict" || !strings.Contains(cond.Message, `"db"`) {
+		t.Errorf("Ready = %+v, want TagConflict naming tag db", cond)
+	}
+	var cj batchv1.CronJob
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: moreBackupName + "-backup"}, &cj); !apierrors.IsNotFound(err) {
+		t.Errorf("the newer backup got a CronJob that would expire the older one's snapshots: %v", err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+		t.Errorf("the older backup lost its CronJob: %v", err)
+	}
+
+	newer = &got
+	newer.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: "db-reporting"}}
+	if err := c.Update(context.Background(), newer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: moreBackupName}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: moreBackupName + "-backup"}, &cj); err != nil {
+		t.Errorf("a backup with tags of its own got no CronJob: %v", err)
 	}
 }

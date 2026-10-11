@@ -136,10 +136,26 @@ func under(p, dir string) bool {
 	return p == dir || dir == "/" || strings.HasPrefix(p, dir+"/")
 }
 
-// ValidateMounts checks that no two mounts share a path, that none is a path the
-// operator mounts itself, and that every files source path lies on a volume or
-// the scratch space.
-func ValidateMounts(sb *b2backupv1.ScheduledBackup) error {
+// Validate checks what the CRD cannot: that no two sources share a tag, that no
+// two mounts share a path, that none is a path the operator mounts itself, and
+// that every files source path lies on a volume or the scratch space.
+//
+// Two sources under one tag would fall into one forget group, since the image
+// groups by tags, and the retention policy would keep one snapshot per period
+// across both, expiring the other source's.
+func Validate(sb *b2backupv1.ScheduledBackup) error {
+	if sb.Spec.Script != "" && sb.Spec.Retention != nil {
+		return fmt.Errorf("spec.retention is not applied to spec.script; forget in the script itself, with --tag")
+	}
+	tags := map[string]int{}
+	for i, src := range sb.Spec.Sources {
+		if j, taken := tags[src.EffectiveTag()]; taken {
+			return fmt.Errorf("sources %d and %d are both tagged %q; give each source a tag of its own, "+
+				"or forget would expire one source's snapshots to keep the other's", j, i, src.EffectiveTag())
+		}
+		tags[src.EffectiveTag()] = i
+	}
+
 	seen := map[string]string{
 		cacheMountPath:               "the restic cache",
 		b2backupv1.DBSecretMountPath: "the database Secret",
@@ -298,7 +314,7 @@ func BuildJobTemplate(
 	repo *b2backupv1.Repository,
 	cfg Config,
 ) (batchv1.JobTemplateSpec, error) {
-	if err := ValidateMounts(sb); err != nil {
+	if err := Validate(sb); err != nil {
 		return batchv1.JobTemplateSpec{}, err
 	}
 	script, err := Render(sb)
