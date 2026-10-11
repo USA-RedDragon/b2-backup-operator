@@ -1257,3 +1257,13 @@ func TestMigrateRefusesANumberAppTemplateWouldRewrite(t *testing.T) {
 		t.Errorf("err = %v, want 1000000 refused, since app-template renders it as 1e+06\n%s", err, out)
 	}
 }
+
+func TestMigrateRefusesAReleaseWhoseRepositoryLivesInAnotherSecret(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, envsSecretLine, "                  name: obsidibot-envs\n", 1)
+	out, err := migrate(t, body)
+	if !errors.Is(err, ErrUnsupportedValues) {
+		t.Errorf("err = %v; every Repository migrate writes is named restic and reads restic-envs, so a release "+
+			"reading its repository from another Secret would collapse into another release's Repository\n%s", err, out)
+	}
+}
