@@ -186,7 +186,7 @@ func writeFile(root *os.Root, path string, mode os.FileMode, r io.Reader) error 
 func restoreToNewPVC(
 	ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup, o *restoreOptions,
 ) error {
-	if sb.Spec.Volume == nil {
+	if len(sb.Spec.Volumes) == 0 {
 		return fmt.Errorf("%w: scheduledbackup/%s has no spec.volume", ErrNoSourceVolume, sb.Name)
 	}
 
@@ -245,7 +245,7 @@ func newClaimSpec(
 	}
 
 	var source corev1.PersistentVolumeClaim
-	key := types.NamespacedName{Namespace: sb.Namespace, Name: sb.Spec.Volume.ExistingClaim}
+	key := types.NamespacedName{Namespace: sb.Namespace, Name: sb.Spec.Volumes[0].ExistingClaim}
 	switch err := c.Get(ctx, key, &source); {
 	case err == nil:
 		if len(source.Spec.AccessModes) > 0 {
@@ -255,7 +255,7 @@ func newClaimSpec(
 	case override == "":
 		return spec, fmt.Errorf(
 			"reading pvc/%s to size the new claim: %w; pass --size to set it directly",
-			sb.Spec.Volume.ExistingClaim, err)
+			sb.Spec.Volumes[0].ExistingClaim, err)
 	}
 
 	size, err := claimSize(&source, override)
@@ -282,11 +282,11 @@ func claimSize(source *corev1.PersistentVolumeClaim, override string) (resource.
 func restoreInPlace(
 	ctx context.Context, f *Factory, c client.Client, sb *b2backupv1.ScheduledBackup, o *restoreOptions,
 ) error {
-	if sb.Spec.Volume == nil {
+	if len(sb.Spec.Volumes) == 0 {
 		return fmt.Errorf("%w: scheduledbackup/%s has no spec.volume", ErrNoSourceVolume, sb.Name)
 	}
 
-	claim := sb.Spec.Volume.ExistingClaim
+	claim := sb.Spec.Volumes[0].ExistingClaim
 	if err := confirm(f, o.yes || o.dryRun, fmt.Sprintf("pvc/%s in namespace %s", claim, sb.Namespace), sb.Name); err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ func restoreInPlace(
 	return run.Run(ctx, sb, runner.Options{
 		Purpose:   purposeRestore,
 		MountData: true,
-		Command:   resticCommand(o.resticRestoreArgs(sb.Spec.Volume.EffectiveMountPath())...),
+		Command:   resticCommand(o.resticRestoreArgs(sb.Spec.Volumes[0].EffectiveMountPath())...),
 	}, f.Streams.Out, defaultResticTimeout)
 }
 

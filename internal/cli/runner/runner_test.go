@@ -152,7 +152,7 @@ func TestBuildUsesScratchCacheByDefault(t *testing.T) {
 
 func TestBuildDataVolumeAndAffinity(t *testing.T) {
 	withVolume := func(sb *b2backupv1.ScheduledBackup) {
-		sb.Spec.Volume = &b2backupv1.VolumeSpec{ExistingClaim: "app-data", ReadOnly: true}
+		sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "app-data", ReadOnly: true}}
 		sb.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles}}
 	}
 	r, sb := fixture(t, withVolume)
@@ -162,7 +162,7 @@ func TestBuildDataVolumeAndAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if hasVolume(bare, dataVolume) {
+	if hasVolume(bare, backup.DataVolumeName(0)) {
 		t.Error("the data volume should be dropped unless requested")
 	}
 	if aff := bare.Spec.Template.Spec.Affinity; aff != nil && aff.PodAffinity != nil {
@@ -173,7 +173,7 @@ func TestBuildDataVolumeAndAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	data := volumeOf(restore, dataVolume)
+	data := volumeOf(restore, backup.DataVolumeName(0))
 	if data == nil || data.PersistentVolumeClaim == nil {
 		t.Fatal("--mount-data should attach the source claim")
 	}
@@ -181,7 +181,7 @@ func TestBuildDataVolumeAndAffinity(t *testing.T) {
 		t.Error("the source claim must be writable for a restore")
 	}
 	for _, m := range containerOf(t, restore).VolumeMounts {
-		if m.Name == dataVolume && m.ReadOnly {
+		if m.Name == backup.DataVolumeName(0) && m.ReadOnly {
 			t.Error("the data mount must be writable for a restore")
 		}
 	}

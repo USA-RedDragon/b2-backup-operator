@@ -129,7 +129,7 @@ func TestCommandRunsTheScriptUnderSh(t *testing.T) {
 	if len(c.Command) != 3 || c.Command[0] != "sh" || c.Command[1] != "-c" {
 		t.Fatalf("command = %v, want sh -c <script>", c.Command)
 	}
-	script, err := Render(&testBackup(nil).Spec)
+	script, err := Render(testBackup(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestCNPGSetsNoDBEnv(t *testing.T) {
 func TestVolumeAffinityWinsOverDatabase(t *testing.T) {
 	sb := testBackup(func(s *b2backupv1.ScheduledBackup) {
 		s.Spec.Database = &b2backupv1.DatabaseSpec{Engine: b2backupv1.DatabaseEngineCNPG}
-		s.Spec.Volume = &b2backupv1.VolumeSpec{ExistingClaim: "myapp-prod-storage"}
+		s.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "myapp-prod-storage"}}
 	})
 	cj, err := BuildCronJob(sb, testRepo(), testConfig())
 	if err != nil {

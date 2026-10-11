@@ -12,7 +12,7 @@ spec:
       tag: db
     - type: files
       tag: files
-      path: app
+      paths: [app]
       exclude:
         - "**/temp*"
         - app/export-logs
@@ -25,9 +25,9 @@ spec:
     engine: cnpg
     secretName: postgresql-app
     cnpgCluster: postgresql
-  volume:
-    existingClaim: myapp-prod-storage
-    mountPath: /data
+  volumes:
+    - existingClaim: myapp-prod-storage
+      mountPath: /data
   cache:
     storageClass: longhorn
 ---
@@ -59,8 +59,8 @@ spec:
     host: mariadb
     name: appdb
     user: appdb
-  volume:
-    existingClaim: otherapp-prod-data
+  volumes:
+    - existingClaim: otherapp-prod-data
   cache:
     storageClass: longhorn
 ---
@@ -81,9 +81,52 @@ spec:
   database:
     engine: cnpg
     secretName: postgresql-app
-  volume:
-    existingClaim: myapp-prod-storage
-    mountPath: /data
-    readOnly: true
+  volumes:
+    - existingClaim: myapp-prod-storage
+      mountPath: /data
+      readOnly: true
   cache:
     storageClass: longhorn
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: media
+  namespace: otherapp-prod
+spec:
+  repositoryRef:
+    name: restic
+  schedule: "@daily"
+  sources:
+    - type: files
+      paths: [/data, /blobs]
+  retention:
+    daily: 90
+    weekly: 24
+  volumes:
+    - existingClaim: media-config
+      mountPath: /data
+    - existingClaim: media-blobs
+      mountPath: /blobs
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: weather
+  namespace: myapp-prod
+spec:
+  repositoryRef:
+    name: restic
+  schedule: "@daily"
+  workingDir: /backup
+  script: |
+    sqlite3 -readonly -bail /data/wx.db ".backup /backup/wx.db"
+    restic backup --tag=sqlite /backup/wx.db
+    restic forget --prune --tag=sqlite --keep-daily=90
+  volumes:
+    - existingClaim: weather
+      mountPath: /data
+      readOnly: true
+  scratch:
+    mountPath: /backup
+    sizeLimit: 2Gi

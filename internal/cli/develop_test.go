@@ -19,6 +19,8 @@ func writeHelmRelease(t *testing.T, schedule string) string {
 	path := filepath.Join(t.TempDir(), "helmrelease.yaml")
 	body := `apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
+metadata:
+  namespace: prod
 spec:
   values:
     controllers:
@@ -28,6 +30,11 @@ spec:
           timeZone: America/Chicago
         containers:
           restic:
+            env:
+              TZ: America/Chicago
+              RESTIC_HOST:
+                fieldRef:
+                  fieldPath: metadata.namespace
             command:
               - sh
               - -c
@@ -68,7 +75,10 @@ spec:
 func parity(t *testing.T, generated, original string) (string, error) {
 	t.Helper()
 	var buf bytes.Buffer
-	err := runParity(&buf, writeGenerated(t, generated), writeHelmRelease(t, original))
+	err := runParity(&buf, writeGenerated(t, generated), writeHelmRelease(t, original), migrateOptions{})
+	if err != nil {
+		t.Log(buf.String())
+	}
 	return buf.String(), err
 }
 
@@ -77,7 +87,7 @@ func TestParityAcceptsAReJitteredSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a re-jittered schedule should pass: %v\n%s", err, out)
 	}
-	for _, want := range []string{"RESCHEDULED", "EQUIVALENT"} {
+	for _, want := range []string{"RESCHEDULED", verdictEquivalent} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in output:\n%s", want, out)
 		}
@@ -125,9 +135,11 @@ spec:
   repositoryRef:
     name: store
   schedule: "@daily"
+  volumes:
+    - existingClaim: data
   sources:
     - type: files
-      path: /data
+      paths: [/data]
 `
 
 func TestRenderCronJobUsesTheOperatorsDefaults(t *testing.T) {
@@ -258,9 +270,11 @@ spec:
   repositoryRef:
     name: store
   schedule: "@daily"
+  volumes:
+    - existingClaim: data
   sources:
     - type: files
-      path: /data
+      paths: [/data]
 `
 	sb, err := readScheduledBackup(writeManifest(t, body))
 	if err != nil {
@@ -285,9 +299,11 @@ spec:
     echo kind: ScheduledBackup
     echo ---
     restic backup /data
+  volumes:
+    - existingClaim: data
   sources:
     - type: files
-      path: /data
+      paths: [/data]
 `
 	sb, err := readScheduledBackup(writeManifest(t, body))
 	if err != nil {
@@ -364,5 +380,148 @@ func TestNormalizeScriptMatchesTheTwoCNPGDumpers(t *testing.T) {
 	other, _ := normalizeScript("restic backup --tag=db --stdin-from-command -- backup-cnpg.sh --dbname=other")
 	if other == a {
 		t.Error("a different database normalized away")
+	}
+}
+
+func TestDescribeScheduleNamesTheTimeOfDay(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ expr, want string }{
+		{"44 0 * * *", `"44 0 * * *" (daily at 00:44 America/Chicago)`},
+		{"7 15 * * *", `"7 15 * * *" (daily at 15:07 America/Chicago)`},
+		{"36 * * * *", `"36 * * * *" (hourly at :36)`},
+		{"0 */6 * * *", `"0 */6 * * *"`},
+	}
+	for _, tt := range tests {
+		if got := describeSchedule(tt.expr, defaultTimeZone); got != tt.want {
+			t.Errorf("describeSchedule(%q) = %s, want %s", tt.expr, got, tt.want)
+		}
+	}
+}
+
+const parityRelease = `apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: restic
+  namespace: app
+spec:
+  values:
+    controllers:
+      restic:
+        cronjob:
+          schedule: 44 0 * * *
+          timeZone: America/Chicago
+        containers:
+          restic:
+            workingDir: /data
+            env:
+              TZ: America/Chicago
+              RESTIC_HOST:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            command:
+              - sh
+              - -c
+              - |
+                exec > >(ts '%H:%M:%S') 2>&1
+                set -eu
+                restic backup --tag=files /data
+                restic forget --prune --keep-daily=7
+                restic cache --cleanup
+    persistence:
+      data:
+        existingClaim: app-data
+`
+
+const parityGenerated = `apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: app
+spec:
+  mode: Prefix
+  bucket: acme-backups
+  path: restic/app
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: restic
+  namespace: app
+spec:
+  repositoryRef: {name: restic}
+  schedule: "@daily"
+  timeZone: America/Chicago
+  volumes:
+    - existingClaim: app-data
+      mountPath: /data
+  sources:
+    - type: files
+      paths: [/data]
+  retention: {daily: 7}
+`
+
+func TestParityComparesEverythingThatDecidesWhereABackupGoes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		generated func(string) string
+		opts      migrateOptions
+		want      string
+	}{
+		{"nothing but the time moved", func(s string) string { return s }, migrateOptions{repository: sopsRepoURL},
+			verdictEquivalent},
+		{"the working directory", func(s string) string {
+			return strings.Replace(s, "  volumes:", "  workingDir: /\n  volumes:", 1)
+		}, migrateOptions{}, "WORKING DIR DIFFERS"},
+		{"the snapshot host", func(s string) string {
+			return strings.Replace(s, "  volumes:", "  resticHost: elsewhere\n  volumes:", 1)
+		}, migrateOptions{}, "RESTIC HOST DIFFERS"},
+		{"an extra variable", func(s string) string {
+			return strings.Replace(s, "  volumes:", "  env: {RESTIC_GROUP_BY: host}\n  volumes:", 1)
+		}, migrateOptions{}, "ENV DIFFERS"},
+		{"the repository path", func(s string) string {
+			return strings.Replace(s, "path: restic/app", "path: restic/other", 1)
+		}, migrateOptions{repository: sopsRepoURL}, "REPOSITORY DIFFERS"},
+		{"a second claim", func(s string) string {
+			return strings.Replace(s, "      mountPath: /data\n", "      mountPath: /data\n    - existingClaim: more\n", 1)
+		}, migrateOptions{}, volumeDiffers},
+		{"a read-only mount", func(s string) string {
+			return strings.Replace(s, "      mountPath: /data\n", "      mountPath: /data\n      readOnly: true\n", 1)
+		}, migrateOptions{}, volumeDiffers},
+		{"scratch space", func(s string) string {
+			return strings.Replace(s, "  volumes:", "  scratch: {mountPath: /backup}\n  volumes:", 1)
+		}, migrateOptions{}, volumeDiffers},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			hr := filepath.Join(dir, "helmrelease.yaml")
+			gen := filepath.Join(dir, "generated.yaml")
+			if err := os.WriteFile(hr, []byte(parityRelease), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(gen, []byte(tt.generated(strings.ReplaceAll(parityGenerated,
+				"acme-backups", testBucket))), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			err := runParity(&out, gen, hr, tt.opts)
+			if !strings.Contains(out.String(), tt.want) {
+				t.Errorf("want %s in:\n%s", tt.want, out.String())
+			}
+			if tt.want == verdictEquivalent {
+				if err != nil {
+					t.Errorf("parity = %v", err)
+				}
+				for _, note := range []string{"daily at 00:44 America/Chicago"} {
+					if !strings.Contains(out.String(), note) {
+						t.Errorf("want %q noted in:\n%s", note, out.String())
+					}
+				}
+			} else if !errors.Is(err, ErrParityDiffers) {
+				t.Errorf("parity = %v, want ErrParityDiffers", err)
+			}
+		})
 	}
 }

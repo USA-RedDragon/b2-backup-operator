@@ -14,7 +14,8 @@ const (
 )
 
 // Render builds the shell script the backup container runs.
-func Render(spec *b2backupv1.ScheduledBackupSpec) (string, error) {
+func Render(sb *b2backupv1.ScheduledBackup) (string, error) {
+	spec := &sb.Spec
 	var b strings.Builder
 	b.WriteString(preamble)
 	b.WriteString("\n")
@@ -28,7 +29,7 @@ func Render(spec *b2backupv1.ScheduledBackupSpec) (string, error) {
 	}
 
 	for _, src := range spec.Sources {
-		line, err := renderSource(src, retryLockFlag(spec))
+		line, err := renderSource(src, sb.EffectiveWorkingDir(), retryLockFlag(spec))
 		if err != nil {
 			return "", err
 		}
@@ -53,14 +54,17 @@ func retryLockFlag(spec *b2backupv1.ScheduledBackupSpec) string {
 	return " --retry-lock=" + spec.RetryLock.Duration.String()
 }
 
-func renderSource(src b2backupv1.BackupSource, retryLock string) (string, error) {
+func renderSource(src b2backupv1.BackupSource, workingDir, retryLock string) (string, error) {
 	tag := src.EffectiveTag()
 
 	switch src.Type {
 	case b2backupv1.SourceTypeFiles:
-
-		line := fmt.Sprintf("restic backup%s --tag=%s %s",
-			retryLock, tag, shellQuoteIfNeeded(src.EffectivePath()))
+		paths := src.ResolvedPaths(workingDir)
+		quoted := make([]string, 0, len(paths))
+		for _, p := range paths {
+			quoted = append(quoted, shellQuoteIfNeeded(p))
+		}
+		line := fmt.Sprintf("restic backup%s --tag=%s %s", retryLock, tag, strings.Join(quoted, " "))
 		if len(src.Exclude) == 0 {
 			return line, nil
 		}

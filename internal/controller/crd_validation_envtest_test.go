@@ -137,7 +137,7 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 			name: "files source with a volume",
 			mutate: func(s *b2backupv1.ScheduledBackup) {
 				s.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles}}
-				s.Spec.Volume = &b2backupv1.VolumeSpec{ExistingClaim: existingClaimName}
+				s.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: existingClaimName}}
 			},
 		},
 		{
@@ -199,7 +199,7 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 				s.Spec.Sources = []b2backupv1.BackupSource{
 					{Type: b2backupv1.SourceTypeFiles, Database: "nope"},
 				}
-				s.Spec.Volume = &b2backupv1.VolumeSpec{ExistingClaim: existingClaimName}
+				s.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: existingClaimName}}
 			},
 			wantErr: true,
 		},
@@ -207,7 +207,7 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 			name: "a path on a database source",
 			mutate: func(s *b2backupv1.ScheduledBackup) {
 				s.Spec.Sources = []b2backupv1.BackupSource{
-					{Type: b2backupv1.SourceTypeCNPG, Path: "/srv/app"},
+					{Type: b2backupv1.SourceTypeCNPG, Paths: []string{"/srv/app"}},
 				}
 			},
 			wantErr: true,
@@ -218,22 +218,64 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 				s.Spec.Sources = []b2backupv1.BackupSource{
 					{Type: b2backupv1.SourceTypeFiles, ExtraArgs: []string{"--single-transaction"}},
 				}
-				s.Spec.Volume = &b2backupv1.VolumeSpec{ExistingClaim: existingClaimName}
+				s.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: existingClaimName}}
 			},
 			wantErr: true,
 		},
 		{
 			name: "volume mounted anywhere but the cache",
 			mutate: func(s *b2backupv1.ScheduledBackup) {
-				s.Spec.Volume = &b2backupv1.VolumeSpec{
+				s.Spec.Volumes = []b2backupv1.VolumeSpec{{
 					ExistingClaim: existingClaimName, MountPath: "/srv/data",
-				}
+				}}
 			},
 		},
 		{
 			name: "volume mounted over the cache",
 			mutate: func(s *b2backupv1.ScheduledBackup) {
-				s.Spec.Volume = &b2backupv1.VolumeSpec{ExistingClaim: existingClaimName, MountPath: "/cache"}
+				s.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: existingClaimName, MountPath: "/cache"}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "two volumes on their own paths",
+			mutate: func(s *b2backupv1.ScheduledBackup) {
+				s.Spec.Volumes = []b2backupv1.VolumeSpec{
+					{ExistingClaim: existingClaimName, MountPath: "/data"}, {ExistingClaim: "blobs"},
+				}
+			},
+		},
+		{
+			name: "a relative mount path",
+			mutate: func(s *b2backupv1.ScheduledBackup) {
+				s.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: existingClaimName, MountPath: relativeDir}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "files source on scratch space alone",
+			mutate: func(s *b2backupv1.ScheduledBackup) {
+				s.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles, Paths: []string{"/backup/x"}}}
+				s.Spec.Scratch = &b2backupv1.ScratchSpec{MountPath: "/backup"}
+			},
+		},
+		{
+			name: "scratch space over the cache",
+			mutate: func(s *b2backupv1.ScheduledBackup) {
+				s.Spec.Scratch = &b2backupv1.ScratchSpec{MountPath: "/cache"}
+			},
+			wantErr: true,
+		},
+		{
+			name:    "a relative working directory",
+			mutate:  func(s *b2backupv1.ScheduledBackup) { s.Spec.WorkingDir = relativeDir },
+			wantErr: true,
+		},
+		{
+			name: "an empty path in a files source",
+			mutate: func(s *b2backupv1.ScheduledBackup) {
+				s.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles, Paths: []string{""}}}
+				s.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: existingClaimName}}
 			},
 			wantErr: true,
 		},
@@ -438,7 +480,7 @@ func validRepository(name, namespace string) *b2backupv1.Repository {
 		Spec: b2backupv1.RepositorySpec{
 			Mode:   b2backupv1.StorageModePrefix,
 			Bucket: "acme-shared",
-			Path:   "restic/" + name,
+			Path:   resticPrefix + name,
 		},
 	}
 }
@@ -525,7 +567,7 @@ func TestCRDRepositoryLocationIsImmutable(t *testing.T) {
 		wantErr string
 	}{
 		{name: fieldMode, update: func(r *b2backupv1.Repository) { r.Spec.Mode = b2backupv1.StorageModeBucket }, wantErr: "mode cannot be changed"},
-		{name: fieldBucket, update: func(r *b2backupv1.Repository) { r.Spec.Bucket = "acme-other" }, wantErr: "bucket cannot be changed"},
+		{name: fieldBucket, update: func(r *b2backupv1.Repository) { r.Spec.Bucket = otherBucket }, wantErr: "bucket cannot be changed"},
 		{name: "changing the path", update: func(r *b2backupv1.Repository) { r.Spec.Path = "restic/moved" }, wantErr: pathImmutable},
 		{name: "removing the path", update: func(r *b2backupv1.Repository) { r.Spec.Path = "" }, wantErr: pathImmutable},
 		{

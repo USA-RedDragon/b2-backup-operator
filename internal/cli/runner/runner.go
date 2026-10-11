@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -34,7 +36,6 @@ const (
 	labelManagedBy = "app.kubernetes.io/managed-by"
 	containerName  = "restic"
 	cacheVolume    = "cache"
-	dataVolume     = "data"
 	dbVolume       = "db-credentials"
 
 	ttlSeconds int32 = 600
@@ -208,26 +209,31 @@ func useEphemeralCache(pod *corev1.PodSpec) {
 
 func mountDataWritable(pod *corev1.PodSpec, container *corev1.Container) {
 	for i := range pod.Volumes {
-		if pod.Volumes[i].Name == dataVolume && pod.Volumes[i].PersistentVolumeClaim != nil {
+		if isDataVolume(pod.Volumes[i].Name) && pod.Volumes[i].PersistentVolumeClaim != nil {
 			pod.Volumes[i].PersistentVolumeClaim.ReadOnly = false
 		}
 	}
 	for i := range container.VolumeMounts {
-		if container.VolumeMounts[i].Name == dataVolume {
+		if isDataVolume(container.VolumeMounts[i].Name) {
 			container.VolumeMounts[i].ReadOnly = false
 		}
 	}
 }
 
 func dropData(pod *corev1.PodSpec, container *corev1.Container) {
-	pod.Volumes = filterVolumes(pod.Volumes, dataVolume)
-	container.VolumeMounts = filterMounts(container.VolumeMounts, dataVolume)
+	pod.Volumes = slices.DeleteFunc(pod.Volumes, func(v corev1.Volume) bool { return isDataVolume(v.Name) })
+	container.VolumeMounts = slices.DeleteFunc(container.VolumeMounts,
+		func(m corev1.VolumeMount) bool { return isDataVolume(m.Name) })
 	if pod.Affinity != nil && pod.Affinity.PodAffinity != nil {
 		pod.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = nil
 		if pod.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution == nil {
 			pod.Affinity.PodAffinity = nil
 		}
 	}
+}
+
+func isDataVolume(name string) bool {
+	return strings.HasPrefix(name, backup.DataVolumePrefix)
 }
 
 func filterVolumes(in []corev1.Volume, name string) []corev1.Volume {
