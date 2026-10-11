@@ -342,7 +342,10 @@ func checkCronJob(ctx context.Context, c client.Client, sb *b2backupv1.Scheduled
 
 	r.add(levelOK, fmt.Sprintf("CronJob %q is owned by this ScheduledBackup", name))
 
-	hold := backup.RestoreHold(sb)
+	hold, err := currentRestoreHold(ctx, c, sb)
+	if err != nil {
+		r.add(levelWarn, "could not read the restore holds", err.Error())
+	}
 	if hold != "" {
 		r.add(levelWarn, "backups are held for a restore", hold)
 	}

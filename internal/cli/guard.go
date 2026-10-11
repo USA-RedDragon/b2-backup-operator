@@ -140,3 +140,17 @@ func requireRepositoryOwnsItsSecret(ctx context.Context, f *Factory, sb *b2backu
 	}
 	return nil
 }
+
+// currentRestoreHold says why a restore holds the backup, through its own annotations
+// or those of another ScheduledBackup sharing its claims or database, as the
+// operator reads them.
+func currentRestoreHold(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup) (string, error) {
+	if hold := backup.RestoreHold(sb); hold != "" {
+		return hold, nil
+	}
+	var backups b2backupv1.ScheduledBackupList
+	if err := c.List(ctx, &backups, client.InNamespace(sb.Namespace)); err != nil {
+		return "", err
+	}
+	return backup.SharedRestoreHold(sb, backups.Items), nil
+}
