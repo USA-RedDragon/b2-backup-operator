@@ -1,19 +1,23 @@
 # b2-backup-operator - AI Agent Guide
 
-A Kubernetes operator that creates and adopts BorgBase restic repositories and
-renders the CronJobs that back up into them. Read the README first: it explains
-what the two resources are for and why the defaults are what they are.
+A Kubernetes operator that provisions or adopts restic repositories and renders
+the CronJobs that back up into them. The storage client in `internal/borgbase`
+is the one this code was ported with; Backblaze B2 replaces it. Read the README
+first: it explains what the two resources are for and why the defaults are what
+they are.
 
 ## Layout
 
 ```
 cmd/main.go                    Manager entry and operator-level flags
 cmd/kubectl-b2bk/              b2bk CLI entry, also the kubectl plugin
+cmd/restoredb/                 restoredb, added to the backup image
 api/v1/*_types.go              CRD schemas (+kubebuilder markers)
 api/v1/zz_generated.*          Auto-generated (DO NOT EDIT)
 internal/controller/           Reconciliation for both kinds
 internal/backup/               Rendering: CronJob, schedule, backup script
-internal/borgbase/             GraphQL client for the BorgBase API
+internal/borgbase/             Storage API client, to be replaced by B2
+internal/dbtools/              Shared code for restoredb
 internal/secrets/              Restic password generation
 internal/cli/                  b2bk commands, including migrate and parity
 internal/cli/runner/           Ephemeral Jobs for one-off restic commands
@@ -21,6 +25,8 @@ config/crd/bases/              Generated CRDs (DO NOT EDIT)
 config/rbac/role.yaml          Generated RBAC (DO NOT EDIT)
 config/rbac/b2bk_user_role.yaml Roles for people running the CLI
 config/samples/                Example CRs, checked by make test-crd
+Dockerfile                     Manager image
+Dockerfile.restic              Backup image: ghcr.io/gabe565/restic plus restoredb
 PROJECT                        Kubebuilder metadata (DO NOT EDIT)
 ```
 
@@ -78,6 +84,9 @@ make test-crd    # CRD validation against a real API server (envtest)
 make test-e2e    # full deploy against a throwaway Kind cluster
 make lint        # golangci-lint with the logcheck plugin
 ```
+
+golangci-lint v2.13.2 cannot read the export data of Go 1.27.2. Run
+`GOTOOLCHAIN=go1.27.1 make lint` when the local Go is newer than go.mod.
 
 Tests are standard `testing`, not Ginkgo, except the e2e suite: it is Ginkgo, and
 its `test/e2e/e2e_suite_test.go` is the only `suite_test.go` in the tree. Both it
