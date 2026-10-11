@@ -226,6 +226,10 @@ func (in *RepositoryStatus) DeepCopyInto(out *RepositoryStatus) {
 		in, out := &in.UsageTime, &out.UsageTime
 		*out = (*in).DeepCopy()
 	}
+	if in.KeyRotationTime != nil {
+		in, out := &in.KeyRotationTime, &out.KeyRotationTime
+		*out = (*in).DeepCopy()
+	}
 	if in.LastReinitTime != nil {
 		in, out := &in.LastReinitTime, &out.LastReinitTime
 		*out = (*in).DeepCopy()

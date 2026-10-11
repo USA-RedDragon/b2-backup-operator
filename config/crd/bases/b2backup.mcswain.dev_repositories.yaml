@@ -282,6 +282,13 @@ spec:
               initialized:
                 description: Initialized reports whether restic init has completed.
                 type: boolean
+              keyRotationTime:
+                description: |-
+                  KeyRotationTime is when the application key in the credentials Secret was
+                  last replaced. Superseded keys are deleted once no Job that started before
+                  it is still running, or 24 hours after it at the latest.
+                format: date-time
+                type: string
               lastReinitTime:
                 description: LastReinitTime is the reinit-at annotation the operator
                   has already acted on.
