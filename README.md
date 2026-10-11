@@ -135,7 +135,7 @@ kubectl -n myapp-prod patch secret restic-credentials --type=json \
   -p '[{"op":"remove","path":"/metadata/finalizers"}]'
 ```
 
-A seeded password is taken to be kept off-cluster, which is what seeding is for, so the finalizer is not added, and it is dropped once the seed holds the password again. A namespace deletion removes the seed Secret too; the copy that counts is the one in Git or SOPS. Under `Delete` the Secret is owned by the Repository and has no finalizer.
+A seeded password is taken to be kept off-cluster, which is what seeding is for, so the finalizer is not added, and it is dropped once the seed holds the password again. A seed Secret that does not exist, perhaps not applied yet, confirms nothing, and the finalizer stays. A namespace deletion removes the seed Secret too; at that point the operator goes by what it last saw, and the copy that counts is the one in Git or SOPS. Under `Delete` the Secret is owned by the Repository and has no finalizer.
 
 restic always talks to B2 through the S3-compatible API and never through its native `b2:` backend. restic 0.19.1 pins kurin/blazer v0.7.2, whose upload path retries a B2 upload URL that refuses connections forever, which has hung backups for hours while they held their locks. The region has to be set: without it the S3 client asks B2 for the bucket location first, and on a denied answer it signs for `us-east-1`.
 
@@ -193,7 +193,7 @@ The finalizer is released only once all of that is done. Annotate the Repository
 
 #### Conflicts
 
-Two Repositories whose paths in the same bucket are equal or nested, or one of which covers the whole bucket, would write into one repository. One of them goes `Ready=False` with reason `RepositoryConflict` and makes no B2 calls at all until the conflict is resolved: the one that has not yet recorded the location in status, or, when both or neither have, the newer one. A path that a Repository under `deletionPolicy: Delete` is deleting blocks every other Repository from it until the deletion finishes.
+Two Repositories whose paths in the same bucket are equal or nested, or one of which covers the whole bucket, would write into one repository. Two Repositories in one namespace naming the same credentials Secret would overwrite each other's `RESTIC_REPOSITORY` and take each other's password, so they conflict too. One of them goes `Ready=False` with reason `RepositoryConflict` and makes no B2 calls at all until the conflict is resolved: the one that has not yet recorded the location in status, or, when both or neither have, the newer one. A path that a Repository under `deletionPolicy: Delete` is deleting blocks every other Repository from it until the deletion finishes.
 
 `kubectl explain repository.spec` lists every field.
 
@@ -223,11 +223,15 @@ A files source backs up `paths` in one snapshot, each absolute or relative to th
 
 After the sources, the operator runs `restic forget --prune` with `spec.retention`, scoped with `--host="$RESTIC_HOST"` and one `--tag` per source tag. restic ORs repeated `--tag` flags, and the image groups by tags, so this backup's retention applies to its own snapshots only, and two ScheduledBackups writing into one repository with different retention do not expire each other's snapshots.
 
-`spec.script` replaces the generated body wholesale for anything the source types do not cover; it still gets the standard preamble, logging and cache cleanup. It forgets nothing on its own unless it says so, and should scope its own `forget` with `--tag`.
+Each source needs a tag of its own: the image groups `forget` by tags, so two sources under one tag would share one retention group, and the policy would keep one snapshot per period across both and expire the other source's. A ScheduledBackup whose sources share a tag is refused, and a second ScheduledBackup writing into the same Repository under a tag an older one already uses goes `Ready=False` with reason `TagConflict` and gets no CronJob.
+
+`spec.script` replaces the generated body wholesale for anything the source types do not cover; it still gets the standard preamble, logging and cache cleanup. `spec.retention` is refused beside it: the script forgets on its own, and should scope its `forget` with `--tag`.
+
+The body runs as `set -o pipefail; { set -euo pipefail; ...; restic cache --cleanup; } 2>&1 | ts`, so every line is timestamped, a failure anywhere fails the run with restic's own exit status, a failed command piped into restic fails it too, and the output of a run that fails at once is not lost.
 
 ### Pod security
 
-Backup pods drop every capability, forbid privilege escalation, run under the `RuntimeDefault` seccomp profile and mount no ServiceAccount token.
+Backup pods drop every capability but `DAC_OVERRIDE`, forbid privilege escalation, run under the `RuntimeDefault` seccomp profile and mount no ServiceAccount token. The backup image runs as root, and `DAC_OVERRIDE` is what lets root read a directory another user owns with mode `0700`, as the app's own container, with the runtime's default capabilities, could; without it such files are left out of every snapshot. `DAC_READ_SEARCH` would be enough, but the baseline Pod Security Standard does not allow it. `b2bk restore --in-place` and `--to-new-pvc` add `CHOWN`, `DAC_OVERRIDE`, `FOWNER` and `FSETID` to their own Job, which restic needs to recreate files with their owners and modes.
 
 No user or group id is imposed. A backup has to read the app's own data, whose ownership varies per app and per cluster, and an `fsGroup` would chown that data as a side effect of backing it up. A namespace enforcing the restricted Pod Security Standard supplies what it needs through `spec.podSecurityContext`, with `spec.containerSecurityContext` for `readOnlyRootFilesystem`. Both replace the default wholesale.
 
@@ -297,7 +301,8 @@ What to expect:
 
 - **The Repository** is in Prefix mode at the bucket and path of the old `RESTIC_REPOSITORY`, reads its password from `restic-envs`, keeps `deletionPolicy: Retain`, and has no `lifecycle` block. A bucket rule over the path, such as one for `k8s/`, covers it, and the operator adds nothing.
 - **Every claim** the restic container mounts becomes an entry in `spec.volumes`, with the same path and read-only flag, and an `emptyDir` becomes `spec.scratch`. The working directory is carried over when it is not the default.
-- **Each `restic backup`** of absolute paths on those mounts becomes a source, several paths staying one snapshot. Anything else, such as a script that copies a SQLite database into an `emptyDir` first, is kept verbatim as `spec.script`.
+- **Each `restic backup`** of absolute paths on those mounts becomes a source, several paths staying one snapshot. Anything else, such as a script that copies a SQLite database into an `emptyDir` first, or a line the shell would rewrite (an escape, a variable, an unquoted glob), is kept verbatim as `spec.script`.
+- **The container's security context** is carried over, and `parity` reports `READ ACCESS DIFFERS` if the old container could read every file on its claims and the new one cannot.
 - **A hand-jittered daily schedule** becomes `@daily`, which the operator jitters itself. `parity` reports the move as `RESCHEDULED`, with the old and new time of day in the schedule's time zone, and the first run after cutover may come up to a day later.
 - **`backup-cnpg.sh` becomes `dumpdb cnpg`.** Old snapshots hold plain SQL stored as `/<namespace>`; new ones hold pg_dump's custom format stored as `/<namespace>.dmp`. `b2bk restore --to-database` restores either, and `parity` reports the switch as `DUMP FORMAT CHANGES`.
 - **`forget` becomes scoped** to the backup's own tags and host. `parity` notes it as `FORGET SCOPED`: snapshots under tags the backup no longer takes are not expired by it any more.

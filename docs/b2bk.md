@@ -195,14 +195,14 @@ never restores somewhere it did not name.
 | Target | | |
 | --- | --- | --- |
 | `--to DIR` | `reads` | Streams the files to this machine. Nothing staged on disk at either end |
-| `--to-new-pvc NAME` | `writes` | A fresh claim, laid out like the source claim, taking its size, access modes and storage class, to inspect before committing. It outlives the restore and is never garbage collected |
-| `--in-place` | `DESTROYS` | Over the source claims. Suspends the schedule for the duration |
+| `--to-new-pvc NAME` | `writes` | A fresh claim, laid out like the source claim, taking its size, access modes and storage class, to inspect before committing. It is created only once the snapshot is found, outlives the restore and is never garbage collected |
+| `--in-place` | `DESTROYS` | Over the source claims. Refused while a backup of this ScheduledBackup is running. Suspends the schedule for the duration, and leaves it suspended if the restore fails, since the next backup would save a partial restore |
 | `--to-database` | `DESTROYS` | Streams the dump back through `restoredb` |
 
 **Which snapshot.** Every target restores one source. A files target takes the
 backup's files source, or the one `--tag` names when there are several. The
-database target takes the database source, or, for a `spec.script` backup that
-has none, the dump tagged `--tag`. Without `--snapshot`, b2bk lists the
+database target takes the database source, or the one `--tag` names, or, for a
+`spec.script` backup that has none, the dump tagged `--tag`. Without `--snapshot`, b2bk lists the
 repository's snapshots and picks the newest one that carries the source's tag,
 was taken on the backup's host (`spec.resticHost` or the namespace) and, for
 files, holds exactly the source's paths. A database dump is a snapshot of one
@@ -211,13 +211,28 @@ path in it must lie under one of the source's paths, or hold one dump for
 `--to-database`; anything else is refused before a byte is written, so a
 database dump is never restored over a volume and a files snapshot never into a
 database. A named snapshot taken under another host is accepted, which is how a
-backup from before a namespace rename is restored.
+backup from before a namespace rename is restored. If the latest dumps under the
+tag are of more than one file, such as two databases a script tags `db`, the
+restore is refused until `--tag` or `--snapshot` picks one; an old plain dump
+stored as `<host>` and a new one stored as `<host>.dmp` count as one database.
+The dump must be a file in the snapshot, so a files snapshot carrying the same
+tag is never piped into `restoredb`.
 
 **Where files go.** restic records the absolute path each snapshot was taken
 from, such as `/data`, and stores the files under it. b2bk restores each path
 the snapshot holds as `restic restore <snapshot>:<path>`, so `/data` from the
 snapshot lands in `/data` on the claim mounted there, and a snapshot of `/data`
-and `/blobs` restores each into its own claim.
+and `/blobs` restores each into its own claim. A path that is a single file,
+such as `/data/app.db`, is restored from its directory with an include for the
+file, since restic cannot use a file as the subfolder.
+
+**What `--delete` leaves alone.** The source's own `exclude` patterns are passed
+to `restic restore` as excludes, rewritten relative to the restored path, so
+`--delete` never removes what the backup deliberately left out, such as a cache.
+restic refuses includes and excludes together, so with `--path` or `--include`
+the source's excludes are dropped, and `--delete` is then refused if the source
+excludes anything; `--exclude` together with `--path` or `--include` is refused
+for the same reason.
 
 | Target | Where `<snapshot>:/data` goes |
 | --- | --- |
@@ -226,7 +241,12 @@ and `/blobs` restores each into its own claim.
 | `--to DIR` | `DIR/data/...` |
 
 `--to-database` streams the dump's file out of the snapshot into `restoredb`,
-which tells pg_dump's custom format from plain SQL by its first bytes. Dumps
+which tells pg_dump's custom format from plain SQL by its first bytes. The dump
+goes into the database the source dumped, named with `--database`; with no
+database on the source, into the one the credentials Secret names in `dbname`,
+or `spec.database.name` for mariadb. The confirmation names which. A Secret
+whose `dbname` is not a single database, such as a superuser Secret, needs
+`--database`. Dumps
 taken by `dumpdb cnpg` (stored as `<host>.dmp`) go through `pg_restore`; old
 ones taken by `backup-cnpg.sh` (plain SQL, stored as `<host>` with no
 extension) go through `psql`. Both run in a single transaction, so a failed
@@ -236,9 +256,10 @@ restore leaves the database as it was.
 | --- | --- | --- |
 | `--snapshot` | all | Default `latest`, as described above |
 | `--tag` | all | The source to restore, when a backup has several, or a script backup's dump |
+| `--database` | `--to-database` | The database to restore into, instead of the source's |
 | `--size` | `--to-new-pvc` | Override the new claim's size |
 | `--yes` | `--in-place`, `--to-database` | Skip the typed confirmation. The other two never ask |
-| `--path` | `--to`, `--to-new-pvc`, `--in-place` | A file or directory in the snapshot, absolute (`/data/app/config.php`) or relative to the source path (`app/config.php`). Only that is restored, to the same place it would go in a full restore |
+| `--path` | `--to`, `--to-new-pvc`, `--in-place` | A file or directory in the snapshot, absolute (`/data/app/config.php`) or relative to the source path (`app/config.php`). Matched literally, so `[`, `*` and `?` in a name are not patterns. Only that is restored, to the same place it would go in a full restore |
 | `--include`, `--exclude` | `--to-new-pvc`, `--in-place` | Passed through to `restic restore`, relative to the source path. `restic dump` cannot filter, so `--to` refuses them rather than ignoring them |
 | `--delete` | `--to-new-pvc`, `--in-place` | Remove files under the restored path that are not in the snapshot. Nothing outside the restored path, or outside `--path` and `--include`, is touched. Meaningless for a download, so `--to` refuses it |
 | `--dry-run` | all, but see below | Report without restoring |
@@ -252,8 +273,8 @@ then ignored; do not read a successful run as having honored them.
 | Target | What `--dry-run` does |
 | --- | --- |
 | `--to` | Lists the snapshot with `restic ls` instead of downloading it. Nothing is written |
-| `--to-new-pvc` | **Still creates the claim**, then runs `restic restore --dry-run` into it. The claim is left behind |
-| `--in-place` | Skips both the typed confirmation and the schedule suspension, then reports what `restic restore` would write |
+| `--to-new-pvc` | **Still creates the claim**, then runs `restic restore --dry-run --verbose=2` into it. The claim is left behind |
+| `--in-place` | Skips both the typed confirmation and the schedule suspension, then runs `restic restore --dry-run --verbose=2`, which lists every file it would write and delete |
 | `--to-database` | Skips the typed confirmation and passes `--dry-run` to `restoredb` |
 
 ## Maintenance
@@ -442,9 +463,12 @@ Needs nothing on PATH: both sides are parsed in-process, the HelmRelease with
 argument takes the same directory `migrate` does.
 
 It compares the rendered script, the schedule, the time zone, the claims and
-scratch space mounted (name, path and read-only flag), the working directory,
-the snapshot host, the extra environment, the database Secret and, given the
-original `RESTIC_REPOSITORY`, the Repository's bucket and path.
+scratch space mounted (name, path and read-only flag), whether every file on
+them can be read, the working directory, the snapshot host, the extra
+environment, the database Secret and, given the original `RESTIC_REPOSITORY`,
+the Repository's bucket and path. Both scripts are compared without the
+preamble and postamble around them, the hand-written `exec > >(ts ...)` and
+`set -eu` on one side and the operator's on the other.
 
 | Flag | |
 | --- | --- |
@@ -485,6 +509,7 @@ printed with the time of day in the schedule's time zone, such as
 | `CADENCE DIFFERS` | 1 | It no longer runs as often |
 | `TIMEZONE DIFFERS` | 1 | |
 | `VOLUME DIFFERS` | 1 | Another claim, path, read-only flag or scratch space |
+| `READ ACCESS DIFFERS` | 1 | The original could read every file on its claims, as root with `DAC_OVERRIDE`, and the generated backup cannot |
 | `WORKING DIR DIFFERS` | 1 | |
 | `RESTIC HOST DIFFERS` | 1 | Snapshots would start a new series under another host |
 | `ENV DIFFERS` | 1 | Another extra variable, or another `TZ` |
@@ -547,8 +572,9 @@ What maps across:
 | Plain `env` values other than `TZ`, `RESTIC_HOST` and `CNPG_SECRET_PATH` | `spec.env` |
 
 A script any of whose lines cannot become sources, such as a backup with two
-tags or its own `--stdin-filename`, a relative path, or a shell command that is
-not restic, is kept verbatim as `spec.script` instead, minus the preamble and `restic cache
+tags or its own `--stdin-filename`, a relative path, a line the shell would
+rewrite (an escape, a variable, an unquoted glob, a redirection), or a shell
+command that is not restic, is kept verbatim as `spec.script` instead, minus the preamble and `restic cache
 --cleanup` the operator adds itself. If it calls `backup-cnpg.sh`,
 `CNPG_SECRET_PATH` is pointed at the operator's database mount. b2bk's tag
 filtering does not work on a script backup.
