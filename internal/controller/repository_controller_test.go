@@ -431,6 +431,10 @@ func TestALostSecretGetsANewKeyAndTheOldOneIsDeleted(t *testing.T) {
 	if newKey == "" || newKey == oldKey {
 		t.Fatalf("key %q after losing the Secret, want a new one replacing %q", newKey, oldKey)
 	}
+	if len(ownKeys(f)) != 2 {
+		t.Error("the old key was deleted in the same pass, cutting off a backup still running with it")
+	}
+	reconcileN(t, r, 1)
 	keys := ownKeys(f)
 	if len(keys) != 1 || keys[0].ApplicationKeyID != newKey {
 		t.Errorf("keys = %+v, want only the new one", keys)
@@ -469,7 +473,7 @@ func TestStaleKeysOfThisRepositoryAreDeletedAndOthersAreNot(t *testing.T) {
 	handmade := f.AddKey("my-laptop", "", "")
 
 	r, _ := newHarness(t, f, repo)
-	reconcileN(t, r, 1)
+	reconcileN(t, r, 2)
 
 	ids := make([]string, 0, len(f.Keys()))
 	for _, k := range f.Keys() {
@@ -607,6 +611,12 @@ func TestARuleThatHidesLiveFilesIsReported(t *testing.T) {
 	if cond := condition(t, c, b2backupv1.RepositoryConditionLifecycleRule); cond == nil ||
 		cond.Status != metav1.ConditionFalse || cond.Reason != "HidesLiveFiles" {
 		t.Errorf("LifecycleRule = %+v, want False HidesLiveFiles", cond)
+	}
+	succeedInitJob(t, c)
+	reconcileN(t, r, 1)
+	if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Status != metav1.ConditionFalse ||
+		cond.Reason != "LifecycleHidesData" {
+		t.Errorf("Ready = %+v, want False while a rule will hide live packs", cond)
 	}
 	if !hasEvent(recordedEvents(t, r), "LifecycleHidesData") {
 		t.Error("no LifecycleHidesData warning")
@@ -877,7 +887,7 @@ func TestRepositoryConflicts(t *testing.T) {
 			res := reconcileOnce(t, r)
 
 			cond := condition(t, c, b2backupv1.RepositoryConditionReady)
-			conflicted := cond != nil && cond.Reason == "RepositoryConflict"
+			conflicted := cond != nil && cond.Reason == reasonConflict
 			if conflicted != tt.wantConflict {
 				t.Fatalf("conflict = %t (%+v), want %t", conflicted, cond, tt.wantConflict)
 			}
@@ -912,7 +922,7 @@ func TestTheOlderRepositoryKeepsThePath(t *testing.T) {
 	})
 	r, c := newHarness(t, f, newer, older)
 	reconcileN(t, r, 1)
-	if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason == "RepositoryConflict" {
+	if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason == reasonConflict {
 		t.Error("the older Repository lost the conflict")
 	}
 }
@@ -1137,5 +1147,119 @@ func TestTheLoserOfAConflictNeverDeletesTheWinnersData(t *testing.T) {
 	reconcileUntilGone(t, r, c)
 	if got := f.FileNames(bucket.BucketID); len(got) != 1 {
 		t.Errorf("deleting the loser destroyed the incumbent's data: %v", got)
+	}
+}
+
+func TestARepositoryThatRecordedItsPathWinsAConflict(t *testing.T) {
+	f := newFakeB2(t)
+	bucket := f.AddBucket(sharedBucket)
+	tie := metav1.NewTime(time.Now().Truncate(time.Second))
+	recorded := prefixRepo(func(r *b2backupv1.Repository) {
+		r.CreationTimestamp = tie
+		r.Status = b2backupv1.RepositoryStatus{BucketID: bucket.BucketID, BucketName: sharedBucket, Path: myappPath}
+	})
+	rival := prefixRepo(func(r *b2backupv1.Repository) {
+		r.Name, r.UID = "aaa", "uid-aaa"
+		r.CreationTimestamp = tie
+	})
+	r, c := newHarness(t, f, recorded, rival)
+	reconcileN(t, r, 1)
+	if cond := condition(t, c, b2backupv1.RepositoryConditionReady); cond.Reason == reasonConflict {
+		t.Error("a Repository already holding the path lost it to a newcomer that sorts first by name")
+	}
+}
+
+func TestAPathBeingDeletedBlocksANewcomer(t *testing.T) {
+	f := newFakeB2(t)
+	bucket := f.AddBucket(sharedBucket)
+	f.PutFile(bucket.BucketID, myappPath+"/config", 1)
+	leaving := prefixRepo(func(r *b2backupv1.Repository) {
+		r.Name, r.UID = "leaving", "uid-leaving"
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+		r.DeletionTimestamp = ptr.To(metav1.Now())
+		r.Finalizers = []string{FinalizerName}
+		r.Status = b2backupv1.RepositoryStatus{BucketID: bucket.BucketID, BucketName: sharedBucket, Path: myappPath}
+	})
+	r, c := newHarness(t, f, leaving, prefixRepo(usePasswordSeed), seedSecretFixture())
+	reconcileN(t, r, 1)
+
+	cond := condition(t, c, b2backupv1.RepositoryConditionReady)
+	if cond.Reason != reasonConflict || !strings.Contains(cond.Message, "which is deleting it") {
+		t.Errorf("Ready = %+v, want a conflict naming the deletion", cond)
+	}
+	if getRepo(t, c).Status.Adopted {
+		t.Error("a path was adopted while another Repository was deleting it")
+	}
+}
+
+func TestDeleteLeavesDataAnotherRepositoryStillUses(t *testing.T) {
+	f := newFakeB2(t)
+	bucket := f.AddBucket(sharedBucket)
+	f.PutFile(bucket.BucketID, myappPath+"/config", 1)
+	other := prefixRepo(func(r *b2backupv1.Repository) {
+		r.Name, r.UID = "other", "uid-other"
+		r.Status = b2backupv1.RepositoryStatus{BucketID: bucket.BucketID, BucketName: sharedBucket, Path: myappPath}
+	})
+	leaving := prefixRepo(func(r *b2backupv1.Repository) {
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+		r.DeletionTimestamp = ptr.To(metav1.Now())
+		r.Finalizers = []string{FinalizerName}
+		r.Status = b2backupv1.RepositoryStatus{
+			BucketID: bucket.BucketID, BucketName: sharedBucket, Path: myappPath, ApplicationKeyID: "key-gone",
+		}
+	})
+	r, c := newHarness(t, f, other, leaving)
+	reconcileUntilGone(t, r, c)
+
+	if got := f.FileNames(bucket.BucketID); len(got) != 1 {
+		t.Errorf("deleting one Repository destroyed data another still uses: %v", got)
+	}
+	if !hasEvent(recordedEvents(t, r), "DataRetained") {
+		t.Error("no DataRetained warning")
+	}
+}
+
+func TestForceFinalizeKeepsTheOnlyPasswordCopy(t *testing.T) {
+	f := newFakeB2(t)
+	r, c := newHarness(t, f, bucketRepo(func(r *b2backupv1.Repository) {
+		r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
+		r.Annotations = map[string]string{b2backupv1.AnnotationForceFinalize: "true"}
+	}))
+	provisionForDeletion(t, r, c)
+	if metav1.GetControllerOf(getSecret(t, c, credsSecretName)) == nil {
+		t.Fatal("precondition: the Delete policy should own the Secret")
+	}
+	f.Fail("b2_list_file_versions", b2fake.Failure{Status: 401, Code: b2.CodeUnauthorized, Times: 100})
+
+	reconcileUntilGone(t, r, c)
+	if owner := metav1.GetControllerOf(getSecret(t, c, credsSecretName)); owner != nil {
+		t.Error("a forced release left the Secret owned, so garbage collection deletes the only password")
+	}
+}
+
+func TestADuplicateNameFromOurOwnRetriedCreateAdoptsTheBucket(t *testing.T) {
+	f := newFakeB2(t)
+	f.AddBucket(ownBucket)
+	r, c := newHarness(t, f, bucketRepo(nil))
+	f.Fail("b2_list_buckets", b2fake.Failure{Status: 400, Code: b2.CodeBadBucketID, Message: "not found"})
+	reconcileN(t, r, 1)
+	if f.CountCalls("b2_create_bucket") != 1 {
+		t.Fatal("precondition: the create should have run and hit the duplicate name")
+	}
+	if getRepo(t, c).Status.BucketID != f.Bucket(ownBucket).BucketID {
+		t.Error("the bucket this account already holds was not picked up")
+	}
+}
+
+func TestLifecycleUpdatesAreBounded(t *testing.T) {
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	f.Fail("b2_update_bucket", b2fake.Failure{Status: 409, Code: b2.CodeConflict, Times: 10})
+	r, _ := newHarness(t, f, prefixRepo(nil))
+	if err := reconcileErr(r); err == nil {
+		t.Fatal("reconcile succeeded with every update conflicting")
+	}
+	if n := f.CountCalls("b2_update_bucket"); n != maxLifecycleUpdates {
+		t.Errorf("updated %d times, want at most %d", n, maxLifecycleUpdates)
 	}
 }

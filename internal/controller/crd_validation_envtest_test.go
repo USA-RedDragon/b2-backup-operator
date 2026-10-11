@@ -425,6 +425,8 @@ func TestCRDRejectsUnparseableRetryLock(t *testing.T) {
 }
 
 const (
+	pathImmutable = "path cannot be added, changed or removed"
+
 	fieldMode   = "mode"
 	fieldBucket = "bucket"
 	fieldPath   = "path"
@@ -520,17 +522,17 @@ func TestCRDRepositoryLocationIsImmutable(t *testing.T) {
 		name    string
 		create  func(*b2backupv1.Repository)
 		update  func(*b2backupv1.Repository)
-		wantErr bool
+		wantErr string
 	}{
-		{name: fieldMode, update: func(r *b2backupv1.Repository) { r.Spec.Mode = b2backupv1.StorageModeBucket }, wantErr: true},
-		{name: fieldBucket, update: func(r *b2backupv1.Repository) { r.Spec.Bucket = "acme-other" }, wantErr: true},
-		{name: "changing the path", update: func(r *b2backupv1.Repository) { r.Spec.Path = "restic/moved" }, wantErr: true},
-		{name: "removing the path", update: func(r *b2backupv1.Repository) { r.Spec.Path = "" }, wantErr: true},
+		{name: fieldMode, update: func(r *b2backupv1.Repository) { r.Spec.Mode = b2backupv1.StorageModeBucket }, wantErr: "mode cannot be changed"},
+		{name: fieldBucket, update: func(r *b2backupv1.Repository) { r.Spec.Bucket = "acme-other" }, wantErr: "bucket cannot be changed"},
+		{name: "changing the path", update: func(r *b2backupv1.Repository) { r.Spec.Path = "restic/moved" }, wantErr: pathImmutable},
+		{name: "removing the path", update: func(r *b2backupv1.Repository) { r.Spec.Path = "" }, wantErr: pathImmutable},
 		{
 			name:    "adding a path to a defaulted one",
 			create:  func(r *b2backupv1.Repository) { r.Spec.Path = "" },
 			update:  func(r *b2backupv1.Repository) { r.Spec.Path = "immutable/added" },
-			wantErr: true,
+			wantErr: pathImmutable,
 		},
 		{name: "an unrelated field", update: func(r *b2backupv1.Repository) { r.Spec.Suspend = true }},
 		{name: "the lifecycle rule", update: func(r *b2backupv1.Repository) {
@@ -553,11 +555,13 @@ func TestCRDRepositoryLocationIsImmutable(t *testing.T) {
 			}
 			tt.update(&got)
 			err := c.Update(ctx, &got)
-			if tt.wantErr && err == nil {
-				t.Error("the update was accepted, want rejection")
-			}
-			if !tt.wantErr && err != nil {
+			switch {
+			case tt.wantErr == "" && err != nil:
 				t.Errorf("the update was rejected: %v", err)
+			case tt.wantErr != "" && err == nil:
+				t.Error("the update was accepted, want rejection")
+			case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
+				t.Errorf("rejected for the wrong reason: %v, want %q", err, tt.wantErr)
 			}
 		})
 	}

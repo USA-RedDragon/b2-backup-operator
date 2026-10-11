@@ -22,9 +22,9 @@ const AccountID = "fakeaccount"
 const UnrecognizedOperation = "unrecognized B2 operation"
 
 const (
-	actionStart  = "start"
-	actionUpload = "upload"
-	actionHide   = "hide"
+	actionStart  = b2.ActionStart
+	actionUpload = b2.ActionUpload
+	actionHide   = b2.ActionHide
 	fieldFiles   = "files"
 )
 
@@ -551,7 +551,7 @@ func (s *Server) deleteKey(w http.ResponseWriter, body map[string]any) {
 func (s *Server) sortedVersions(bucketID, prefix string) []b2.File {
 	var out []b2.File
 	for _, v := range slices.Backward(s.versions) {
-		if v.bucketID == bucketID && strings.HasPrefix(v.file.FileName, prefix) && v.file.Action != actionStart {
+		if v.bucketID == bucketID && strings.HasPrefix(v.file.FileName, prefix) {
 			out = append(out, v.file)
 		}
 	}
@@ -577,7 +577,7 @@ func (s *Server) listFileNames(w http.ResponseWriter, body map[string]any) {
 	var latest []b2.File
 	seen := map[string]bool{}
 	for _, f := range s.sortedVersions(str(body["bucketId"]), str(body["prefix"])) {
-		if seen[f.FileName] {
+		if f.Action == actionStart || seen[f.FileName] {
 			continue
 		}
 		seen[f.FileName] = true
@@ -633,14 +633,21 @@ func (s *Server) deleteFileVersion(w http.ResponseWriter, body map[string]any) {
 }
 
 func (s *Server) listUnfinished(w http.ResponseWriter, body map[string]any) {
-	bucketID, prefix := str(body["bucketId"]), str(body["namePrefix"])
+	bucketID, prefix, start := str(body["bucketId"]), str(body["namePrefix"]), str(body["startFileId"])
+	size := pageSize(body, 100, 100)
 	files := []b2.File{}
 	for _, v := range s.versions {
-		if v.bucketID == bucketID && v.file.Action == actionStart && strings.HasPrefix(v.file.FileName, prefix) {
+		if v.bucketID == bucketID && v.file.Action == actionStart && strings.HasPrefix(v.file.FileName, prefix) &&
+			v.file.FileID >= start {
 			files = append(files, v.file)
 		}
 	}
-	writeJSON(w, map[string]any{fieldFiles: files, "nextFileId": nil})
+	var next any
+	if len(files) > size {
+		next = files[size].FileID
+		files = files[:size]
+	}
+	writeJSON(w, map[string]any{fieldFiles: files, "nextFileId": next})
 }
 
 func (s *Server) cancelLargeFile(w http.ResponseWriter, body map[string]any) {
