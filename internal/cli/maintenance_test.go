@@ -62,7 +62,7 @@ func TestUnlockRemoveAllRefusesWhileAnythingUsesTheRepository(t *testing.T) {
 		job  func(fx currentFixture) *batchv1.Job
 	}{
 		{"a scheduled backup", func(fx currentFixture) *batchv1.Job {
-			return running("web-files-backup-1", metav1.OwnerReference{APIVersion: "batch/v1", Kind: "CronJob",
+			return running("web-files-backup-1", metav1.OwnerReference{APIVersion: batchAPIVersion, Kind: cronJobKind,
 				Name: fx.cj.Name, UID: fx.cj.UID, Controller: ptr.To(true)}, nil)
 		}},
 		{"a b2bk download", func(fx currentFixture) *batchv1.Job {
@@ -72,14 +72,14 @@ func TestUnlockRemoveAllRefusesWhileAnythingUsesTheRepository(t *testing.T) {
 		}},
 		{"another backup's Job on the same repository", func(fx currentFixture) *batchv1.Job {
 			return running("other-manual-1", metav1.OwnerReference{APIVersion: b2backupv1.GroupVersion.String(),
-				Kind: kindScheduledBackup, Name: "other", UID: "uid-sb-other", Controller: ptr.To(true)}, nil)
+				Kind: kindScheduledBackup, Name: otherBackup, UID: "uid-sb-other", Controller: ptr.To(true)}, nil)
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fx := currentBackup(t)
-			other := newBackup("other", testRepoName)
+			other := newBackup(otherBackup, testRepoName)
 			other.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: "other"}}
 			c := newClient(t, fx.objects(other, tt.job(fx))...)
 			cmd := newUnlockCommand(factoryWithClient(t, c))

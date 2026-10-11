@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 )
 
 const defaultRunLimit = 10
@@ -106,6 +107,9 @@ func writeBackupStatus(p *printer, sb *b2backupv1.ScheduledBackup, repo *b2backu
 	field(w, "Schedule", fmt.Sprintf("%s   %s",
 		orNone(sb.Status.EffectiveSchedule), orNone(sb.Spec.TimeZone)))
 	field(w, "Suspended", yesNo(sb.Spec.Suspend))
+	if hold := backup.RestoreHold(sb); hold != "" {
+		field(w, "Held", hold)
+	}
 	field(w, "Active", fmt.Sprintf("%d", sb.Status.Active))
 	field(w, "Last scheduled", Since(sb.Status.LastScheduleTime))
 	field(w, "Last successful", Since(sb.Status.LastSuccessfulTime))

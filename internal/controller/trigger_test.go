@@ -203,3 +203,39 @@ func TestTriggerIsNotSkippedByItsOwnJob(t *testing.T) {
 		t.Errorf("expected no second Job, got %d", n)
 	}
 }
+
+func TestARestoreHoldsTheScheduleAndTriggers(t *testing.T) {
+	t.Parallel()
+	for _, annotation := range []string{b2backupv1.AnnotationRestoreLock, b2backupv1.AnnotationRestorePartial} {
+		t.Run(annotation, func(t *testing.T) {
+			t.Parallel()
+			r, c := backupHarness(t, initializedRepo(), triggeredBackup(triggerAt, func(sb *b2backupv1.ScheduledBackup) {
+				sb.Annotations[annotation] = `["pvc/data:/"]`
+			}))
+			reconcileBackup(t, r)
+			if jobs := manualJobs(t, c); len(jobs) != 0 {
+				t.Errorf("started %d backups while a restore holds the backup", len(jobs))
+			}
+			var cj batchv1.CronJob
+			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+				t.Fatal(err)
+			}
+			if cj.Spec.Suspend == nil || !*cj.Spec.Suspend {
+				t.Error("the CronJob runs while a restore holds the backup")
+			}
+
+			sb := loadBackup(t, c)
+			delete(sb.Annotations, annotation)
+			if err := c.Update(context.Background(), sb); err != nil {
+				t.Fatal(err)
+			}
+			reconcileBackup(t, r)
+			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
+				t.Fatal(err)
+			}
+			if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
+				t.Error("the CronJob stayed suspended after the hold ended")
+			}
+		})
+	}
+}

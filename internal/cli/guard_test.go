@@ -128,7 +128,7 @@ func stalenessCases() []struct {
 			return nil
 		}, notRendered},
 		{"a sibling edited into a conflict the status does not show yet", func(fx *currentFixture) []client.Object {
-			other := newBackup("other", testRepoName)
+			other := newBackup(otherBackup, testRepoName)
 			other.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}}
 			return []client.Object{other}
 		}, inATagConflict},
@@ -181,7 +181,7 @@ func TestOverwritingRestoresRefuseToActOnStaleStatus(t *testing.T) {
 func TestARepositoryWithSeveralBackupsNeedsOneNamed(t *testing.T) {
 	t.Parallel()
 	fx := currentBackup(t)
-	other := newBackup("other", testRepoName)
+	other := newBackup(otherBackup, testRepoName)
 	c := newClient(t, fx.objects(other)...)
 	cmd := newPruneCommand(factoryWithClient(t, c))
 	cmd.SetArgs([]string{subjectRepo, flagYes})
@@ -198,7 +198,7 @@ func TestARepositoryWithSeveralBackupsNeedsOneNamed(t *testing.T) {
 func TestRestoreOfARepositoryWithSeveralBackupsNeedsOneNamed(t *testing.T) {
 	t.Parallel()
 	fx := currentBackup(t, withVolume)
-	other := newBackup("other", testRepoName)
+	other := newBackup(otherBackup, testRepoName)
 	cmd := newRestoreCommand(factoryWithClient(t, newClient(t, fx.objects(other)...)))
 	cmd.SetArgs([]string{subjectRepo, "--in-place", flagYes})
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true

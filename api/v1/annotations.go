@@ -14,14 +14,18 @@ const (
 	AnnotationReinitAt = "b2backup.mcswain.dev/reinit-at"
 
 	// AnnotationRestoreLock is set by b2bk on a ScheduledBackup while a restore
-	// that overwrites its claims or database runs. Its value names the restore.
-	// A second such restore is refused while it is set.
+	// that overwrites its claims or database, or ones it shares, runs. Its value
+	// names the restore. A second such restore is refused while it is set, and
+	// the operator keeps the CronJob suspended and starts no triggered backup.
 	AnnotationRestoreLock = "b2backup.mcswain.dev/restore-lock"
 
-	// AnnotationRestoreResume is "true" when b2bk suspended the ScheduledBackup
-	// for a restore. The restore that next succeeds resumes it; b2bk suspend and
-	// b2bk resume clear it.
-	AnnotationRestoreResume = "b2backup.mcswain.dev/restore-resume"
+	// AnnotationRestorePartial lists, comma-separated, what a failed restore may
+	// have left half-written: pvc/<claim>:<path> and db/<engine>/<secret>/<database>
+	// entries. While it is set the operator keeps the CronJob suspended and starts
+	// no triggered backup, so a partial restore is never saved over good
+	// snapshots. A later complete restore of an entry removes it; b2bk resume
+	// removes them all.
+	AnnotationRestorePartial = "b2backup.mcswain.dev/restore-partial"
 
 	// AnnotationProtectedBy is set on a credentials Secret to the UID of the
 	// Repository that put the protect-password finalizer on it. A Repository

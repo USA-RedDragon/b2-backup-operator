@@ -2,13 +2,16 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,21 +24,24 @@ import (
 )
 
 // ErrRestoreRunning means another restore that overwrites live data holds the
-// ScheduledBackup.
+// ScheduledBackup, or one that shares its claims or database.
 var ErrRestoreRunning = errors.New("another restore is running")
 
-const restoreResumeTrue = "true"
+// restoreHold is what one overwriting restore holds: the ScheduledBackup it
+// restores, and every other one in the namespace that backs up the same claims
+// or database, each carrying AnnotationRestoreLock. While it is set the
+// operator keeps their CronJobs suspended and starts no triggered backup.
+type restoreHold struct {
+	c    client.Client
+	id   string
+	plan *b2backupv1.ScheduledBackup
+	keys []types.NamespacedName
 
-// restoreLock is a ScheduledBackup held by one overwriting restore: the
-// AnnotationRestoreLock annotation names it, and the schedule is suspended.
-type restoreLock struct {
-	c   client.Client
-	key types.NamespacedName
-	id  string
-
-	// suspended is true when the schedule is to be resumed once a restore
-	// succeeds: this restore suspended it, or an earlier one that failed did.
-	suspended bool
+	// targets are the AnnotationRestorePartial entries this restore writes.
+	targets []string
+	// full is true when the restore writes the whole of each target, so its
+	// success makes up for an earlier partial restore of it.
+	full bool
 }
 
 func restoreLockID() string {
@@ -46,110 +52,265 @@ func restoreLockID() string {
 	return fmt.Sprintf("b2bk pid %d on %s at %s", os.Getpid(), host, time.Now().UTC().Format(time.RFC3339))
 }
 
-// acquireRestoreLock takes the ScheduledBackup for one overwriting restore and
-// suspends its schedule. The write carries the resourceVersion it read, so of
-// two restores racing for it only one wins.
-func acquireRestoreLock(
-	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup,
-) (*restoreLock, error) {
-	key := types.NamespacedName{Namespace: sb.Namespace, Name: sb.Name}
-	var latest b2backupv1.ScheduledBackup
-	if err := c.Get(ctx, key, &latest); err != nil {
+// partialTargets reads AnnotationRestorePartial.
+func partialTargets(sb *b2backupv1.ScheduledBackup) []string {
+	raw := sb.Annotations[b2backupv1.AnnotationRestorePartial]
+	if raw == "" {
+		return nil
+	}
+	var targets []string
+	if err := json.Unmarshal([]byte(raw), &targets); err != nil || len(targets) == 0 {
+		return []string{raw}
+	}
+	return targets
+}
+
+func setPartialTargets(sb *b2backupv1.ScheduledBackup, targets []string) {
+	slices.Sort(targets)
+	targets = slices.Compact(targets)
+	if len(targets) == 0 {
+		delete(sb.Annotations, b2backupv1.AnnotationRestorePartial)
+		return
+	}
+	raw, err := json.Marshal(targets)
+	if err != nil {
+		return
+	}
+	if sb.Annotations == nil {
+		sb.Annotations = map[string]string{}
+	}
+	sb.Annotations[b2backupv1.AnnotationRestorePartial] = string(raw)
+}
+
+// claimTargets are the AnnotationRestorePartial entries for files restored to
+// paths: the claim each is on, and where on it.
+func claimTargets(sb *b2backupv1.ScheduledBackup, paths []string) []string {
+	var targets []string
+	for _, p := range paths {
+		v := backup.MountFor(sb, p)
+		if v == nil {
+			continue
+		}
+		rel := "/" + strings.TrimLeft(strings.TrimPrefix(p, v.EffectiveMountPath()), "/")
+		targets = append(targets, "pvc/"+v.ExistingClaim+":"+rel)
+	}
+	return targets
+}
+
+// databaseKey is the AnnotationRestorePartial entry for a database restore.
+func databaseKey(sb *b2backupv1.ScheduledBackup, database string) string {
+	db := sb.Spec.Database
+	switch {
+	case database != "":
+	case db.Engine == b2backupv1.DatabaseEngineMariaDB && db.Name != "":
+		database = db.Name
+	case sb.Spec.Env["DB_DATABASE"] != "":
+		database = sb.Spec.Env["DB_DATABASE"]
+	default:
+		database = "dbname"
+	}
+	return fmt.Sprintf("db/%s/%s/%s", db.Engine, db.EffectiveSecretName(), database)
+}
+
+// sharingBackups returns the ScheduledBackups in sb's namespace that back up
+// one of these claims, or, with database set, a database through the same
+// credentials Secret, sb first.
+func sharingBackups(
+	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, claims []string, database bool,
+) ([]b2backupv1.ScheduledBackup, error) {
+	var list b2backupv1.ScheduledBackupList
+	if err := c.List(ctx, &list, client.InNamespace(sb.Namespace)); err != nil {
 		return nil, err
 	}
-	if holder := latest.Annotations[b2backupv1.AnnotationRestoreLock]; holder != "" {
-		return nil, fmt.Errorf("%w: scheduledbackup/%s is held by %s; if that restore is gone, release it with "+
-			"kubectl annotate -n %s scheduledbackup/%s %s-", ErrRestoreRunning, sb.Name, holder,
-			sb.Namespace, sb.Name, b2backupv1.AnnotationRestoreLock)
+	out := []b2backupv1.ScheduledBackup{*sb}
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Name == sb.Name {
+			continue
+		}
+		shares := false
+		for _, v := range other.Spec.Volumes {
+			shares = shares || slices.Contains(claims, v.ExistingClaim)
+		}
+		if database && other.Spec.Database != nil && sb.Spec.Database != nil &&
+			other.Spec.Database.Engine == sb.Spec.Database.Engine &&
+			other.Spec.Database.EffectiveSecretName() == sb.Spec.Database.EffectiveSecretName() {
+			shares = true
+		}
+		if shares {
+			out = append(out, *other)
+		}
 	}
+	return out, nil
+}
 
-	lock := &restoreLock{c: c, key: key, id: restoreLockID()}
+// holdForRestore refuses while a backup or another restore of any of backups
+// runs, then takes them all for this restore. Each write carries the
+// resourceVersion it read, so of two restores racing for one only one wins; one
+// that loses lets go of what it took.
+func holdForRestore(
+	ctx context.Context, c client.Client, plan *b2backupv1.ScheduledBackup, backups []b2backupv1.ScheduledBackup,
+	targets []string, full bool,
+) (*restoreHold, error) {
+	for i := range backups {
+		if err := refuseActive(ctx, c, &backups[i], ""); err != nil {
+			return nil, err
+		}
+	}
+	h := &restoreHold{c: c, id: restoreLockID(), plan: plan.DeepCopy(), targets: targets, full: full}
+	for i := range backups {
+		key := types.NamespacedName{Namespace: backups[i].Namespace, Name: backups[i].Name}
+		if err := h.take(ctx, key); err != nil {
+			_, releaseErr := h.release(outcomeUntouched)
+			return nil, errors.Join(err, releaseErr)
+		}
+		h.keys = append(h.keys, key)
+	}
+	return h, nil
+}
+
+func (h *restoreHold) take(ctx context.Context, key types.NamespacedName) error {
+	var latest b2backupv1.ScheduledBackup
+	if err := h.c.Get(ctx, key, &latest); err != nil {
+		return err
+	}
+	if holder := latest.Annotations[b2backupv1.AnnotationRestoreLock]; holder != "" {
+		return fmt.Errorf("%w: scheduledbackup/%s is held by %s; if that restore is gone, release it with "+
+			"kubectl annotate -n %s scheduledbackup/%s %s-", ErrRestoreRunning, key.Name, holder,
+			key.Namespace, key.Name, b2backupv1.AnnotationRestoreLock)
+	}
 	patch := client.MergeFromWithOptions(latest.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if latest.Annotations == nil {
 		latest.Annotations = map[string]string{}
 	}
-	latest.Annotations[b2backupv1.AnnotationRestoreLock] = lock.id
-	if !latest.Spec.Suspend {
-		latest.Spec.Suspend = true
-		latest.Annotations[b2backupv1.AnnotationRestoreResume] = restoreResumeTrue
-	}
-	lock.suspended = latest.Annotations[b2backupv1.AnnotationRestoreResume] == restoreResumeTrue
-	if err := c.Patch(ctx, &latest, patch); err != nil {
+	latest.Annotations[b2backupv1.AnnotationRestoreLock] = h.id
+	if err := h.c.Patch(ctx, &latest, patch); err != nil {
 		if apierrors.IsConflict(err) {
-			return nil, fmt.Errorf("%w: scheduledbackup/%s changed while it was being locked; try again",
-				ErrRestoreRunning, sb.Name)
+			return fmt.Errorf("%w: scheduledbackup/%s changed while it was being taken; try again",
+				ErrRestoreRunning, key.Name)
 		}
-		return nil, fmt.Errorf("suspending scheduledbackup/%s: %w", sb.Name, err)
+		return fmt.Errorf("holding scheduledbackup/%s for the restore: %w", key.Name, err)
 	}
-	sb.Spec.Suspend = true
-	return lock, nil
+	return nil
 }
 
-// release lets the ScheduledBackup go. With good set, the restored data is
-// complete or untouched, and a schedule the lock suspended is resumed;
-// otherwise it stays suspended, and the next restore that succeeds resumes it.
-func (l *restoreLock) release(good bool) (bool, error) {
+type restoreOutcome int
+
+const (
+	outcomeUntouched restoreOutcome = iota
+	outcomeComplete
+	outcomePartial
+)
+
+// release lets every held ScheduledBackup go and records the outcome: a
+// partial restore adds its targets to AnnotationRestorePartial, which keeps the
+// schedules held, and a complete restore of the whole of each target removes
+// them. It returns the entries still recorded.
+func (h *restoreHold) release(outcome restoreOutcome) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), cleanupTimeout)
 	defer cancel()
 
-	resumed := false
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		resumed = false
-		var latest b2backupv1.ScheduledBackup
-		if err := l.c.Get(ctx, l.key, &latest); err != nil {
-			return err
+	var left []string
+	var errs []error
+	for _, key := range h.keys {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var latest b2backupv1.ScheduledBackup
+			if err := h.c.Get(ctx, key, &latest); err != nil {
+				return err
+			}
+			if holder := latest.Annotations[b2backupv1.AnnotationRestoreLock]; holder != h.id {
+				return fmt.Errorf("%w: scheduledbackup/%s is now held by %q", ErrRestoreRunning, key.Name, holder)
+			}
+			patch := client.MergeFromWithOptions(latest.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			delete(latest.Annotations, b2backupv1.AnnotationRestoreLock)
+			targets := partialTargets(&latest)
+			switch {
+			case outcome == outcomePartial:
+				targets = append(targets, h.targets...)
+			case outcome == outcomeComplete && h.full:
+				targets = slices.DeleteFunc(targets, func(t string) bool { return slices.Contains(h.targets, t) })
+			}
+			setPartialTargets(&latest, targets)
+			if err := h.c.Patch(ctx, &latest, patch); err != nil {
+				return err
+			}
+			left = append(left, partialTargets(&latest)...)
+			return nil
+		})
+		if err != nil {
+			errs = append(errs, err)
 		}
-		if holder := latest.Annotations[b2backupv1.AnnotationRestoreLock]; holder != l.id {
-			return fmt.Errorf("%w: scheduledbackup/%s is now held by %q", ErrRestoreRunning, l.key.Name, holder)
-		}
-		patch := client.MergeFromWithOptions(latest.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		delete(latest.Annotations, b2backupv1.AnnotationRestoreLock)
-		if good && latest.Annotations[b2backupv1.AnnotationRestoreResume] == restoreResumeTrue {
-			delete(latest.Annotations, b2backupv1.AnnotationRestoreResume)
-			latest.Spec.Suspend = false
-			resumed = true
-		}
-		return l.c.Patch(ctx, &latest, patch)
-	})
-	return resumed, err
+	}
+	slices.Sort(left)
+	return slices.Compact(left), errors.Join(errs...)
 }
 
-// finish releases the lock after a restore that returned err, having written
-// to the target or not, and says what became of the schedule.
-func (l *restoreLock) finish(f *Factory, sb *b2backupv1.ScheduledBackup, err error, wrote bool, what string) error {
-	if l == nil {
+// finish releases the hold after a restore that returned err, having written
+// to the target or not, and says what still holds the schedules.
+func (h *restoreHold) finish(f *Factory, err error, wrote bool) error {
+	if h == nil {
 		return err
 	}
-	good := err == nil || !wrote
-	_, releaseErr := l.release(good)
+	outcome := outcomeUntouched
+	switch {
+	case wrote && err != nil:
+		outcome = outcomePartial
+	case wrote:
+		outcome = outcomeComplete
+	}
+	left, releaseErr := h.release(outcome)
+	names := make([]string, 0, len(h.keys))
+	for _, key := range h.keys {
+		names = append(names, "scheduledbackup/"+key.Name)
+	}
 	p := newPrinter(f.Streams.ErrOut)
-	if !good && l.suspended {
-		p.printf("! scheduledbackup/%s stays suspended: %s may hold a partial restore, which the\n", sb.Name, what)
-		p.printf("! next backup would save and retention could then keep over good snapshots.\n")
-		p.printf("! Check it, then: b2bk resume %s\n", sb.Name)
+	if len(left) > 0 {
+		p.printf("! %s stay held, with the CronJob suspended and no backup triggered:\n", strings.Join(names, ", "))
+		p.printf("! %s may hold a partial restore, which the next backup would save\n", strings.Join(left, ", "))
+		p.printf("! and retention could then keep over good snapshots. Restore it in full again,\n")
+		p.printf("! or check it and run: b2bk resume %s\n", h.plan.Name)
 	}
 	if releaseErr != nil {
-		p.printf("! could not release scheduledbackup/%s after the restore: %v\n", sb.Name, releaseErr)
-		p.printf("! check spec.suspend and the %s annotation with: b2bk status %s\n",
-			b2backupv1.AnnotationRestoreLock, sb.Name)
+		p.printf("! could not release %s after the restore: %v\n", strings.Join(names, ", "), releaseErr)
+		p.printf("! check the %s annotation with: b2bk status %s\n", b2backupv1.AnnotationRestoreLock, h.plan.Name)
 	}
 	return errors.Join(err, p.Err())
 }
 
 // readyToWrite is checked in the restore pod, just before the first write: the
-// operator has suspended the CronJob, and no backup or other restore started
-// in the meantime.
-func readyToWrite(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, ownJob string) error {
-	var cj batchv1.CronJob
-	key := types.NamespacedName{Namespace: sb.Namespace, Name: backup.CronJobName(sb)}
-	if err := c.Get(ctx, key, &cj); err != nil {
+// ScheduledBackup is as the restore was planned from and the operator rendered
+// it, every held CronJob is suspended, and no backup or other restore started.
+func (h *restoreHold) readyToWrite(ctx context.Context, ownJob string) error {
+	var latest b2backupv1.ScheduledBackup
+	if err := h.c.Get(ctx, client.ObjectKeyFromObject(h.plan), &latest); err != nil {
 		return err
 	}
-	if cj.Spec.Suspend == nil || !*cj.Spec.Suspend {
-		return fmt.Errorf("%w: the operator has not suspended cronjob/%s yet, so a backup could start "+
-			"during the restore; nothing was written, try again", ErrNotCurrent, cj.Name)
+	if !equality.Semantic.DeepEqual(latest.Spec, h.plan.Spec) {
+		return fmt.Errorf("%w: scheduledbackup/%s changed after the restore was planned; nothing was written, "+
+			"try again", ErrNotCurrent, h.plan.Name)
 	}
-	return refuseActive(ctx, c, sb, ownJob)
+	if err := requireCurrentBackup(ctx, h.c, &latest); err != nil {
+		return err
+	}
+	for _, key := range h.keys {
+		var sb b2backupv1.ScheduledBackup
+		if err := h.c.Get(ctx, key, &sb); err != nil {
+			return err
+		}
+		var cj batchv1.CronJob
+		switch err := h.c.Get(ctx, types.NamespacedName{Namespace: key.Namespace, Name: backup.CronJobName(&sb)}, &cj); {
+		case apierrors.IsNotFound(err):
+		case err != nil:
+			return err
+		case cj.Spec.Suspend == nil || !*cj.Spec.Suspend:
+			return fmt.Errorf("%w: the operator has not suspended cronjob/%s yet, so a backup could start "+
+				"during the restore; nothing was written, try again", ErrNotCurrent, cj.Name)
+		}
+		if err := refuseActive(ctx, h.c, &sb, ownJob); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func refuseActive(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, ownJob string) error {

@@ -396,7 +396,7 @@ func BuildCronJob(
 			Schedule:                   schedule,
 			TimeZone:                   timeZone(sb),
 			ConcurrencyPolicy:          concurrencyPolicy(sb),
-			Suspend:                    ptr.To(sb.Spec.Suspend),
+			Suspend:                    ptr.To(sb.Spec.Suspend || RestoreHold(sb) != ""),
 			SuccessfulJobsHistoryLimit: sb.Spec.SuccessfulJobsHistoryLimit,
 			FailedJobsHistoryLimit:     sb.Spec.FailedJobsHistoryLimit,
 			JobTemplate:                jobTemplate,

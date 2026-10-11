@@ -131,6 +131,12 @@ one of these:
   be one file and one series. Restores pass the source's excludes, so
   `--delete` leaves them; restic refuses includes and excludes together, which
   `restoreArgs` handles. Verify any change against restic 0.19.1 in the image.
+- **A restore that overwrites is held until its target is whole.** b2bk sets
+  `restore-lock` on every ScheduledBackup sharing the claims or database, and
+  a failed restore leaves `restore-partial`; `backup.RestoreHold` makes the
+  operator suspend their CronJobs and skip triggers whatever `spec.suspend`
+  says. Only a complete restore of the same target, or `b2bk resume`, clears a
+  partial entry.
 - **A plain-SQL restore commits only a complete dump.** psql
   `--single-transaction` commits at end of input, so `restoredb` runs it through
   `dumpdb.RunOpts.Complete` and kills it before closing stdin unless the dump
