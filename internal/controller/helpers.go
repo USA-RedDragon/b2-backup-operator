@@ -35,8 +35,8 @@ func filePrefix(path string) string {
 	return path + "/"
 }
 
-func joinPath(path, name string) string {
-	return filePrefix(path) + name
+func configPath(path string) string {
+	return filePrefix(path) + "config"
 }
 
 func displayPath(path string) string {

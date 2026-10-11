@@ -59,10 +59,10 @@ func TestPathsOverlap(t *testing.T) {
 }
 
 func TestFilePrefixAndConfigName(t *testing.T) {
-	if got := joinPath("backups/app", "config"); got != "backups/app/config" {
-		t.Errorf("joinPath = %q", got)
+	if got := configPath("backups/app"); got != "backups/app/config" {
+		t.Errorf("configPath = %q", got)
 	}
-	if got := joinPath("", "config"); got != "config" {
-		t.Errorf("joinPath at the root = %q, want config", got)
+	if got := configPath(""); got != "config" {
+		t.Errorf("configPath at the root = %q, want config", got)
 	}
 }

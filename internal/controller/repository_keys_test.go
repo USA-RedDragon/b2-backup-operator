@@ -20,9 +20,7 @@ func runningJob(name string, created time.Time, secret string) *batchv1.Job {
 		Name: name, Namespace: testNS, CreationTimestamp: metav1.NewTime(created),
 		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{
-				Name: "restic", EnvFrom: []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secret},
-				}}},
+				Name: resticName, EnvFrom: []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{Name: secret}}},
 			}},
 		}}},
 		Status: batchv1.JobStatus{Active: 1, StartTime: ptr.To(metav1.NewTime(created))},

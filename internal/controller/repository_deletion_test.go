@@ -68,8 +68,8 @@ func TestTamperedStatusNeverWidensDeletion(t *testing.T) {
 		mutate func(*b2backupv1.RepositoryStatus, string)
 	}{
 		{"an empty path", func(s *b2backupv1.RepositoryStatus, _ string) { s.Path = "" }},
-		{"a parent path", func(s *b2backupv1.RepositoryStatus, _ string) { s.Path = "restic" }},
-		{"another bucket name", func(s *b2backupv1.RepositoryStatus, _ string) { s.BucketName = "acme-other" }},
+		{"a parent path", func(s *b2backupv1.RepositoryStatus, _ string) { s.Path = resticName }},
+		{"another bucket name", func(s *b2backupv1.RepositoryStatus, _ string) { s.BucketName = otherBucket }},
 		{"another bucket ID", func(s *b2backupv1.RepositoryStatus, other string) { s.BucketID = other }},
 	}
 	for _, tt := range tests {
@@ -77,7 +77,7 @@ func TestTamperedStatusNeverWidensDeletion(t *testing.T) {
 			t.Parallel()
 			f := newFakeB2(t)
 			bucket := f.AddBucket(sharedBucket)
-			other := f.AddBucket("acme-other")
+			other := f.AddBucket(otherBucket)
 			r, c := newHarness(t, f, prefixRepo(func(r *b2backupv1.Repository) {
 				r.Spec.DeletionPolicy = b2backupv1.DeletionPolicyDelete
 			}))
@@ -129,7 +129,7 @@ func TestDeleteTouchesOnlyResticLayout(t *testing.T) {
 	}))
 	provisionForDeletion(t, r, c)
 	bucket := f.Bucket(ownBucket)
-	for _, name := range []string{"config", "keys/k", "data/00/aa", "snapshots/s", "notes.txt", "restic/other/config"} {
+	for _, name := range []string{"config", "keys/k", "data/00/aa", "snapshots/s", notesFile, "restic/other/config"} {
 		f.PutFile(bucket.BucketID, name, 1)
 	}
 
@@ -138,7 +138,7 @@ func TestDeleteTouchesOnlyResticLayout(t *testing.T) {
 		t.Fatal("a bucket still holding other files was deleted")
 	}
 	got := slices.Sorted(slices.Values(f.FileNames(bucket.BucketID)))
-	if want := []string{"notes.txt", "restic/other/config"}; !slices.Equal(got, want) {
+	if want := []string{notesFile, "restic/other/config"}; !slices.Equal(got, want) {
 		t.Errorf("remaining = %v, want %v", got, want)
 	}
 	events := recordedEvents(t, r)

@@ -20,19 +20,19 @@ func TestLifecycleRuleSemantics(t *testing.T) {
 		reason   string
 		want     map[string]int
 	}{
-		{"a longer parent covers", []b2.LifecycleRule{{FileNamePrefix: "restic/", DaysFromHidingToDeleting: &thirty}},
-			nil, reasonCovered, map[string]int{"restic/": 30}},
+		{"a longer parent covers", []b2.LifecycleRule{{FileNamePrefix: resticPrefix, DaysFromHidingToDeleting: &thirty}},
+			nil, reasonCovered, map[string]int{resticPrefix: 30}},
 		{"an old one-day rule of ours is dropped under a parent", []b2.LifecycleRule{
-			{FileNamePrefix: "restic/", DaysFromHidingToDeleting: &thirty},
-			{FileNamePrefix: "restic/myapp/", DaysFromHidingToDeleting: &one},
-		}, nil, reasonCovered, map[string]int{"restic/": 30}},
+			{FileNamePrefix: resticPrefix, DaysFromHidingToDeleting: &thirty},
+			{FileNamePrefix: myappPrefix, DaysFromHidingToDeleting: &one},
+		}, nil, reasonCovered, map[string]int{resticPrefix: 30}},
 		{"an explicit value adds a rule under a parent", []b2.LifecycleRule{
-			{FileNamePrefix: "restic/", DaysFromHidingToDeleting: &thirty},
-		}, ptr.To(int32(7)), "Managed", map[string]int{"restic/": 30, "restic/myapp/": 7}},
-		{"nothing covers the path", nil, nil, "Managed", map[string]int{"restic/myapp/": 30}},
+			{FileNamePrefix: resticPrefix, DaysFromHidingToDeleting: &thirty},
+		}, ptr.To(int32(7)), reasonManaged, map[string]int{resticPrefix: 30, myappPrefix: 7}},
+		{"nothing covers the path", nil, nil, reasonManaged, map[string]int{myappPrefix: 30}},
 		{"an explicit longer value under a shorter parent", []b2.LifecycleRule{
-			{FileNamePrefix: "restic/", DaysFromHidingToDeleting: &seven},
-		}, ptr.To(int32(30)), "Managed", map[string]int{"restic/": 7, "restic/myapp/": 30}},
+			{FileNamePrefix: resticPrefix, DaysFromHidingToDeleting: &seven},
+		}, ptr.To(int32(30)), reasonManaged, map[string]int{resticPrefix: 7, myappPrefix: 30}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
