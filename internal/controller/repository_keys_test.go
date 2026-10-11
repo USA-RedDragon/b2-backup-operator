@@ -119,3 +119,34 @@ func TestAStalePassNeverDeletesTheNewKey(t *testing.T) {
 		t.Error("a pass reading a Repository from before the rotation deleted the key now in use")
 	}
 }
+
+func TestReadsSecretSeesEveryWayAPodReadsIt(t *testing.T) {
+	t.Parallel()
+	tests := map[string]corev1.PodSpec{
+		"a secret volume": {Volumes: []corev1.Volume{{Name: "v",
+			Secret: &corev1.SecretVolumeSource{SecretName: credsSecretName},
+		}}},
+		"a projected volume": {Volumes: []corev1.Volume{{Name: "v",
+			Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{
+				{ConfigMap: &corev1.ConfigMapProjection{}},
+				{Secret: &corev1.SecretProjection{Name: credsSecretName}},
+			}},
+		}}},
+		"envFrom": {Containers: []corev1.Container{{EnvFrom: []corev1.EnvFromSource{{
+			SecretRef: &corev1.SecretEnvSource{Name: credsSecretName},
+		}}}}},
+		"an env key": {InitContainers: []corev1.Container{{Env: []corev1.EnvVar{{Name: "P",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				Name: credsSecretName, Key: KeyResticPassword,
+			}},
+		}}}}},
+	}
+	for name, spec := range tests {
+		if !readsSecret(&spec, credsSecretName) {
+			t.Errorf("%s: readsSecret = false", name)
+		}
+		if readsSecret(&spec, "other-credentials") {
+			t.Errorf("%s: matched another Secret", name)
+		}
+	}
+}
