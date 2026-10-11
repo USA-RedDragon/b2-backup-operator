@@ -21,7 +21,8 @@ import (
 const (
 	cacheMountPath = "/cache"
 
-	ttlSecondsAfterFinished int32 = 3600
+	// JobTTLSeconds is how long a finished backup Job is kept.
+	JobTTLSeconds int32 = 3600
 
 	hostnameTopologyKey = "kubernetes.io/hostname"
 
@@ -353,7 +354,7 @@ func BuildJobTemplate(
 		Labels:      commonLabels(sb),
 		Annotations: map[string]string{AnnotationForgetScope: ScopeOf(sb).encode()},
 		Spec: batchv1.JobSpec{
-			TTLSecondsAfterFinished: ptr.To(ttlSecondsAfterFinished),
+			TTLSecondsAfterFinished: ptr.To(JobTTLSeconds),
 
 			BackoffLimit: ptr.To(int32(0)),
 			Template: corev1.PodTemplateSpec{

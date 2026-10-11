@@ -115,7 +115,7 @@ data:
 		t.Run(tt.name, func(t *testing.T) {
 			path := fakeSops(t, sopsEmitting(tt.plaintext))
 
-			got, _, err := repositoryURLFromSecret(path)
+			got, err := repositoryURLFromSecret(path)
 			if err != nil {
 				t.Fatalf("repositoryURLFromSecret() error = %v", err)
 			}
@@ -135,7 +135,7 @@ func TestRepositoryURLFromSecretDecryptsRatherThanReadingCiphertext(t *testing.T
 		t.Fatal(err)
 	}
 
-	got, _, err := repositoryURLFromSecret(path)
+	got, err := repositoryURLFromSecret(path)
 	if err != nil {
 		t.Fatalf("repositoryURLFromSecret() error = %v", err)
 	}
@@ -172,7 +172,7 @@ func TestRepositoryURLFromSecretRefusesWhatItCannotRead(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _, err := repositoryURLFromSecret(fakeSops(t, tt.script))
+			got, err := repositoryURLFromSecret(fakeSops(t, tt.script))
 			if err == nil {
 				t.Fatalf("repositoryURLFromSecret() = %q, want an error", got)
 			}
@@ -192,7 +192,7 @@ func TestRepositoryURLFromSecretPointsAtTheWayOut(t *testing.T) {
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
-		_, _, err := repositoryURLFromSecret(path)
+		_, err := repositoryURLFromSecret(path)
 		if err == nil || !strings.Contains(err.Error(), "--repository") {
 			t.Errorf("error = %v, want it to suggest --repository", err)
 		}
@@ -203,7 +203,7 @@ func TestRepositoryURLFromSecretPointsAtTheWayOut(t *testing.T) {
 		if err := os.Remove(filepath.Join(filepath.Dir(path), "sops")); err != nil {
 			t.Fatal(err)
 		}
-		_, _, err := repositoryURLFromSecret(path)
+		_, err := repositoryURLFromSecret(path)
 		if !errors.Is(err, ErrSopsUnavailable) {
 			t.Errorf("error = %v, want ErrSopsUnavailable", err)
 		}

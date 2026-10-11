@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -100,23 +101,34 @@ these backups, so keep it.`,
 // repositoryURL returns the original RESTIC_REPOSITORY from --repository, or
 // from the encrypted Secret --from-secret names, which must belong to namespace.
 func (o migrateOptions) repositoryURL(namespace string, required bool) (string, error) {
+	url, _, err := o.source(namespace, required)
+	return url, err
+}
+
+// source returns the original RESTIC_REPOSITORY and, given --from-secret, every
+// key of the decrypted Secret. The Secret must belong to namespace.
+func (o migrateOptions) source(namespace string, required bool) (string, map[string]string, error) {
 	switch {
 	case o.repository != "":
-		return o.repository, nil
+		return o.repository, nil, nil
 	case o.fromSecret != "":
-		url, secretNamespace, err := repositoryURLFromSecret(o.fromSecret)
+		secret, err := decryptSecret(o.fromSecret)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
-		if secretNamespace != "" && namespace != "" && secretNamespace != namespace {
-			return "", fmt.Errorf("%w: %s is a Secret in namespace %s, but the HelmRelease is in %s",
-				ErrNoRepositoryURL, o.fromSecret, secretNamespace, namespace)
+		values := secret.values()
+		if values["RESTIC_REPOSITORY"] == "" {
+			return "", nil, fmt.Errorf("%w: %s has no RESTIC_REPOSITORY", ErrNoRepositoryURL, o.fromSecret)
 		}
-		return url, nil
+		if ns := secret.Metadata.Namespace; ns != "" && namespace != "" && ns != namespace {
+			return "", nil, fmt.Errorf("%w: %s is a Secret in namespace %s, but the HelmRelease is in %s",
+				ErrNoRepositoryURL, o.fromSecret, ns, namespace)
+		}
+		return values["RESTIC_REPOSITORY"], values, nil
 	case required:
-		return "", fmt.Errorf("%w: pass --repository or --from-secret", ErrNoRepositoryURL)
+		return "", nil, fmt.Errorf("%w: pass --repository or --from-secret", ErrNoRepositoryURL)
 	}
-	return "", nil
+	return "", nil, nil
 }
 
 func runMigrate(out io.Writer, arg string, opts migrateOptions) error {
@@ -129,7 +141,7 @@ func runMigrate(out io.Writer, arg string, opts migrateOptions) error {
 		return err
 	}
 
-	repoURL, err := opts.repositoryURL(hr.Metadata.Namespace, true)
+	repoURL, resticEnvs, err := opts.source(hr.Metadata.Namespace, true)
 	if err != nil {
 		return err
 	}
@@ -138,7 +150,7 @@ func runMigrate(out io.Writer, arg string, opts migrateOptions) error {
 		return err
 	}
 
-	m, err := migrateHelmRelease(hr, loc)
+	m, err := migrateHelmRelease(hr, loc, resticEnvs)
 	if err != nil {
 		return fmt.Errorf("%s: %w", helmReleasePath, err)
 	}
@@ -190,7 +202,7 @@ func (m *migration) validate() error {
 	return err
 }
 
-func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
+func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]string) (*migration, error) {
 	namespace := hr.Metadata.Namespace
 	controller, container, err := hr.backupController()
 	if err != nil {
@@ -206,18 +218,7 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 		return nil, err
 	}
 
-	m := &migration{repo: migratedRepository(namespace, loc), notes: others}
-	if m.repo.Spec.Mode == b2backupv1.StorageModeBucket {
-		m.notes = append(m.notes, fmt.Sprintf(
-			"mode: the repository sits at the root of %s, so the Repository adopts the whole\n"+
-				"bucket. Under deletionPolicy: Delete every file in it would be deleted, restic's\n"+
-				"or not; the default, Retain, deletes nothing.", loc.Bucket))
-	}
-	if !strings.HasPrefix(loc.Endpoint, "https://s3.") || !strings.HasSuffix(loc.Endpoint, ".backblazeb2.com") {
-		m.notes = append(m.notes, fmt.Sprintf(
-			"%s does not look like a B2 S3 endpoint. The operator builds the endpoint from\n"+
-				"the account it is given, so check this repository really lives in B2.", loc.Endpoint))
-	}
+	m := &migration{repo: migratedRepository(namespace, loc), notes: append(others, repositoryNotes(loc)...)}
 
 	name := hr.Metadata.Name
 	if name == "" {
@@ -239,6 +240,12 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 	m.backup = sb
 	if p := controller.CronJob.ConcurrencyPolicy; p != "" {
 		sb.Spec.ConcurrencyPolicy = batchv1.ConcurrencyPolicy(p)
+	}
+	if err := migratePod(hr, controller, container, m); err != nil {
+		return nil, err
+	}
+	if err := migrateResticEnvs(resticEnvs, container, m); err != nil {
+		return nil, err
 	}
 	if original := controller.CronJob.Schedule; original != sb.Spec.Schedule {
 		m.notes = append(m.notes, fmt.Sprintf(
@@ -321,6 +328,157 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 				"set spec.affinity: {} if nothing in this namespace carries that label.", namespace))
 	}
 	return m, nil
+}
+
+// migratePod carries over what app-template puts on the restic CronJob and its
+// pod that a ScheduledBackup can hold, and refuses what it cannot.
+func migratePod(hr *helmRelease, controller hrController, container hrContainer, m *migration) error {
+	spec := &m.backup.Spec
+	if len(controller.Labels) > 0 || len(controller.Annotations) > 0 {
+		return fmt.Errorf("%w: the restic controller sets labels or annotations on its CronJob, "+
+			"which a ScheduledBackup cannot", ErrUnsupportedValues)
+	}
+	cronJob := controller.CronJob
+	if ttl := cronJob.TTLSecondsAfterFinished; ttl != nil && *ttl != backup.JobTTLSeconds {
+		return fmt.Errorf("%w: cronjob.ttlSecondsAfterFinished is %d, and the operator keeps finished Jobs %d seconds",
+			ErrUnsupportedValues, *ttl, backup.JobTTLSeconds)
+	}
+	spec.Suspend = cronJob.Suspend
+	spec.SuccessfulJobsHistoryLimit = cronJob.SuccessfulJobsHistory
+	spec.FailedJobsHistoryLimit = cronJob.FailedJobsHistory
+
+	pod := hr.podOptions()
+	spec.NodeSelector = pod.NodeSelector
+	spec.Tolerations = pod.Tolerations
+	spec.PriorityClassName = pod.PriorityClassName
+	spec.PodLabels = pod.Labels
+	if spec.Resources == nil {
+		spec.Resources = &corev1.ResourceRequirements{}
+	}
+
+	if err := checkEnvFrom(container.EnvFrom); err != nil {
+		return err
+	}
+	return migrateImage(container.Image, m)
+}
+
+func migrateImage(img hrImage, m *migration) error {
+	if img.Repository == "" {
+		return fmt.Errorf("%w: the restic container names no image", ErrUnsupportedValues)
+	}
+	image := img.Repository
+	if tag := scalarString(img.Tag); tag != "" {
+		image += ":" + tag
+	}
+	if img.Digest != "" {
+		image += "@" + img.Digest
+	}
+	if isUpstreamImage(image) {
+		m.notes = append(m.notes, fmt.Sprintf("image: %s is replaced by the operator's backup image, which is\n"+
+			"built on %s with restoredb added. spec.image is left unset so it\n"+
+			"follows the operator's version.", image, upstreamImage))
+		return nil
+	}
+	m.backup.Spec.Image = image
+	m.notes = append(m.notes, fmt.Sprintf("image: %s is kept as spec.image. It must meet the backup image\n"+
+		"contract in the README: restic behind the wrapper that reads RESTIC_GROUP_BY and\n"+
+		"RESTIC_HOST, ts and dumpdb.", image))
+	return nil
+}
+
+// checkEnvFrom accepts the restic-envs Secret, whose RESTIC_PASSWORD the
+// Repository reads, and the restic-b2 Secret of B2 credentials the
+// Repository's own key replaces. Anything else would be dropped.
+func checkEnvFrom(sources []hrEnvFrom) error {
+	readsEnvs := false
+	for _, e := range sources {
+		name := e.Secret
+		if e.SecretRef != nil {
+			name = e.SecretRef.Name
+		}
+		switch {
+		case e.Prefix != "":
+			return fmt.Errorf("%w: envFrom adds the prefix %s", ErrUnsupportedValues, e.Prefix)
+		case e.ConfigMap != "" || e.ConfigMapRef != nil:
+			return fmt.Errorf("%w: the restic container reads its environment from a ConfigMap", ErrUnsupportedValues)
+		case e.SecretRef != nil && e.SecretRef.Optional != nil && *e.SecretRef.Optional:
+			return fmt.Errorf("%w: envFrom reads %s as optional", ErrUnsupportedValues, name)
+		case name == passwordSecretName:
+			readsEnvs = true
+		case name == credentialsSecretName:
+		default:
+			return fmt.Errorf("%w: the restic container reads its environment from the Secret %s, "+
+				"which a ScheduledBackup cannot", ErrUnsupportedValues, name)
+		}
+	}
+	if !readsEnvs {
+		return fmt.Errorf("%w: the restic container does not read %s, where the Repository reads the password",
+			ErrUnsupportedValues, passwordSecretName)
+	}
+	return nil
+}
+
+var (
+	// resticEnvsReplaced are the restic-envs keys the Repository's own Secret supplies.
+	resticEnvsReplaced = []string{"RESTIC_REPOSITORY", "RESTIC_PASSWORD",
+		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"}
+	// resticEnvsRefused would point restic at another repository or key.
+	resticEnvsRefused = []string{"RESTIC_REPOSITORY_FILE", "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND"}
+
+	credentialName = regexp.MustCompile(`PASSWORD|SECRET|TOKEN|_KEY`)
+)
+
+// migrateResticEnvs carries restic-envs' other RESTIC_* keys into spec.env.
+// Without --from-secret its keys cannot be seen, which the output says.
+func migrateResticEnvs(envs map[string]string, container hrContainer, m *migration) error {
+	if envs == nil {
+		m.notes = append(m.notes, "restic-envs: only RESTIC_REPOSITORY and RESTIC_PASSWORD are accounted for.\n"+
+			"Any other key it holds, such as RESTIC_COMPRESSION or RESTIC_GROUP_BY, set the old\n"+
+			"backup's environment and is not carried over. Pass --from-secret to check and carry them.")
+		return nil
+	}
+	var carried []string
+	for _, k := range sortedKeys(envs) {
+		_, overridden := container.Env[k]
+		switch {
+		case slices.Contains(resticEnvsReplaced, k), k == envResticCacheDir:
+		case k == envResticHost && overridden:
+		case !strings.HasPrefix(k, "RESTIC_") || k == envResticHost:
+			return fmt.Errorf("%w: %s holds %s, which a ScheduledBackup cannot carry", ErrUnsupportedValues,
+				passwordSecretName, k)
+		case slices.Contains(resticEnvsRefused, k):
+			return fmt.Errorf("%w: %s sets %s, which would point restic elsewhere", ErrUnsupportedValues,
+				passwordSecretName, k)
+		case credentialName.MatchString(k):
+			return fmt.Errorf("%w: %s holds the credential %s, and spec.env is plaintext", ErrUnsupportedValues,
+				passwordSecretName, k)
+		case overridden:
+		default:
+			setEnv(m.backup, k, envs[k])
+			carried = append(carried, k)
+		}
+	}
+	if len(carried) > 0 {
+		m.notes = append(m.notes, fmt.Sprintf("restic-envs: %s carried into spec.env from the decrypted Secret.",
+			strings.Join(carried, ", ")))
+	}
+	return nil
+}
+
+func repositoryNotes(loc s3Location) []string {
+	var notes []string
+	if loc.Path == "" {
+		notes = append(notes, fmt.Sprintf(
+			"mode: the repository sits at the root of %s, so the Repository adopts the whole\n"+
+				"bucket. Under deletionPolicy: Delete every file in it would be deleted, restic's\n"+
+				"or not; the default, Retain, deletes nothing.", loc.Bucket))
+	}
+	if !strings.HasPrefix(loc.Endpoint, "https://s3.") || !strings.HasSuffix(loc.Endpoint, ".backblazeb2.com") {
+		notes = append(notes, fmt.Sprintf(
+			"%s does not look like a B2 S3 endpoint. The operator builds the endpoint from\n"+
+				"the account it is given, so check this repository really lives in B2.", loc.Endpoint))
+	}
+	return notes
 }
 
 func migratedRepository(namespace string, loc s3Location) *b2backupv1.Repository {

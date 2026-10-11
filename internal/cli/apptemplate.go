@@ -22,6 +22,8 @@ import (
 var ErrAppTemplateUnmodeled = errors.New("not modelled by parity's app-template renderer")
 
 const (
+	appTemplateChart = "app-template"
+
 	controllerTypeCronJob = "cronjob"
 	controllerTypeJob     = "job"
 
@@ -879,25 +881,33 @@ func checkKeys(where string, m map[string]any, allowed []string) error {
 // refuseTemplates refuses a Go template anywhere in the values: app-template
 // runs most strings through tpl, which this renderer does not.
 func refuseTemplates(where string, v any) error {
+	if at := findTemplate(where, v); at != "" {
+		return unmodeled("%s holds a Helm template, which the chart would expand", at)
+	}
+	return nil
+}
+
+// findTemplate returns where the first Helm template in v is, or "".
+func findTemplate(where string, v any) string {
 	switch value := v.(type) {
 	case string:
 		if strings.Contains(value, "{{") {
-			return unmodeled("%s holds a Helm template, which the chart would expand", where)
+			return where
 		}
 	case map[string]any:
 		for _, k := range sortedKeys(value) {
-			if err := refuseTemplates(where+"."+k, value[k]); err != nil {
-				return err
+			if at := findTemplate(where+"."+k, value[k]); at != "" {
+				return at
 			}
 		}
 	case []any:
 		for i, item := range value {
-			if err := refuseTemplates(fmt.Sprintf("%s[%d]", where, i), item); err != nil {
-				return err
+			if at := findTemplate(fmt.Sprintf("%s[%d]", where, i), item); at != "" {
+				return at
 			}
 		}
 	}
-	return nil
+	return ""
 }
 
 func mergeStrings(dst map[string]string, v any, where string) error {

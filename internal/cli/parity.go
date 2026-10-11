@@ -528,7 +528,7 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 	if err != nil {
 		return fmt.Errorf("reading the original backup: %w", err)
 	}
-	repositoryURL, err := opts.repositoryURL(original.namespace, false)
+	repositoryURL, resticEnvs, err := opts.source(original.namespace, false)
 	if err != nil {
 		return err
 	}
@@ -543,6 +543,9 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 	}
 
 	var r parityReport
+	if readsSecret(original.cronJob, passwordSecretName) {
+		addResticEnvs(&r, o.env, resticEnvs)
+	}
 	if err := compareSchedules(&r, o, g); err != nil {
 		return err
 	}
@@ -562,6 +565,37 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 		}
 	}
 	return r.print(out)
+}
+
+// addResticEnvs adds what restic-envs puts in the original's environment
+// beyond what the Repository's Secret replaces. A container's env wins over
+// its envFrom, so a name the container sets keeps its value.
+func addResticEnvs(r *parityReport, env, resticEnvs map[string]string) {
+	if resticEnvs == nil {
+		r.note("RESTIC-ENVS UNCHECKED: %s may hold keys besides RESTIC_REPOSITORY and RESTIC_PASSWORD "+
+			"that set the original's environment; pass --from-secret to compare them", passwordSecretName)
+		return
+	}
+	for k, v := range resticEnvs {
+		if _, set := env[k]; set || slices.Contains(resticEnvsReplaced, k) || k == envResticHost ||
+			k == envResticCacheDir {
+			continue
+		}
+		if credentialName.MatchString(k) {
+			v = "<from " + passwordSecretName + ">"
+		}
+		env[k] = v
+	}
+}
+
+func readsSecret(cj *batchv1.CronJob, name string) bool {
+	container, err := backupContainer(cj.Spec.JobTemplate.Spec.Template.Spec)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(container.EnvFrom, func(e corev1.EnvFromSource) bool {
+		return e.SecretRef != nil && e.SecretRef.Name == name
+	})
 }
 
 func (r *parityReport) print(out io.Writer) error {

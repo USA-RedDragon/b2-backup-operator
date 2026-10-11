@@ -617,7 +617,7 @@ the original sets none, the operator's own security contexts.
 | Flag | |
 | --- | --- |
 | `--repository` | The original `s3:` URL, as it appears in `RESTIC_REPOSITORY` |
-| `--from-secret` | A SOPS-encrypted Secret to read it from. Its `metadata.namespace` must be the HelmRelease's |
+| `--from-secret` | A SOPS-encrypted Secret to read it from. Its `metadata.namespace` must be the HelmRelease's. Its other keys are compared as part of the original's environment |
 
 The script comparison ignores the quoting around `--exclude` patterns and the
 `--retry-lock` and `--secret-mount` flags, which the operator renders and the
@@ -654,6 +654,7 @@ printed with the time of day in the schedule's time zone, such as
 | `IMAGE CHANGES` | note | `ghcr.io/gabe565/restic`, directly or through a mirror, becomes the operator's image, which is built on it |
 | `AFFINITY ADDED` | note | The original sets none and the operator adds only a preference |
 | `POD LABELS CHANGE` | note | app-template's own `app.kubernetes.io/controller`, `name` or `instance` label is gone |
+| `RESTIC-ENVS UNCHECKED` | note | Without `--from-secret`, keys in `restic-envs` besides `RESTIC_REPOSITORY` and `RESTIC_PASSWORD` cannot be compared |
 | `INIT JOB REPLACED` | note | The release's `restic init` Job; the Repository initializes or adopts the repository itself |
 | `SCRIPT DIFFERS` | 1 | Followed by both scripts |
 | `COMMAND DIFFERS` | 1 | The original does not run `sh -c <script>` |
@@ -705,7 +706,7 @@ encrypted Secret, so pass it:
 | Flag | |
 | --- | --- |
 | `--repository` | The `s3:` URL, as it appears in `RESTIC_REPOSITORY` |
-| `--from-secret` | A SOPS-encrypted Secret to decrypt with `sops` and read `RESTIC_REPOSITORY` from, such as `<app>-restic.yaml` in the secrets repository. Its `metadata.namespace` must be the HelmRelease's |
+| `--from-secret` | A SOPS-encrypted Secret to decrypt with `sops` and read `RESTIC_REPOSITORY` from, such as `<app>-restic.yaml` in the secrets repository. Its `metadata.namespace` must be the HelmRelease's. Its other `RESTIC_*` keys are carried into `spec.env` |
 
 Both the `s3:https://host/bucket/path` form and the scheme-less
 `s3:host/bucket/path` form are accepted, and the bucket name must be one a
@@ -730,8 +731,11 @@ What maps across:
 | The volume restic keeps its cache on: mounted where `--cache-dir`, then `RESTIC_CACHE_DIR`, then the image's `/cache` points, and not backed up by the script | Nothing, or `spec.cache.storageClass` for a claim the chart created. The operator mounts a cache claim of its own at `/cache`, and `RESTIC_CACHE_DIR` is dropped. A volume anywhere else is data, whatever its name |
 | The container's `workingDir` | `spec.workingDir`, when it is not the default the operator would use |
 | The one Secret mounted | `spec.database.secretName`; a `<cluster>-app` or `<cluster>-superuser` name also sets `cnpgCluster` |
-| `defaultPodOptions.affinity` or the controller's `pod.affinity` | `spec.affinity`, verbatim |
-| Container `resources`, CronJob `timeZone` and `concurrencyPolicy` | The same fields |
+| `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` and `labels`, from the controller's `pod` or else `defaultPodOptions` | `spec.affinity`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` and `spec.podLabels`, verbatim |
+| Container `resources`, CronJob `timeZone`, `concurrencyPolicy` and `suspend` | The same fields. No `resources` becomes `resources: {}`, so the operator's default limits do not apply |
+| CronJob `successfulJobsHistory` and `failedJobsHistory` | `spec.successfulJobsHistoryLimit` and `spec.failedJobsHistoryLimit` |
+| An image from `ghcr.io/gabe565/restic`, directly or through a mirror | Nothing: the operator's image is built on it. Any other image becomes `spec.image`, and must meet the image contract in the README |
+| `envFrom` of `restic-envs` and `restic-b2` | The Repository's Secret, with `restic-envs` as the password's source. Given `--from-secret`, every other `RESTIC_*` key in `restic-envs` goes into `spec.env`; without it, the output warns that those keys went unchecked |
 | `DB_HOST`, `DB_DATABASE` and `DB_USERNAME` beside a mariadb dump | `spec.database.host`, `name` and `user`, and not `spec.env`, where the operator refuses them |
 | Plain `env` values other than `TZ`, `RESTIC_HOST`, `RESTIC_CACHE_DIR` and `CNPG_SECRET_PATH` | `spec.env` |
 | A `job` controller whose one container only runs `restic init` (or `restic init \|\| true`) | Nothing. The Repository initializes or adopts the repository itself, and the output notes the drop |
@@ -752,6 +756,17 @@ operator runs its own; another shell, arguments after the script, or no
 `migrate` builds the CronJob the operator would for what it generated, through
 the operator's own validation, and refuses to print a ScheduledBackup the
 operator would reject.
+
+`spec.values` is read strictly: a key `migrate` does not carry over is refused,
+not dropped. So are `spec.valuesFrom`, `spec.postRenderers`, a chart other than
+`app-template`, a Helm template (`{{ ... }}`) in a value, labels or annotations
+on the CronJob, pod annotations, `defaultPodOptionsStrategy`, `backoffLimit`,
+`startingDeadlineSeconds`, `activeDeadlineSeconds`, a `ttlSecondsAfterFinished`
+other than the operator's 3600, any `envFrom` other than `restic-envs` and
+`restic-b2`, and, in `restic-envs`, a key that is not `RESTIC_*`, one that would
+point restic at another repository or key (`RESTIC_REPOSITORY_FILE`,
+`RESTIC_PASSWORD_FILE`, `RESTIC_PASSWORD_COMMAND`), or a credential, since
+`spec.env` is plaintext.
 
 `migrate` refuses a HelmRelease whose `restic` controller is disabled or is not
 a `cronjob`, runs init containers or any container but `restic`, or that runs

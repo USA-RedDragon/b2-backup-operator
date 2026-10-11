@@ -646,7 +646,7 @@ func TestParityComparesTheWholePodTheOriginalRuns(t *testing.T) {
 		{"suspend", "          timeZone: America/Chicago\n", "          timeZone: America/Chicago\n          suspend: true\n",
 			"SUSPEND DIFFERS"},
 		{"another image", "repository: ghcr.io/gabe565/restic", "repository: docker.io/restic/restic", "IMAGE DIFFERS"},
-		{"another envFrom Secret", "                  name: restic-envs\n",
+		{"another envFrom Secret", envsSecretLine,
 			"                  name: restic-envs\n              - secretRef:\n                  name: app-extra\n", "ENVFROM DIFFERS"},
 		{"an init container", pod, pod + "        initContainers:\n          prepare:\n            image: {repository: busybox, tag: '1'}\n" +
 			"            command: [sh, -c, 'true']\n", "CONTAINERS DIFFER"},
@@ -703,5 +703,33 @@ func TestParityCatchesResticsCacheBackedUpInPlaceOfAClaim(t *testing.T) {
 	err := runParity(&out, gen, hr, migrateOptions{})
 	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), volumeDiffers+": original app-cache at /cache") {
 		t.Errorf("parity = %v; restic's own cache backed up in place of app-cache must differ:\n%s", err, out.String())
+	}
+}
+
+func TestParityComparesResticEnvsGivenTheSecret(t *testing.T) {
+	dir := t.TempDir()
+	hr := filepath.Join(dir, "helmrelease.yaml")
+	gen := filepath.Join(dir, "generated.yaml")
+	if err := os.WriteFile(hr, []byte(parityRelease), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gen, []byte(strings.ReplaceAll(parityGenerated, "acme-backups", testBucket)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := runParity(&out, gen, hr, migrateOptions{repository: sopsRepoURL}); err != nil ||
+		!strings.Contains(out.String(), "RESTIC-ENVS UNCHECKED") {
+		t.Errorf("parity = %v, want restic-envs noted as unchecked:\n%s", err, out.String())
+	}
+
+	secret := fakeSops(t, sopsEmitting("stringData:\n  RESTIC_REPOSITORY: "+sopsRepoURL+
+		"\n  RESTIC_PASSWORD: hunter2\n  RESTIC_COMPRESSION: max\n"))
+	out.Reset()
+	err := runParity(&out, gen, hr, migrateOptions{fromSecret: secret})
+	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), "RESTIC_COMPRESSION=max") ||
+		strings.Contains(out.String(), "hunter2") {
+		t.Errorf("parity = %v, want RESTIC_COMPRESSION from restic-envs compared, and no password shown:\n%s",
+			err, out.String())
 	}
 }

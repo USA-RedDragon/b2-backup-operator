@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -1025,5 +1026,149 @@ func TestMigrateAMariaDBBackupTheOperatorAccepts(t *testing.T) {
 	var out bytes.Buffer
 	if err := runParity(&out, generated, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
 		t.Errorf("parity: %v\n%s", err, out.String())
+	}
+}
+
+func migrateAndParity(t *testing.T, body string, opts migrateOptions) (*b2backupv1.ScheduledBackup, string, string, error) {
+	t.Helper()
+	dir := writeHomeClusterRelease(t, body)
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, dir, opts); err != nil {
+		t.Fatalf("migrate: %v\n%s", err, buf.String())
+	}
+	_, sb := migrated(t, buf.String())
+	generated := filepath.Join(t.TempDir(), "generated.yaml")
+	if err := os.WriteFile(generated, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runParity(&out, generated, dir, opts)
+	return sb, buf.String(), out.String(), err
+}
+
+func TestMigrateCarriesWhatTheCRDHolds(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "    defaultPodOptions:\n", `    defaultPodOptions:
+      nodeSelector: {kubernetes.io/arch: amd64}
+      tolerations:
+        - {key: dedicated, operator: Equal, value: backup, effect: NoSchedule}
+      labels: {team: storage}
+`, 1)
+	body = strings.Replace(body, "        type: cronjob\n", `        type: cronjob
+        pod:
+          priorityClassName: low
+          nodeSelector: {kubernetes.io/hostname: alpha}
+`, 1)
+	body = strings.Replace(body, "          concurrencyPolicy: Forbid\n",
+		"          concurrencyPolicy: Forbid\n          suspend: true\n          successfulJobsHistory: 5\n", 1)
+	body = strings.Replace(body, "              requests:\n                cpu: 10m\n                memory: 256Mi\n", "", 1)
+	body = strings.Replace(body, "            resources:\n", "", 1)
+
+	sb, migrateOut, parityOut, err := migrateAndParity(t, body, migrateOptions{repository: sopsRepoURL})
+	s := sb.Spec
+	if !s.Suspend || s.NodeSelector["kubernetes.io/hostname"] != "alpha" || len(s.NodeSelector) != 1 ||
+		len(s.Tolerations) != 1 || s.PriorityClassName != "low" || s.PodLabels["team"] != "storage" ||
+		ptr.Deref(s.SuccessfulJobsHistoryLimit, 0) != 5 {
+		t.Errorf("spec = %+v; want suspend, the pod's nodeSelector over the default, tolerations, "+
+			"priorityClassName, labels and the history limit carried over", s)
+	}
+	if s.Resources == nil || len(s.Resources.Limits) != 0 || len(s.Resources.Requests) != 0 {
+		t.Errorf("resources = %+v, want empty, as the original sets none, not the operator's limits", s.Resources)
+	}
+	if s.Image != "" || !strings.Contains(migrateOut, "image: ghcr.io/gabe565/restic") {
+		t.Errorf("image = %q; want the operator's image, built on the upstream one, and the switch noted:\n%s",
+			s.Image, migrateOut)
+	}
+	if !errors.Is(err, ErrParityDiffers) || strings.Contains(parityOut, "DIFFER") ||
+		!strings.Contains(parityOut, "DUMP FORMAT CHANGES") {
+		t.Errorf("parity = %v, want only the dump change:\n%s\n%s", err, parityOut, migrateOut)
+	}
+}
+
+func TestMigrateCarriesAnotherImage(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "              repository: ghcr.io/gabe565/restic\n              tag: 0.19.1\n",
+		"              repository: registry.example.com/backup\n              tag: \"2\"\n", 1)
+	sb, _, parityOut, _ := migrateAndParity(t, body, migrateOptions{repository: sopsRepoURL})
+	if sb.Spec.Image != "registry.example.com/backup:2" || strings.Contains(parityOut, "IMAGE DIFFERS") {
+		t.Errorf("image = %q, want the HelmRelease's kept:\n%s", sb.Spec.Image, parityOut)
+	}
+}
+
+func TestMigrateRefusesWhatTheCRDCannotHold(t *testing.T) {
+	t.Parallel()
+	const container = "            workingDir: /\n"
+	const cronjob = "          concurrencyPolicy: Forbid\n"
+	tests := []struct{ name, old, new string }{
+		{"a key migrate does not read", container, container + "            ports: [{containerPort: 80}]\n"},
+		{"pod annotations", "    defaultPodOptions:\n", "    defaultPodOptions:\n      annotations: {a: b}\n"},
+		{"labels on the CronJob", "        type: cronjob\n", "        type: cronjob\n        labels: {a: b}\n"},
+		{"a retry limit", cronjob, cronjob + "          backoffLimit: 2\n"},
+		{"a time limit", cronjob, cronjob + "          activeDeadlineSeconds: 600\n"},
+		{"another Job lifetime", cronjob, cronjob + "          ttlSecondsAfterFinished: 60\n"},
+		{"another envFrom Secret", envsSecretLine,
+			"                  name: restic-envs\n              - secretRef:\n                  name: app-extra\n"},
+		{"a ConfigMap in envFrom", envsSecretLine,
+			"                  name: restic-envs\n              - configMapRef:\n                  name: settings\n"},
+		{"a prefixed restic-envs", envsSecretLine, "                  name: restic-envs\n                prefix: X_\n"},
+		{"no restic-envs", "              - secretRef:\n                  name: restic-envs\n", ""},
+		{"values from elsewhere", specValuesLines, "spec:\n  valuesFrom:\n    - kind: ConfigMap\n      name: extra\n  values:\n"},
+		{"a post-renderer", specValuesLines, "spec:\n  postRenderers:\n    - kustomize: {patches: []}\n  values:\n"},
+		{"another chart", specValuesLines, "spec:\n  chart:\n    spec:\n      chart: other\n  values:\n"},
+		{"a Helm template", "workingDir: /\n", "workingDir: \"{{ .Release.Namespace }}\"\n"},
+		{"a defaultPodOptionsStrategy", "    defaultPodOptions:\n", "    defaultPodOptionsStrategy: merge\n    defaultPodOptions:\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if !strings.Contains(homeClusterRelease, tt.old) {
+				t.Fatalf("fixture has no %q", tt.old)
+			}
+			out, err := migrate(t, strings.Replace(homeClusterRelease, tt.old, tt.new, 1))
+			if !errors.Is(err, ErrUnsupportedValues) {
+				t.Errorf("err = %v, want ErrUnsupportedValues\n%s", err, out)
+			}
+		})
+	}
+}
+
+func TestMigrateWarnsItCannotSeeInsideResticEnvs(t *testing.T) {
+	t.Parallel()
+	out, err := migrate(t, homeClusterRelease)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !strings.Contains(out, "# restic-envs: ") || !strings.Contains(out, "--from-secret") {
+		t.Errorf("no warning that restic-envs' other keys went unchecked:\n%s", out)
+	}
+}
+
+func TestMigrateCarriesResticEnvsKeysFromTheSecret(t *testing.T) {
+	secret := fakeSops(t, sopsEmitting("metadata:\n  namespace: "+kustomizedNS+"\nstringData:\n  RESTIC_REPOSITORY: "+
+		sopsRepoURL+"\n  RESTIC_PASSWORD: hunter2\n  RESTIC_COMPRESSION: max\n  RESTIC_READ_CONCURRENCY: \"4\"\n"))
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, writeHomeClusterRelease(t, homeClusterRelease), migrateOptions{fromSecret: secret}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, sb := migrated(t, buf.String())
+	if sb.Spec.Env["RESTIC_COMPRESSION"] != "max" || sb.Spec.Env["RESTIC_READ_CONCURRENCY"] != "4" {
+		t.Errorf("env = %v, want restic-envs' other RESTIC_ keys carried over", sb.Spec.Env)
+	}
+	if strings.Contains(buf.String(), "hunter2") || !strings.Contains(buf.String(), "RESTIC_COMPRESSION") {
+		t.Errorf("want the carried keys named and the password left out:\n%s", buf.String())
+	}
+
+	for name, extra := range map[string]string{
+		"a password file":      "  RESTIC_PASSWORD_FILE: /pw\n",
+		"a credential":         "  RESTIC_REST_PASSWORD: x\n",
+		"a key restic ignores": "  APP_TOKEN: x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			secret := fakeSops(t, sopsEmitting("stringData:\n  RESTIC_REPOSITORY: "+sopsRepoURL+"\n  RESTIC_PASSWORD: p\n"+extra))
+			err := runMigrate(&bytes.Buffer{}, writeHomeClusterRelease(t, homeClusterRelease), migrateOptions{fromSecret: secret})
+			if !errors.Is(err, ErrUnsupportedValues) {
+				t.Errorf("err = %v, want ErrUnsupportedValues", err)
+			}
+		})
 	}
 }

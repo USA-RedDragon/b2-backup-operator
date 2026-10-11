@@ -41,6 +41,9 @@ const (
 	subjectRepo    = "repository/" + testRepoName
 	subjectBackup  = "scheduledbackup/" + testBackupName
 
+	envsSecretLine  = "                  name: restic-envs\n"
+	specValuesLines = "spec:\n  values:\n"
+
 	kindRepository      = "Repository"
 	kindScheduledBackup = "ScheduledBackup"
 )
