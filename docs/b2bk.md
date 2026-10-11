@@ -602,8 +602,9 @@ file on them can be read, the working directory, the snapshot host, the
 environment, `envFrom`, the database Secret, resources, security contexts,
 affinity, node selector, tolerations, priority class, pod labels and
 annotations, every other container, and whatever else is left in the pod and
-container spec. Given the original `RESTIC_REPOSITORY` it also compares the
-Repository's bucket and path. Both scripts are compared without the preamble
+container spec. It compares the namespace and the key the Repository opens the repository
+with, and, given the original `RESTIC_REPOSITORY`, the Repository's bucket and
+path. Both scripts are compared without the preamble
 and postamble around them, the hand-written `exec > >(ts ...)` and `set -eu` on
 one side and the operator's on the other.
 
@@ -663,6 +664,7 @@ printed with the time of day in the schedule's time zone, such as
 | `AFFINITY ADDED` | note | The original sets none and the operator adds only a preference |
 | `POD LABELS CHANGE` | note | app-template's own `app.kubernetes.io/controller`, `name` or `instance` label is gone |
 | `TIMEZONE UNSET` | note | The original CronJob sets no `timeZone`; it is compared as UTC, the kube-controller-manager's zone |
+| `REPOSITORY UNCHECKED` | note | No `--repository` or `--from-secret` was given, so the bucket and path were not compared; or the generated file holds no Repository, so neither they nor its password source were |
 | `RESTIC-ENVS UNCHECKED` | note | Without `--from-secret`, keys in `restic-envs` besides `RESTIC_REPOSITORY` and `RESTIC_PASSWORD` cannot be compared |
 | `INIT JOB REPLACED` | note | The release's `restic init` Job; the Repository initializes or adopts the repository itself |
 | `SCRIPT DIFFERS` | 1 | Followed by both scripts |
@@ -680,6 +682,8 @@ printed with the time of day in the schedule's time zone, such as
 | `DATABASE SECRET DIFFERS` | 1 | |
 | `DATABASE SECRET UNREAD` | 1 | A dump in the generated backup reads its credentials from a directory where no Secret is mounted: `dumpdb`'s `--secret-mount`, by default `/postgresql-app` or `/mariadb`, or `backup-cnpg.sh`'s `CNPG_SECRET_PATH` |
 | `REPOSITORY DIFFERS` | 1 | The Repository is not at the original bucket and path |
+| `PASSWORD DIFFERS` | 1 | The Repository would open the repository with another key than the original did: `restic-envs`/`RESTIC_PASSWORD`, or a `RESTIC_PASSWORD*` or `RESTIC_REPOSITORY_FILE` variable |
+| `NAMESPACE DIFFERS` | 1 | The ScheduledBackup or Repository is not in the namespace the original runs in |
 | `SUSPEND DIFFERS`, `CONCURRENCY DIFFERS` | 1 | |
 | `JOB SETTINGS DIFFER` | 1 | `activeDeadlineSeconds`, `parallelism` or `completions` |
 | `IMAGE DIFFERS` | 1 | Any other image change |

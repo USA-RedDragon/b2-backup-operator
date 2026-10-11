@@ -137,7 +137,15 @@ func TestParityDoesNotRescheduleWhenNothingMoved(t *testing.T) {
 
 func TestParityIsIdenticalAgainstTheOperatorsOwnCronJob(t *testing.T) {
 	t.Parallel()
-	generated := writeGenerated(t, "36 * * * *")
+	generated := writeManifest(t, "apiVersion: b2backup.mcswain.dev/v1\nkind: Repository\nmetadata:\n  name: store\n"+
+		"  namespace: prod\nspec:\n  mode: Prefix\n  bucket: "+testBucket+"\n  path: "+testPath+"\n---\n")
+	scheduled, err := os.ReadFile(writeGenerated(t, "36 * * * *"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(generated, append(mustRead(t, generated), scheduled...), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cj, _, _, err := generatedCronJob(generated)
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +159,8 @@ func TestParityIsIdenticalAgainstTheOperatorsOwnCronJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := runParity(&out, generated, original, migrateOptions{}); err != nil || strings.TrimSpace(out.String()) != "IDENTICAL" {
+	if err := runParity(&out, generated, original, migrateOptions{repository: testRepoURL}); err != nil ||
+		strings.TrimSpace(out.String()) != "IDENTICAL" {
 		t.Errorf("parity against the operator's own CronJob = %v:\n%s", err, out.String())
 	}
 }
@@ -175,6 +184,15 @@ spec:
 	if err == nil || !strings.Contains(err.Error(), "DB_HOST") {
 		t.Errorf("parity = %v, want the operator's refusal of DB_HOST in spec.env", err)
 	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func writeManifest(t *testing.T, body string) string {
@@ -524,6 +542,7 @@ spec:
   mode: Prefix
   bucket: acme-backups
   path: restic/app
+  passwordSecretRef: {name: restic-envs, key: RESTIC_PASSWORD}
 ---
 apiVersion: b2backup.mcswain.dev/v1
 kind: ScheduledBackup
@@ -828,6 +847,48 @@ func TestParityRefusesAReleaseItCannotRenderWhole(t *testing.T) {
 			}
 			if err := runParity(&bytes.Buffer{}, gen, hr, migrateOptions{}); !errors.Is(err, ErrAppTemplateUnmodeled) {
 				t.Errorf("parity = %v, want ErrAppTemplateUnmodeled", err)
+			}
+		})
+	}
+}
+
+func TestParityComparesWhereTheBackupLivesAndWhichKeyOpensIt(t *testing.T) {
+	t.Parallel()
+	const withPassword = "  path: restic/app\n  passwordSecretRef: {name: restic-envs, key: RESTIC_PASSWORD}\n"
+	tests := []struct {
+		name      string
+		generated func(string) string
+		opts      migrateOptions
+		want      string
+	}{
+		{"the password Secret", func(s string) string {
+			return strings.Replace(s, withPassword, "  path: restic/app\n  passwordSecretRef: {name: other, key: RESTIC_PASSWORD}\n", 1)
+		}, migrateOptions{repository: sopsRepoURL}, "PASSWORD DIFFERS"},
+		{"a generated password", func(s string) string {
+			return strings.Replace(s, withPassword, "  path: restic/app\n", 1)
+		}, migrateOptions{repository: sopsRepoURL}, "PASSWORD DIFFERS"},
+		{"the namespace", func(s string) string {
+			return strings.ReplaceAll(s, "  namespace: app\n", "  namespace: other\n")
+		}, migrateOptions{repository: sopsRepoURL}, "NAMESPACE DIFFERS"},
+		{"no repository given", func(s string) string { return s }, migrateOptions{}, "REPOSITORY UNCHECKED"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			hr := filepath.Join(dir, "helmrelease.yaml")
+			gen := filepath.Join(dir, "generated.yaml")
+			generated := strings.ReplaceAll(parityGenerated, "acme-backups", testBucket)
+			if err := os.WriteFile(hr, []byte(parityRelease), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(gen, []byte(tt.generated(generated)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			_ = runParity(&out, gen, hr, tt.opts)
+			if !strings.Contains(out.String(), tt.want) {
+				t.Errorf("want %s in:\n%s", tt.want, out.String())
 			}
 		})
 	}
