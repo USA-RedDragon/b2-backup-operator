@@ -13,7 +13,6 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -21,9 +20,6 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -160,12 +156,6 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	managedByOperator := cache.ByObject{
-		Label: labels.SelectorFromSet(labels.Set{
-			"app.kubernetes.io/managed-by": "b2-backup-operator",
-		}),
-	}
-
 	credentials, err := parseNamespacedName(credentialsSecret, os.Getenv("POD_NAMESPACE"))
 	if err != nil {
 		setupLog.Error(err, "Invalid --b2-credentials-secret")
@@ -173,26 +163,10 @@ func main() {
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsServerOptions,
-		Cache: cache.Options{
-			ByObject: map[client.Object]cache.ByObject{
-				&batchv1.Job{}:     managedByOperator,
-				&batchv1.CronJob{}: managedByOperator,
-			},
-		},
-		Client: client.Options{
-			Cache: &client.CacheOptions{
-				// A cached client builds an informer over every object of the type, not
-				// just the handful read by name. Caching Secrets holds every Helm
-				// release and pull secret in the cluster in memory, which is what was
-				// OOM killing the manager.
-				DisableFor: []client.Object{
-					&corev1.Secret{},
-					&corev1.PersistentVolumeClaim{},
-				},
-			},
-		},
+		Scheme:                 scheme,
+		Metrics:                metricsServerOptions,
+		Cache:                  controller.CacheOptions(),
+		Client:                 client.Options{Cache: controller.ClientCacheOptions()},
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
