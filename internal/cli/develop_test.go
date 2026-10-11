@@ -683,3 +683,25 @@ func TestParityComparesTheWholePodTheOriginalRuns(t *testing.T) {
 		})
 	}
 }
+
+func TestParityCatchesResticsCacheBackedUpInPlaceOfAClaim(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	hr := filepath.Join(dir, "helmrelease.yaml")
+	gen := filepath.Join(dir, "generated.yaml")
+	original := strings.Replace(parityRelease, "restic backup --tag=files /data", "restic backup --tag=files /cache", 1) +
+		"      cache:\n        existingClaim: app-cache\n"
+	generated := strings.Replace(parityGenerated, "  sources:\n    - type: files\n      paths: [/data]\n  retention: {daily: 7}\n",
+		"  cache: {}\n  script: |\n    restic backup --tag=files /cache\n    restic forget --prune --keep-daily=7\n", 1)
+	if err := os.WriteFile(hr, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gen, []byte(generated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runParity(&out, gen, hr, migrateOptions{})
+	if !errors.Is(err, ErrParityDiffers) || !strings.Contains(out.String(), volumeDiffers+": original app-cache at /cache") {
+		t.Errorf("parity = %v; restic's own cache backed up in place of app-cache must differ:\n%s", err, out.String())
+	}
+}

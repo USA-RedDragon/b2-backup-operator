@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -78,6 +79,7 @@ func enabledContainers(containers map[string]hrContainer) []string {
 
 type hrContainer struct {
 	Enabled         *bool                        `json:"enabled"`
+	Image           hrImage                      `json:"image"`
 	Command         []string                     `json:"command"`
 	Args            []string                     `json:"args"`
 	WorkingDir      string                       `json:"workingDir"`
@@ -243,6 +245,29 @@ func (hr *helmRelease) podSecurityContext() *corev1.PodSecurityContext {
 		return sc
 	}
 	return hr.Spec.Values.DefaultPodOptions.SecurityContext
+}
+
+type hrImage struct {
+	Repository string `json:"repository"`
+	Tag        any    `json:"tag"`
+	Digest     string `json:"digest"`
+	PullPolicy string `json:"pullPolicy"`
+}
+
+// cacheDir is where restic keeps its cache in the container: --cache-dir, then
+// RESTIC_CACHE_DIR, then the default of the image the operator's is built on.
+// It is empty when that cannot be told.
+func (c hrContainer) cacheDir(script string) string {
+	if m := cacheDirFlag.FindStringSubmatch(script); m != nil {
+		return pathpkg.Clean(strings.Trim(m[1], `'"`))
+	}
+	if dir := c.env(envResticCacheDir); dir != "" {
+		return pathpkg.Clean(dir)
+	}
+	if isUpstreamImage(c.Image.Repository) || isOperatorImage(c.Image.Repository+":") {
+		return operatorCacheDir
+	}
+	return ""
 }
 
 var scriptShells = []string{"sh", "/bin/sh"}

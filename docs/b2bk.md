@@ -727,6 +727,7 @@ What maps across:
 | `restic forget --prune --keep-...` | `spec.retention`, which the operator scopes to the backup's own tags |
 | Every `existingClaim` mounted in the restic container | `spec.volumes`, with the mount path and read-only flag app-template gives each, the working directory's claim first |
 | An `emptyDir` mounted in the restic container | `spec.scratch`, with its `sizeLimit` |
+| The volume restic keeps its cache on: mounted where `--cache-dir`, then `RESTIC_CACHE_DIR`, then the image's `/cache` points, and not backed up by the script | Nothing, or `spec.cache.storageClass` for a claim the chart created. The operator mounts a cache claim of its own at `/cache`, and `RESTIC_CACHE_DIR` is dropped. A volume anywhere else is data, whatever its name |
 | The container's `workingDir` | `spec.workingDir`, when it is not the default the operator would use |
 | The one Secret mounted | `spec.database.secretName`; a `<cluster>-app` or `<cluster>-superuser` name also sets `cnpgCluster` |
 | `defaultPodOptions.affinity` or the controller's `pod.affinity` | `spec.affinity`, verbatim |
@@ -751,7 +752,8 @@ operator runs its own; another shell, arguments after the script, or no
 a `cronjob`, runs init containers or any container but `restic`, or that runs
 any other controller than that `restic init` Job, rather than drop them.
 
-`migrate` refuses what a ScheduledBackup cannot mount: more than one Secret, more
+`migrate` refuses what a ScheduledBackup cannot mount: data at `/cache`, where
+the operator mounts restic's cache, more than one Secret, more
 than one `emptyDir`, any other volume type, or a `subPath`.
 
 The Repository it writes has no `lifecycle` block and the default

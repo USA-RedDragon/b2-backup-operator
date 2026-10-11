@@ -45,7 +45,7 @@ const (
 var (
 	preambleLines  = []string{"exec > >(ts '%H:%M:%S') 2>&1", "set -o pipefail", "{", "set -eu", "set -euo pipefail"}
 	postambleLines = []string{"} 2>&1 | ts '%H:%M:%S'", "restic cache --cleanup"}
-	handledEnvVars = []string{"TZ", envResticHost, cnpgSecretPathEnv}
+	handledEnvVars = []string{"TZ", envResticHost, cnpgSecretPathEnv, envResticCacheDir}
 )
 
 type migrateOptions struct {
@@ -235,12 +235,16 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 			original, sb.Spec.Schedule))
 	}
 
-	mounts, dbSecret, err := mountedVolumes(hr, container, sb)
+	mounts, dbSecret, err := mountedVolumes(hr, container, script, m)
 	if err != nil {
 		return nil, err
 	}
 	if err := migrateEnv(container, sb); err != nil {
 		return nil, err
+	}
+	if dir := container.env(envResticCacheDir); dir != "" && path.Clean(dir) != operatorCacheDir {
+		m.notes = append(m.notes, fmt.Sprintf("cache: RESTIC_CACHE_DIR=%s is dropped. restic keeps its cache at "+
+			"the image's %s, where the operator mounts its cache claim.", dir, operatorCacheDir))
 	}
 
 	parsed, err := parseBackupScript(script, mounts)
@@ -316,13 +320,20 @@ func migratedRepository(namespace string, loc s3Location) *b2backupv1.Repository
 	}
 }
 
-func mountedVolumes(hr *helmRelease, container hrContainer, sb *b2backupv1.ScheduledBackup) ([]hrVolume, *hrVolume, error) {
+func mountedVolumes(hr *helmRelease, container hrContainer, script string, m *migration) ([]hrVolume, *hrVolume, error) {
+	sb := m.backup
+	cacheDir := container.cacheDir(script)
 	var claims, secretVolumes, scratch, others []hrVolume
 	for _, v := range hr.volumes() {
+		mountPath := path.Clean(v.path)
 		switch {
-		case v.key == "cache" && v.kind != volumeSecret:
-			p := hr.Spec.Values.Persistence[v.key]
-			sb.Spec.Cache = &b2backupv1.CacheSpec{StorageClass: p.StorageClass}
+		case v.kind != volumeSecret && cacheDir != "" && mountPath == cacheDir && !scriptNames(script, cacheDir):
+			if err := migrateCache(hr, v, cacheDir, script, m); err != nil {
+				return nil, nil, err
+			}
+		case v.kind != volumeSecret && mountPath == operatorCacheDir:
+			return nil, nil, fmt.Errorf("%w: %s is mounted at %s, where the operator mounts restic's cache, "+
+				"and it is not restic's cache here", ErrUnsupportedMount, v.key, operatorCacheDir)
 		case v.kind == volumeClaim && v.name != "":
 			claims = append(claims, v)
 		case v.kind == volumeSecret:
@@ -389,6 +400,24 @@ func mountedVolumes(hr *helmRelease, container hrContainer, sb *b2backupv1.Sched
 		secret = &secretVolumes[0]
 	}
 	return mounts, secret, nil
+}
+
+// migrateCache takes the volume restic keeps its cache on as the cache. The
+// operator mounts a claim of its own at /cache, the image's RESTIC_CACHE_DIR.
+func migrateCache(hr *helmRelease, v hrVolume, cacheDir, script string, m *migration) error {
+	if cacheDir != operatorCacheDir && cacheDirFlag.MatchString(script) {
+		return fmt.Errorf("%w: the script passes --cache-dir=%s, where %s is mounted, and the operator "+
+			"mounts restic's cache at %s", ErrUnsupportedMount, cacheDir, v.key, operatorCacheDir)
+	}
+	p := hr.Spec.Values.Persistence[v.key]
+	switch {
+	case v.kind == volumeClaim && v.name != "":
+		m.notes = append(m.notes, fmt.Sprintf("cache: %s, the existing claim %s at %s, held restic's cache. "+
+			"The operator creates a cache claim of its own, so %s is no longer used.", v.key, v.name, v.path, v.name))
+	case p.StorageClass != "":
+		m.backup.Spec.Cache = &b2backupv1.CacheSpec{StorageClass: p.StorageClass}
+	}
+	return nil
 }
 
 func cmpOr(s, fallback string) string {
