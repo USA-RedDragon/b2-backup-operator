@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strconv"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -65,7 +66,10 @@ type ScheduledBackupReconciler struct {
 func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var sb b2backupv1.ScheduledBackup
 	if err := r.Get(ctx, req.NamespacedName, &sb); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, r.suspendStrays(ctx, req.Namespace)
+		}
+		return ctrl.Result{}, err
 	}
 
 	if !sb.DeletionTimestamp.IsZero() {
@@ -104,6 +108,10 @@ func (r *ScheduledBackupReconciler) reconcile(
 			err = errors.Join(err, r.suspendOwnCronJob(ctx, sb))
 		}
 	}()
+
+	if err := r.suspendStrays(ctx, sb.Namespace); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	var repo b2backupv1.Repository
 	key := types.NamespacedName{Namespace: sb.Namespace, Name: sb.Spec.RepositoryRef.Name}
@@ -279,29 +287,35 @@ func (r *ScheduledBackupReconciler) tagConflict(
 	if err := r.List(ctx, &jobs, client.InNamespace(sb.Namespace), managed); err != nil {
 		return nil, err
 	}
-	if err := r.suspendStrays(ctx, backups.Items, cronJobs.Items); err != nil {
-		return nil, err
-	}
 	return backup.FindConflict(sb, backups.Items, cronJobs.Items, jobs.Items), nil
 }
 
-// suspendStrays suspends every CronJob the operator rendered that no live
-// ScheduledBackup controls and none would adopt by name, as kubectl delete
-// --cascade=orphan leaves one: it would go on backing up and forgetting under a
-// spec that no longer exists.
-func (r *ScheduledBackupReconciler) suspendStrays(
-	ctx context.Context, backups []b2backupv1.ScheduledBackup, cronJobs []batchv1.CronJob,
-) error {
+// suspendStrays suspends every CronJob the operator rendered in the namespace
+// that no live ScheduledBackup controls and none would adopt by name, as
+// kubectl delete --cascade=orphan leaves one: it would go on backing up and
+// forgetting under a spec that no longer exists. It runs on every reconcile in
+// the namespace, and for a request whose ScheduledBackup is gone, which a CronJob
+// losing its owner triggers.
+func (r *ScheduledBackupReconciler) suspendStrays(ctx context.Context, namespace string) error {
+	var backups b2backupv1.ScheduledBackupList
+	if err := r.List(ctx, &backups, client.InNamespace(namespace)); err != nil {
+		return err
+	}
+	var cronJobs batchv1.CronJobList
+	if err := r.List(ctx, &cronJobs, client.InNamespace(namespace),
+		client.MatchingLabels{labelManagedBy: managedByValue}); err != nil {
+		return err
+	}
 	live := map[types.UID]bool{}
 	names := map[string]bool{}
-	for i := range backups {
-		if backups[i].DeletionTimestamp.IsZero() {
-			live[backups[i].UID] = true
-			names[backup.CronJobName(&backups[i])] = true
+	for i := range backups.Items {
+		if backups.Items[i].DeletionTimestamp.IsZero() {
+			live[backups.Items[i].UID] = true
+			names[backup.CronJobName(&backups.Items[i])] = true
 		}
 	}
-	for i := range cronJobs {
-		cj := &cronJobs[i]
+	for i := range cronJobs.Items {
+		cj := &cronJobs.Items[i]
 		owner := metav1.GetControllerOf(cj)
 		if (owner != nil && live[owner.UID]) || names[cj.Name] || (cj.Spec.Suspend != nil && *cj.Spec.Suspend) {
 			continue
@@ -473,7 +487,7 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Watches(
 			&batchv1.CronJob{},
-			handler.EnqueueRequestsFromMapFunc(r.siblingBackups),
+			handler.EnqueueRequestsFromMapFunc(r.cronJobRequests),
 			builder.WithPredicates(unownedOrNew()),
 		).
 		Watches(
@@ -503,6 +517,18 @@ func (r *ScheduledBackupReconciler) siblingBackups(ctx context.Context, obj clie
 		if sb.Name != obj.GetName() {
 			requests = append(requests, reconcile.Request{Namespace: sb.Namespace, Name: sb.Name})
 		}
+	}
+	return requests
+}
+
+// cronJobRequests re-checks the namespace's ScheduledBackups when a CronJob
+// appears, goes or loses its owner, and asks for the ScheduledBackup its name
+// belongs to, so a stray is suspended even when no ScheduledBackup is left.
+func (r *ScheduledBackupReconciler) cronJobRequests(ctx context.Context, obj client.Object) []reconcile.Request {
+	requests := r.siblingBackups(ctx, obj)
+	if name, ok := strings.CutSuffix(obj.GetName(), backup.CronJobSuffix); ok && name != "" &&
+		obj.GetLabels()[labelManagedBy] == managedByValue {
+		requests = append(requests, reconcile.Request{Namespace: obj.GetNamespace(), Name: name})
 	}
 	return requests
 }

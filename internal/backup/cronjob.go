@@ -211,8 +211,11 @@ func onMount(sb *b2backupv1.ScheduledBackup, p string) bool {
 // CacheName returns the name of the restic cache PVC.
 func CacheName(sb *b2backupv1.ScheduledBackup) string { return sb.Name + "-cache" }
 
+// CronJobSuffix ends the name of every backup CronJob.
+const CronJobSuffix = "-backup"
+
 // CronJobName returns the name of the backup CronJob.
-func CronJobName(sb *b2backupv1.ScheduledBackup) string { return sb.Name + "-backup" }
+func CronJobName(sb *b2backupv1.ScheduledBackup) string { return sb.Name + CronJobSuffix }
 
 const maxManualJobName = 52
 
