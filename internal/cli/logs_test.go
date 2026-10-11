@@ -80,12 +80,12 @@ func TestBackupJobsWithoutCronJob(t *testing.T) {
 
 func TestSelectJob(t *testing.T) {
 	jobs := []batchv1.Job{
-		*jobOwnedBy("new", "u", "CronJob", time.Hour),
+		*jobOwnedBy(verbNew, "u", "CronJob", time.Hour),
 		*jobOwnedBy("old", "u", "CronJob", 2*time.Hour),
 	}
 
 	got, err := selectJob(jobs, false)
-	if err != nil || got.Name != "new" {
+	if err != nil || got.Name != verbNew {
 		t.Errorf("selectJob(latest) = %v, %v", got, err)
 	}
 	got, err = selectJob(jobs, true)

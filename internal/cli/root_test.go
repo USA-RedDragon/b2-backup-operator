@@ -74,7 +74,7 @@ func TestAllNamespacesIsOptIn(t *testing.T) {
 }
 
 var podStartCommands = []string{
-	"shell", "exec", "snapshots", "restore",
+	"shell", "exec", GroupSnapshots, "restore",
 	"unlock", "check", "prune", "stats", "rotate-password",
 }
 

@@ -15,7 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
+	batchv1 "k8s.io/api/batch/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -288,7 +293,7 @@ func TestNewClaimSpecWithoutASourceClaim(t *testing.T) {
 	}
 }
 
-func TestRestoreToNewPVCCreatesTheClaimFromTheSource(t *testing.T) {
+func TestRestoreToNewPVCCreatesNoClaimBeforeTheSnapshotIsFound(t *testing.T) {
 	sb := newBackup(testBackupName, testRepoName)
 	withVolume(sb)
 	c := newClient(t, sb, sourceClaim())
@@ -296,14 +301,24 @@ func TestRestoreToNewPVCCreatesTheClaimFromTheSource(t *testing.T) {
 
 	o := &restoreOptions{toNewPVC: "web-files-restore", snapshot: latestSnapshot}
 	if err := restoreToNewPVC(ctx, offlineFactory(t, testStreams()), c, sb, o); err == nil {
-		t.Fatal("expected the offline factory to fail once the claim exists")
+		t.Fatal("expected the offline factory to fail")
 	}
-
 	var pvc corev1.PersistentVolumeClaim
 	key := types.NamespacedName{Namespace: testNS, Name: o.toNewPVC}
-	if err := c.Get(ctx, key, &pvc); err != nil {
-		t.Fatalf("the new claim was not created: %v", err)
+	if err := c.Get(ctx, key, &pvc); !apierrors.IsNotFound(err) {
+		t.Errorf("a claim was created before any snapshot was found to fill it: %v", err)
 	}
+}
+
+func TestRestoreClaimCopiesTheSourceClaim(t *testing.T) {
+	sb := newBackup(testBackupName, testRepoName)
+	withVolume(sb)
+	c := newClient(t, sb, sourceClaim())
+	spec, err := newClaimSpec(context.Background(), c, sb, &sb.Spec.Volumes[0], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pvc := newRestoreClaim(sb, "web-files-restore", spec)
 	if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteMany {
 		t.Errorf("accessModes = %v, want the source claim's", pvc.Spec.AccessModes)
 	}
@@ -711,4 +726,55 @@ func TestChooseTargetMapsTheMenuToTheRightTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInPlaceRestoreWaitsForARunningBackupAndStaysSuspendedOnFailure(t *testing.T) {
+	ctx := context.Background()
+	suspended := func(t *testing.T, c client.Client) bool {
+		t.Helper()
+		var got b2backupv1.ScheduledBackup
+		if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: testBackupName}, &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Spec.Suspend
+	}
+	running := func(sb *b2backupv1.ScheduledBackup) []client.Object {
+		cj := &batchv1.CronJob{Namespace: testNS, Name: backup.CronJobName(sb), UID: "uid-cj"}
+		job := &batchv1.Job{Namespace: testNS, Name: testBackupName + "-backup-123", OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: "batch/v1", Kind: "CronJob", Name: cj.Name, UID: cj.UID, Controller: ptr.To(true),
+		}}}
+		return []client.Object{cj, job}
+	}
+
+	t.Run("a backup in flight", func(t *testing.T) {
+		sb := newBackup(testBackupName, testRepoName)
+		withVolume(sb)
+		c := newClient(t, append(running(sb), sb)...)
+		err := restoreInPlace(ctx, offlineFactory(t, testStreams()), c, sb, &restoreOptions{snapshot: latest, yes: true})
+		if !errors.Is(err, ErrBackupRunning) {
+			t.Fatalf("err = %v, want ErrBackupRunning", err)
+		}
+		if suspended(t, c) {
+			t.Error("a refused restore suspended the schedule")
+		}
+	})
+
+	t.Run("a restore that fails", func(t *testing.T) {
+		sb := newBackup(testBackupName, testRepoName)
+		withVolume(sb)
+		c := newClient(t, sb)
+		var errOut bytes.Buffer
+		streams := testStreams()
+		streams.ErrOut = &errOut
+		err := restoreInPlace(ctx, offlineFactory(t, streams), c, sb, &restoreOptions{snapshot: latest, yes: true})
+		if err == nil {
+			t.Fatal("expected the offline factory to fail")
+		}
+		if !suspended(t, c) {
+			t.Error("the schedule was resumed over a claim that may hold a partial restore")
+		}
+		if !strings.Contains(errOut.String(), "b2bk resume") {
+			t.Errorf("no hint to resume: %s", errOut.String())
+		}
+	})
 }
