@@ -374,16 +374,20 @@ func shellOptionsAdded(original, generated string) []string {
 	return out
 }
 
-// unquoteExclude drops the quotes around an --exclude pattern, unless the
-// pattern holds something a double-quoted string expands, where single and
-// double quotes give restic different patterns.
+// unquoteExclude reads the quotes around an --exclude pattern as the shell
+// does: a pattern that is one bare word compares without them, one a double
+// quote would not expand compares single-quoted, and anything else keeps its
+// quotes, so a space or an expansion is never mistaken for unquoted text.
 func unquoteExclude(m string) string {
 	inner := quotedExclude.FindStringSubmatch(m)
 	pattern := inner[1] + inner[2]
-	if strings.ContainsAny(pattern, "$`\\") {
-		return m
+	switch {
+	case backup.IsBareWord(pattern):
+		return "--exclude=" + pattern
+	case inner[1] == "" && !strings.ContainsAny(pattern, "$`\\'"):
+		return "--exclude='" + pattern + "'"
 	}
-	return "--exclude=" + pattern
+	return m
 }
 
 // groupByFlag is a forget's grouping, which parity compares on its own.

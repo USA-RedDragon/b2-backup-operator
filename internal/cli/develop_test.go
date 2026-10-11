@@ -1023,3 +1023,15 @@ func TestNormalizeScriptKeepsTheQuotingAroundAnExpansion(t *testing.T) {
 		t.Error("quotes around a plain pattern should not matter")
 	}
 }
+
+func TestNormalizeScriptKeepsAPathAnUnquotedExcludeLetThrough(t *testing.T) {
+	t.Parallel()
+	original := `restic backup --tag=files /data/x --exclude=/q /data/y`
+	rendered := `restic backup --tag=files /data/x --exclude='/q /data/y'`
+	if normalized(original) == normalized(rendered) {
+		t.Error("an exclude holding a space compared equal to an exclude plus a second path")
+	}
+	if normalized(`restic backup /data --exclude="**/tmp*"`) != normalized(`restic backup /data --exclude='**/tmp*'`) {
+		t.Error("double and single quotes around a pattern with nothing to expand should compare equal")
+	}
+}
