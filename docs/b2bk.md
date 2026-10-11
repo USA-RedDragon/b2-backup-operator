@@ -732,7 +732,8 @@ What maps across:
 | The one Secret mounted | `spec.database.secretName`; a `<cluster>-app` or `<cluster>-superuser` name also sets `cnpgCluster` |
 | `defaultPodOptions.affinity` or the controller's `pod.affinity` | `spec.affinity`, verbatim |
 | Container `resources`, CronJob `timeZone` and `concurrencyPolicy` | The same fields |
-| Plain `env` values other than `TZ`, `RESTIC_HOST` and `CNPG_SECRET_PATH` | `spec.env` |
+| `DB_HOST`, `DB_DATABASE` and `DB_USERNAME` beside a mariadb dump | `spec.database.host`, `name` and `user`, and not `spec.env`, where the operator refuses them |
+| Plain `env` values other than `TZ`, `RESTIC_HOST`, `RESTIC_CACHE_DIR` and `CNPG_SECRET_PATH` | `spec.env` |
 | A `job` controller whose one container only runs `restic init` (or `restic init \|\| true`) | Nothing. The Repository initializes or adopts the repository itself, and the output notes the drop |
 
 A script any of whose lines cannot become sources, such as a backup with two
@@ -747,6 +748,10 @@ The script is read from the container's `command` and `args` together, as
 app-template joins them. They must come to `sh -c <script>`, which is how the
 operator runs its own; another shell, arguments after the script, or no
 `command` at all is refused.
+
+`migrate` builds the CronJob the operator would for what it generated, through
+the operator's own validation, and refuses to print a ScheduledBackup the
+operator would reject.
 
 `migrate` refuses a HelmRelease whose `restic` controller is disabled or is not
 a `cronjob`, runs init containers or any container but `restic`, or that runs
