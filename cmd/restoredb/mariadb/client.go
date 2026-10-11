@@ -87,7 +87,7 @@ func (c *client) execute(ctx context.Context, sql string) error {
 }
 
 func (c *client) load(ctx context.Context, database string, write func(io.Writer) error) error {
-	cmd := c.command(ctx, c.args("--binary-mode", database))
+	cmd := c.command(ctx, c.args("--binary-mode", "--database="+database))
 	xtrace.XTrace(c.stderr, cmd.Args)
 	cmd.Stdout, cmd.Stderr = c.stdout, c.stderr
 	stdin, err := cmd.StdinPipe()

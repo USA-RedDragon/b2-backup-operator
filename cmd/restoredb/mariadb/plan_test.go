@@ -7,12 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
 const (
 	weird       = "we`ird"
+	testUser    = "root"
 	createTable = "CREATE TABLE `t` (i int);\n"
 )
 
@@ -311,33 +313,59 @@ func TestClientError(t *testing.T) {
 
 func TestClientArgs(t *testing.T) {
 	t.Parallel()
-	c := &client{host: "db", port: "3306", user: "root", extra: []string{"--skip-ssl"}}
-	got := strings.Join(c.args("app__b2bk_restore"), " ")
-	if want := "--host=db --port=3306 --user=root app__b2bk_restore --skip-ssl"; got != want {
+	c := &client{host: "db", port: "3306", user: testUser, extra: []string{"--skip-ssl"}}
+	got := strings.Join(c.args("--batch"), " ")
+	if want := "--host=db --port=3306 --user=root --batch --skip-ssl"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
+}
+
+// fakeClient puts a mariadb on PATH that saves its arguments and stdin in dir,
+// and returns a client that runs it.
+func fakeClient(t *testing.T) (c *client, dir string) {
+	t.Helper()
+	dir = t.TempDir()
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >" + dir + "/args\ncat >" + dir + "/stdin\n"
+	if err := os.WriteFile(filepath.Join(dir, "mariadb"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return &client{host: "db", port: "3306", user: testUser, stdout: io.Discard, stderr: io.Discard}, dir
+}
+
+func saved(t *testing.T, dir, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 // SQL goes to the client on stdin: a swap of many tables is longer than Linux
 // allows a single argument.
 func TestClientSendsSQLOnStdin(t *testing.T) {
-	bin := t.TempDir()
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >" + bin + "/args\ncat >" + bin + "/stdin\n"
-	if err := os.WriteFile(filepath.Join(bin, "mariadb"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	c, dir := fakeClient(t)
 	stmt := "RENAME TABLE " + strings.Repeat("`app`.`a_long_table_name` TO `app__b2bk_old`.`a_long_table_name`, ", 4000)
-	c := &client{host: "db", port: "3306", user: "root", stdout: io.Discard, stderr: io.Discard}
 	if err := c.execute(context.Background(), stmt); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	args, _ := os.ReadFile(filepath.Join(bin, "args"))
-	stdin, _ := os.ReadFile(filepath.Join(bin, "stdin"))
-	if strings.Contains(string(args), "RENAME") {
+	if args := saved(t, dir, "args"); strings.Contains(args, "RENAME") {
 		t.Errorf("the SQL is on the command line: %.200s", args)
 	}
-	if !strings.Contains(string(stdin), stmt) {
+	if stdin := saved(t, dir, "stdin"); !strings.Contains(stdin, stmt) {
 		t.Errorf("stdin holds %d bytes, not the statement", len(stdin))
+	}
+}
+
+// A database named like an option is passed as --database=, never on its own.
+func TestClientLoadNamesTheDatabaseAsAnOption(t *testing.T) {
+	c, dir := fakeClient(t)
+	if err := c.load(context.Background(), "-app__b2bk_restore", func(io.Writer) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(saved(t, dir, "args")), "\n")
+	if !slices.Contains(args, "--database=-app__b2bk_restore") || slices.Contains(args, "-app__b2bk_restore") {
+		t.Errorf("args = %q", args)
 	}
 }

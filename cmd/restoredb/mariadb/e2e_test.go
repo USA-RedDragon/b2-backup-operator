@@ -485,3 +485,21 @@ func TestMariaDBSwapsManyTables(t *testing.T) {
 	}
 	assertNoStaging(t)
 }
+
+// A database whose name starts with a dash must not reach the client as an
+// option.
+func TestMariaDBRestoresADatabaseNamedLikeAnOption(t *testing.T) {
+	backup, _ := seed(t)
+	mutated := fingerprint(t, appDB)
+	sql(t, "DROP DATABASE IF EXISTS `-app`; CREATE DATABASE `-app`")
+	defer sql(t, "DROP DATABASE IF EXISTS `-app`")
+	if _, err := restore(t, backup, "--database=-app", argDropOld); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := sql(t, "SELECT COUNT(*) FROM `-app`.parent; SELECT v FROM `-app`.keep WHERE id = 1"); got != "2\nbackup\n" {
+		t.Errorf("-app holds %q", got)
+	}
+	if fingerprint(t, appDB) != mutated {
+		t.Error("app was changed")
+	}
+}
