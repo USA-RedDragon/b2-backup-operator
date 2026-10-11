@@ -319,9 +319,11 @@ func (r *Runner) WaitForPod(ctx context.Context, job *batchv1.Job) (*corev1.Pod,
 	start := time.Now()
 	reported := start
 	every := min(podStartProgress, budget/4)
+	binding := ""
 
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, budget, true,
 		func(ctx context.Context) (bool, error) {
+			binding = ""
 			pods, err := r.jobPods(ctx, job)
 			if err != nil {
 				return false, err
@@ -333,13 +335,29 @@ func (r *Runner) WaitForPod(ctx context.Context, job *batchv1.Job) (*corev1.Pod,
 					return true, nil
 				}
 
-				if msg := blockedReason(pod); msg != "" {
-					return false, fmt.Errorf("%w: %s", ErrFailed, msg)
+				msg := blockedReason(pod)
+				if msg == "" {
+					continue
 				}
+				if unschedulable(pod) && strings.Contains(msg, unboundClaimsMessage) {
+					unbound, err := r.unboundClaims(ctx, pod)
+					if err != nil {
+						return false, err
+					}
+					binding = "waiting for the scheduler to retry now that the claims are bound"
+					if len(unbound) > 0 {
+						binding = "waiting for " + strings.Join(unbound, ", ") + " to bind"
+					}
+					continue
+				}
+				return false, fmt.Errorf("%w: %s", ErrFailed, msg)
 			}
 			if r.Progress != nil && time.Since(reported) >= every {
 				reported = time.Now()
 				if pending := describePending(pods); pending != "" {
+					if binding != "" {
+						pending += "; " + binding
+					}
 					_, _ = fmt.Fprintf(r.Progress, "still waiting: %s (%s of %s)\n",
 						pending, time.Since(start).Round(time.Second), budget)
 				}
@@ -348,6 +366,9 @@ func (r *Runner) WaitForPod(ctx context.Context, job *batchv1.Job) (*corev1.Pod,
 		})
 	if err != nil {
 		pending := r.pendingPod(ctx, job)
+		if pending != "" && binding != "" {
+			pending += "; " + binding
+		}
 		switch {
 		case pending == "":
 			return nil, err
@@ -464,6 +485,46 @@ func (r *Runner) mustExist(ctx context.Context, namespace, name string, into cli
 			ErrMissingDependency, kind, name, namespace)
 	}
 	return err
+}
+
+// unboundClaimsMessage is what the scheduler reports while a pod's claim with
+// Immediate binding has no volume yet, as when b2bk has just created it. It
+// may still say so for a moment after the claim binds, until the scheduler
+// retries. Any other reason the pod cannot be scheduled is final.
+const unboundClaimsMessage = "unbound immediate PersistentVolumeClaims"
+
+func unschedulable(pod *corev1.Pod) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse &&
+			cond.Reason == corev1.PodReasonUnschedulable {
+			return true
+		}
+	}
+	return false
+}
+
+// unboundClaims names the claims the pod mounts that exist but are not Bound
+// yet. A missing claim is an error: nothing will bind it.
+func (r *Runner) unboundClaims(ctx context.Context, pod *corev1.Pod) ([]string, error) {
+	var unbound []string
+	for _, v := range pod.Spec.Volumes {
+		if v.PersistentVolumeClaim == nil {
+			continue
+		}
+		name := v.PersistentVolumeClaim.ClaimName
+		var pvc corev1.PersistentVolumeClaim
+		err := r.Client.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: name}, &pvc)
+		switch {
+		case apierrors.IsNotFound(err):
+			return nil, fmt.Errorf("%w: PersistentVolumeClaim %q does not exist in namespace %q",
+				ErrMissingDependency, name, pod.Namespace)
+		case err != nil:
+			return nil, err
+		case pvc.Status.Phase != corev1.ClaimBound:
+			unbound = append(unbound, "pvc/"+name)
+		}
+	}
+	return unbound, nil
 }
 
 func blockedReason(pod *corev1.Pod) string {
