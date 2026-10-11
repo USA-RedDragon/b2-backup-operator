@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-const probeTable = "__b2bk_probe"
+const (
+	probeTable  = "__b2bk_probe"
+	swapTimeout = "SET SESSION lock_wait_timeout = 60"
+)
 
 // restore puts a dump in place of a database's tables all at once. It restores
 // the dump into a staging database, then moves the live tables into a rollback
@@ -57,6 +60,11 @@ func (r *restore) run(ctx context.Context, dump io.Reader) error {
 	}
 	stmt := RenameStatement(r.live, r.staging, r.old, r.liveTables, r.incoming)
 	if r.dryRun {
+		if stmt != "" {
+			if err := r.db.execute(ctx, PrepareStatement(stmt)); err != nil {
+				return r.abort(ctx, fmt.Errorf("the server did not accept the swap: %w", err))
+			}
+		}
 		r.printf("dry run: the dump restored cleanly into %s; %s was not changed\n",
 			QuoteIdent(r.staging), QuoteIdent(r.live))
 		if stmt != "" {
@@ -238,7 +246,7 @@ func (r *restore) swap(ctx context.Context, stmt string) error {
 		return r.abort(ctx, err)
 	}
 	if stmt != "" {
-		if err := r.db.execute(ctx, "SET SESSION lock_wait_timeout = 60; "+stmt); err != nil {
+		if err := r.db.execute(ctx, swapTimeout+"; "+stmt); err != nil {
 			return r.abort(ctx, fmt.Errorf("swap: %w", err))
 		}
 	}

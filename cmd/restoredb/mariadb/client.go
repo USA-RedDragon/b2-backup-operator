@@ -19,7 +19,8 @@ import (
 type conn interface {
 	// query runs one statement and returns its rows.
 	query(ctx context.Context, sql string) ([][]string, error)
-	// execute runs statements, stopping at the first that fails.
+	// execute runs statements separated by semicolons, stopping at the first
+	// that fails.
 	execute(ctx context.Context, sql string) error
 	// load feeds a dump to the client with database as its default database,
 	// in binary mode, so that client commands such as \u and connect, which
@@ -51,11 +52,16 @@ func (c *client) command(ctx context.Context, args []string) *exec.Cmd {
 	return cmd
 }
 
+// run sends sql to the client on stdin, never on its command line, which Linux
+// limits to 128 KiB per argument: a swap of many tables is longer. Binary mode
+// keeps the client from reading anything in sql as a client command.
 func (c *client) run(ctx context.Context, sql string, trace bool) (string, error) {
-	cmd := c.command(ctx, c.args("--batch", "--skip-column-names", "--execute="+sql))
+	cmd := c.command(ctx, c.args("--batch", "--skip-column-names", "--binary-mode"))
 	if trace {
-		xtrace.XTrace(c.stderr, cmd.Args)
+		_, _ = fmt.Fprintf(c.stderr, "%s <<'SQL'\n%s\nSQL\n",
+			strings.TrimSuffix(xtrace.XTraceString(cmd.Args), "\n"), sql)
 	}
+	cmd.Stdin = strings.NewReader(sql + ";\n")
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {

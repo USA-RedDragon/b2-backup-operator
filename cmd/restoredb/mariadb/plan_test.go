@@ -2,7 +2,11 @@ package mariadb
 
 import (
 	"bufio"
+	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -311,5 +315,29 @@ func TestClientArgs(t *testing.T) {
 	got := strings.Join(c.args("app__b2bk_restore"), " ")
 	if want := "--host=db --port=3306 --user=root app__b2bk_restore --skip-ssl"; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// SQL goes to the client on stdin: a swap of many tables is longer than Linux
+// allows a single argument.
+func TestClientSendsSQLOnStdin(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >" + bin + "/args\ncat >" + bin + "/stdin\n"
+	if err := os.WriteFile(filepath.Join(bin, "mariadb"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stmt := "RENAME TABLE " + strings.Repeat("`app`.`a_long_table_name` TO `app__b2bk_old`.`a_long_table_name`, ", 4000)
+	c := &client{host: "db", port: "3306", user: "root", stdout: io.Discard, stderr: io.Discard}
+	if err := c.execute(context.Background(), stmt); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	args, _ := os.ReadFile(filepath.Join(bin, "args"))
+	stdin, _ := os.ReadFile(filepath.Join(bin, "stdin"))
+	if strings.Contains(string(args), "RENAME") {
+		t.Errorf("the SQL is on the command line: %.200s", args)
+	}
+	if !strings.Contains(string(stdin), stmt) {
+		t.Errorf("stdin holds %d bytes, not the statement", len(stdin))
 	}
 }

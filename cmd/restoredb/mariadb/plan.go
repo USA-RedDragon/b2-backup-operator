@@ -93,6 +93,14 @@ func RenameStatement(live, in, out string, current, incoming []string) string {
 	return "RENAME TABLE " + strings.Join(moves, ", ")
 }
 
+// PrepareStatement returns statements that have the server parse stmt as a
+// prepared statement, without running it, over the same client the swap uses.
+// A dry run checks the swap with them.
+func PrepareStatement(stmt string) string {
+	return swapTimeout + "; PREPARE b2bk_swap FROM CONVERT(" + literal(stmt) + " USING utf8mb4); " +
+		"DEALLOCATE PREPARE b2bk_swap"
+}
+
 const trailer = "-- Dump completed"
 
 // DumpComplete reports whether tail, the end of a dump, ends with the trailer
