@@ -73,3 +73,9 @@ var KeyCommands = keyCommands
 
 // Untar unpacks a restic dump tar stream into dest.
 var Untar = untar
+
+// IsOperatorImage reports whether an image is the operator's backup image.
+var IsOperatorImage = isOperatorImage
+
+// IsUpstreamImage reports whether an image is the one the operator's is forked from.
+var IsUpstreamImage = isUpstreamImage

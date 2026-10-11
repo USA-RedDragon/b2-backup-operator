@@ -468,7 +468,7 @@ func (c hrContainer) cacheDir(script string) string {
 	if dir := c.env(envResticCacheDir); dir != "" {
 		return pathpkg.Clean(dir)
 	}
-	if isUpstreamImage(c.Image.Repository) || isOperatorImage(c.Image.Repository+":") {
+	if isUpstreamImage(c.Image.Repository) || isOperatorImage(c.Image.Repository) {
 		return operatorCacheDir
 	}
 	return ""

@@ -388,16 +388,22 @@ func scriptNames(script, dir, workingDir string) bool {
 }
 
 func isUpstreamImage(image string) bool {
+	return isRepository(image, upstreamImage)
+}
+
+func isOperatorImage(image string) bool {
+	return isRepository(image, backup.DefaultImageRepository)
+}
+
+// isRepository reports whether image, with or without a tag or digest, is
+// known, either as named or pulled through a registry mirror that prefixes
+// it, as jacob.pub/ghcr.io/usa-reddragon/restic does.
+func isRepository(image, known string) bool {
 	repository, _, _ := strings.Cut(image, "@")
 	if i := strings.LastIndex(repository, ":"); i > strings.LastIndex(repository, "/") {
 		repository = repository[:i]
 	}
-	return repository == upstreamImage || strings.HasSuffix(repository, "/"+upstreamImage)
-}
-
-func isOperatorImage(image string) bool {
-	return strings.HasPrefix(image, backup.DefaultImageRepository+":") ||
-		strings.HasPrefix(image, backup.DefaultImageRepository+"@")
+	return repository == known || strings.HasSuffix(repository, "/"+known)
 }
 
 func describeMount(vol corev1.Volume, m corev1.VolumeMount) string {
