@@ -455,6 +455,10 @@ encrypted Secret, so pass it:
 | `--repository` | The `s3:` URL, as it appears in `RESTIC_REPOSITORY` |
 | `--from-secret` | A SOPS-encrypted Secret to decrypt with `sops` and read `RESTIC_REPOSITORY` from, such as `<app>-restic.yaml` in the secrets repository |
 
+Both the `s3:https://host/bucket/path` form and the scheme-less
+`s3:host/bucket/path` form are accepted, and the bucket name must be one a
+Repository accepts.
+
 `--from-secret` delegates decryption to the `sops` binary rather than linking
 the sops library, which would add every KMS backend it supports (61MB on a 93MB
 binary) to read one field once per app. A native `b2:` URL is refused: the
