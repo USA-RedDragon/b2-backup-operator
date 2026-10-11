@@ -11,7 +11,9 @@ import (
 type DeletionPolicy string
 
 const (
-	// DeletionPolicyRetain leaves the data, the application key and the credentials Secret in place.
+	// DeletionPolicyRetain leaves the data in place and deletes the Repository's own application
+	// key. The credentials Secret is deleted when passwordSecretRef holds its password, and
+	// otherwise kept with only RESTIC_PASSWORD and RESTIC_REPOSITORY.
 	DeletionPolicyRetain DeletionPolicy = "Retain"
 
 	// DeletionPolicyDelete removes the application key and every file version under the

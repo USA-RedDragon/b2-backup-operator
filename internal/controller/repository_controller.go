@@ -133,7 +133,7 @@ type RepositoryReconciler struct {
 // +kubebuilder:rbac:groups=b2backup.mcswain.dev,resources=repositories,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=b2backup.mcswain.dev,resources=repositories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=b2backup.mcswain.dev,resources=repositories/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
@@ -1586,14 +1586,16 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 		return ctrl.Result{}, nil
 	}
 
-	dataDeleted := false
+	dataDeleted, keyDeleted := false, false
 	switch {
 	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.BucketID != "":
 		if err := deletionProven(repo); err != nil {
-			if keyErr := r.deleteKeysOnly(ctx, repo); keyErr != nil && !r.forceFinalize(ctx, repo, keyErr) {
+			keyErr := r.deleteKeysOnly(ctx, repo)
+			if keyErr != nil && !r.forceFinalize(ctx, repo, keyErr) {
 				r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", keyErr.Error())
 				return ctrl.Result{}, keyErr
 			}
+			keyDeleted = keyErr == nil
 			if !r.forceFinalize(ctx, repo, err) {
 				return r.refuseDeletion(ctx, repo, err)
 			}
@@ -1634,25 +1636,38 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 		case !done:
 			return ctrl.Result{RequeueAfter: deleteRequeueDelay}, nil
 		default:
-			dataDeleted = !retained
+			dataDeleted, keyDeleted = !retained, true
 		}
 
 	case repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete && repo.Status.ApplicationKeyID != "":
-		if err := r.deleteKeysOnly(ctx, repo); err != nil && !r.forceFinalize(ctx, repo, err) {
+		err := r.deleteKeysOnly(ctx, repo)
+		if err != nil && !r.forceFinalize(ctx, repo, err) {
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
 			return ctrl.Result{}, err
 		}
+		keyDeleted = err == nil
 
-	case repo.Status.BucketID != "":
-		log.FromContext(ctx).Info("Retained repository data and application key", "bucket", repo.Status.BucketName,
-			"path", displayPath(repo.Status.Path), "keyID", repo.Status.ApplicationKeyID)
-		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryRetained", "Retain",
-			"Retained %s/%s and application key %s; delete them manually if they are no longer needed",
-			repo.Status.BucketName, displayPath(repo.Status.Path), repo.Status.ApplicationKeyID)
+	case repo.Status.BucketID != "" || repo.Status.ApplicationKeyID != "":
+		if err := r.deleteKeysOnly(ctx, repo); err != nil {
+			if !r.leaveRetainedKey(ctx, repo, err) {
+				return r.retainedKeyNotDeleted(repo, err)
+			}
+			break
+		}
+		keyDeleted = true
 	}
 
-	if err := r.releaseSecret(ctx, repo, dataDeleted); err != nil {
+	kept, err := r.releaseSecret(ctx, repo, dataDeleted, keyDeleted)
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if repo.Spec.DeletionPolicy != b2backupv1.DeletionPolicyDelete && keyDeleted {
+		log.FromContext(ctx).Info("Retained repository data and deleted its application key",
+			"bucket", repo.Status.BucketName, "path", displayPath(repo.Status.Path),
+			"keyID", repo.Status.ApplicationKeyID, "secret", repo.SecretName(), "credentials", kept)
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryRetained", "Retain",
+			"Retained the restic repository at %s/%s and deleted application key %s; %s",
+			repo.Status.BucketName, displayPath(repo.Status.Path), repo.Status.ApplicationKeyID, kept)
 	}
 
 	patch := client.MergeFromWithOptions(repo.DeepCopy(), client.MergeFromWithOptimisticLock{})
@@ -1750,36 +1765,75 @@ func (r *RepositoryReconciler) forceFinalize(ctx context.Context, repo *b2backup
 	return true
 }
 
+// leaveRetainedKey reports whether force-finalize lets a Retain deletion go on
+// without deleting the Repository's application key, and says what it leaves.
+func (r *RepositoryReconciler) leaveRetainedKey(ctx context.Context, repo *b2backupv1.Repository, err error) bool {
+	if repo.Annotations[b2backupv1.AnnotationForceFinalize] != "true" {
+		return false
+	}
+	log.FromContext(ctx).Info("Left application key behind under force-finalize", "bucket", repo.Status.BucketName,
+		"path", displayPath(repo.Status.Path), "keyID", repo.Status.ApplicationKeyID, "reason", err.Error())
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "KeyLeftBehind", "Retain",
+		"Retained the restic repository at %s/%s, but could not delete application key %s, and %s is set, "+
+			"so the key stays in B2 and credentials Secret %s, if it still exists, keeps it; delete the key "+
+			"manually: %s",
+		repo.Status.BucketName, displayPath(repo.Status.Path), repo.Status.ApplicationKeyID,
+		b2backupv1.AnnotationForceFinalize, repo.SecretName(), err.Error())
+	return true
+}
+
+func (r *RepositoryReconciler) retainedKeyNotDeleted(repo *b2backupv1.Repository, err error) (ctrl.Result, error) {
+	msg := fmt.Sprintf("retaining the restic repository at %s/%s, but could not delete application key %s: %s. "+
+		"The finalizer stays until the key is deleted; annotate %s=true to leave the key in B2",
+		repo.Status.BucketName, displayPath(repo.Status.Path), repo.Status.ApplicationKeyID, err.Error(),
+		b2backupv1.AnnotationForceFinalize)
+	r.setCondition(repo, metav1.Condition{
+		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse, Reason: "KeyDeletionFailed",
+		Message: msg,
+	})
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "KeyDeletionFailed", "Retain", "%s", msg)
+	return ctrl.Result{}, err
+}
+
 // releaseSecret runs before the Repository's finalizer is removed. Unless the
 // data was deleted, the credentials Secret loses its ownerReference so garbage
 // collection cannot take the password for data left in B2. Its own finalizer,
 // which under deletionPolicy Delete stays on until the data is deleted, stays
 // while the password exists nowhere else and status records the location or the
 // application key, which is recorded the moment the Secret is first written.
-func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backupv1.Repository, dataDeleted bool) error {
+// Once the application key is deleted, the Secret holds no live credentials:
+// it is deleted when passwordSecretRef holds its password, and otherwise keeps
+// only RESTIC_PASSWORD and RESTIC_REPOSITORY. kept says which.
+func (r *RepositoryReconciler) releaseSecret(
+	ctx context.Context, repo *b2backupv1.Repository, dataDeleted, keyDeleted bool,
+) (kept string, err error) {
 	var secret corev1.Secret
-	err := r.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: repo.SecretName()}, &secret)
+	err = r.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: repo.SecretName()}, &secret)
 	if apierrors.IsNotFound(err) {
-		return nil
+		return fmt.Sprintf("credentials Secret %s was already gone", repo.SecretName()), nil
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	if secret.Labels[labelManagedBy] != managedByValue {
-		return nil
+		return fmt.Sprintf("left Secret %s alone, since the operator did not create it", secret.Name), nil
 	}
 	if holder := protectionHolder(&secret); (holder != "" && holder != string(repo.UID)) ||
 		(repo.Status.SecretName != secret.Name && !metav1.IsControlledBy(&secret, repo)) {
-		return nil
+		return fmt.Sprintf("left Secret %s alone, since it is not this Repository's", secret.Name), nil
 	}
 
 	updated := secret.DeepCopy()
 	protect := false
+	kept = fmt.Sprintf("released credentials Secret %s", secret.Name)
 	if !dataDeleted {
 		if metav1.IsControlledBy(&secret, repo) {
 			syncControllerRef(updated, &corev1.Secret{})
 		}
 		preserved, known, why := r.passwordPreserved(ctx, repo, string(secret.Data[KeyResticPassword]))
+		if keyDeleted && known && preserved {
+			return r.deleteCredentialsSecret(ctx, repo, &secret)
+		}
 		switch {
 		case known:
 			protect = !preserved && (repo.Status.BucketID != "" || repo.Status.ApplicationKeyID != "")
@@ -1797,7 +1851,21 @@ func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backup
 				displayPath(repo.Status.Path), secret.Namespace, secret.Name, secret.Namespace, secret.Name)
 		}
 	}
+	if keyDeleted && !dataDeleted {
+		stripped := false
+		for _, key := range []string{KeyAccessKeyID, KeySecretAccessKey, KeyDefaultRegion} {
+			if _, ok := updated.Data[key]; ok {
+				delete(updated.Data, key)
+				stripped = true
+			}
+		}
+		if stripped {
+			kept = fmt.Sprintf("kept credentials Secret %s with only %s and %s, since the password exists "+
+				"nowhere else, and removed the deleted key from it", secret.Name, KeyResticPassword, KeyResticRepository)
+		}
+	}
 	if protect {
+		kept += fmt.Sprintf(", with finalizer %s", SecretFinalizer)
 		controllerutil.AddFinalizer(updated, SecretFinalizer)
 		if updated.Annotations == nil {
 			updated.Annotations = map[string]string{}
@@ -1816,12 +1884,37 @@ func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backup
 		}
 	}
 	if equality.Semantic.DeepEqual(&secret, updated) {
-		return nil
+		return kept, nil
 	}
 	if err := r.Update(ctx, updated); err != nil {
-		return fmt.Errorf("releasing secret %s from the Repository: %w", secret.Name, err)
+		return "", fmt.Errorf("releasing secret %s from the Repository: %w", secret.Name, err)
 	}
-	return nil
+	log.FromContext(ctx).Info("Released credentials Secret", "secret", secret.Name, "result", kept)
+	return kept, nil
+}
+
+// deleteCredentialsSecret deletes the Secret of a Repository whose application
+// key is gone and whose password passwordSecretRef holds: it holds nothing that
+// is not kept elsewhere.
+func (r *RepositoryReconciler) deleteCredentialsSecret(
+	ctx context.Context, repo *b2backupv1.Repository, secret *corev1.Secret,
+) (string, error) {
+	if controllerutil.ContainsFinalizer(secret, SecretFinalizer) {
+		updated := secret.DeepCopy()
+		controllerutil.RemoveFinalizer(updated, SecretFinalizer)
+		if err := r.Update(ctx, updated); err != nil {
+			return "", fmt.Errorf("removing finalizer %s from secret %s: %w", SecretFinalizer, secret.Name, err)
+		}
+		secret = updated
+	}
+	err := r.Delete(ctx, secret, client.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return "", fmt.Errorf("deleting credentials secret %s: %w", secret.Name, err)
+	}
+	log.FromContext(ctx).Info("Deleted credentials Secret", "secret", secret.Name,
+		"passwordSecret", repo.Spec.PasswordSecretRef.Name)
+	return fmt.Sprintf("deleted credentials Secret %s, since Secret %s holds its password",
+		secret.Name, repo.Spec.PasswordSecretRef.Name), nil
 }
 
 // deleteRemote deletes the Repository's application key and restic repository.

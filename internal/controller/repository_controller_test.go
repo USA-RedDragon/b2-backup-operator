@@ -1022,36 +1022,6 @@ func reconcileUntilGone(t *testing.T, r *RepositoryReconciler, c client.Client) 
 	t.Fatal("the Repository was never released")
 }
 
-func TestDeletionPolicyRetainKeepsEverything(t *testing.T) {
-	f := newFakeB2(t)
-	r, c := newHarness(t, f, bucketRepo(nil))
-	repo := provisionForDeletion(t, r, c)
-	bucket := f.Bucket(ownBucket)
-	f.PutFile(bucket.BucketID, "config", 1)
-
-	reconcileUntilGone(t, r, c)
-	if f.Bucket(ownBucket) == nil || len(f.FileNames(bucket.BucketID)) != 1 {
-		t.Error("Retain deleted data")
-	}
-	if keys := ownKeys(f); len(keys) != 1 || keys[0].ApplicationKeyID != repo.Status.ApplicationKeyID {
-		t.Error("Retain deleted the key the retained Secret still holds")
-	}
-	if err := getSecretErr(c); err != nil {
-		t.Errorf("Retain deleted the credentials Secret: %v", err)
-	}
-	if !hasEvent(recordedEvents(t, r), "RepositoryRetained") {
-		t.Error("no RepositoryRetained event")
-	}
-}
-
-func TestRetainDeletionDoesNotNeedCredentials(t *testing.T) {
-	f := newFakeB2(t)
-	r, c := newHarness(t, f, bucketRepo(nil))
-	provisionForDeletion(t, r, c)
-	r.DefaultCredentialsSecret.Name = missingSecret
-	reconcileUntilGone(t, r, c)
-}
-
 func TestDeleteInPrefixModeRemovesOnlyItsOwnPrefix(t *testing.T) {
 	f := newFakeB2(t)
 	one, seven := 1, 7

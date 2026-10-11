@@ -102,7 +102,13 @@ one of these:
   overwritten by any later failure, so never key ownership on Ready alone.
 - **The operator only writes to Secrets it created**, identified by the
   `app.kubernetes.io/managed-by` label.
-- **The B2 credentials are resolved lazily**, so a Retain deletion works without them.
+- **Retain keeps the data, not the credentials.** A Retain deletion deletes the
+  Repository's own key (by its UID name, never by status ID) and, when the seed
+  holds the password, the Secret; otherwise it strips the `AWS_*` keys and keeps
+  the password under the finalizer. It keeps the finalizer until the key is
+  deleted (`KeyDeletionFailed`); `force-finalize` leaves the key and the Secret
+  as they are. The B2 credentials are resolved lazily, so a Retain deletion of
+  a Repository that recorded no key or bucket works without them.
 - **The per-repository key's secret is shown once.** It is written into the
   Secret straight away and its ID and `keyRotationTime` recorded in status in
   the same pass; a key that could not be saved is deleted again. Superseded keys

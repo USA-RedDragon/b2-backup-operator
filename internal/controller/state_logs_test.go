@@ -72,15 +72,15 @@ func TestRepositoryStateChangesAreLogged(t *testing.T) {
 		{mode: b2backupv1.StorageModeBucket, msg: "Started init Job", keys: []string{`"job"="` + logRepo + `-init"`}},
 		{mode: b2backupv1.StorageModeBucket, msg: "Initialized restic repository",
 			keys: []string{`"job"="` + logRepo + `-init"`}},
-		{mode: b2backupv1.StorageModeBucket, msg: "Retained repository data and application key",
-			keys: []string{bucketKey, `"keyID"=`}},
+		{mode: b2backupv1.StorageModeBucket, msg: "Retained repository data and deleted its application key",
+			keys: []string{bucketKey, `"keyID"=`, `"secret"="` + logRepo + `-credentials"`, `"credentials"="kept`}},
 		{mode: b2backupv1.StorageModePrefix, msg: "Updated lifecycle rule",
 			keys: []string{bucketKey, `"prefix"="` + logPath + `/"`, `"daysFromHidingToDeleting"=30`}},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.mode)+"/"+tc.msg, func(t *testing.T) {
 			t.Parallel()
-			sink, c := provisionAndRetain(t, tc.mode)
+			sink, secret := provisionAndRetain(t, tc.mode)
 			logs := sink.all()
 			line := ""
 			for l := range strings.Lines(logs) {
@@ -96,11 +96,6 @@ func TestRepositoryStateChangesAreLogged(t *testing.T) {
 					t.Errorf("%q log line lacks %s: %s", tc.msg, k, line)
 				}
 			}
-			var secret corev1.Secret
-			if err := c.Get(context.Background(),
-				types.NamespacedName{Namespace: logNS, Name: logRepo + "-credentials"}, &secret); err != nil {
-				t.Fatal(err)
-			}
 			for _, key := range []string{controller.KeyResticPassword, controller.KeySecretAccessKey} {
 				if v := string(secret.Data[key]); v == "" || strings.Contains(logs, v) {
 					t.Errorf("%s is empty or in the logs", key)
@@ -113,7 +108,7 @@ func TestRepositoryStateChangesAreLogged(t *testing.T) {
 	}
 }
 
-func provisionAndRetain(t *testing.T, mode b2backupv1.StorageMode) (*logSink, client.Client) {
+func provisionAndRetain(t *testing.T, mode b2backupv1.StorageMode) (*logSink, *corev1.Secret) {
 	t.Helper()
 	sink := &logSink{}
 	ctx := log.IntoContext(context.Background(), funcr.New(sink.add, funcr.Options{}))
@@ -188,6 +183,10 @@ func provisionAndRetain(t *testing.T, mode b2backupv1.StorageMode) (*logSink, cl
 	}
 	reconcile(2)
 
+	var secret corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{Namespace: logNS, Name: logRepo + "-credentials"}, &secret); err != nil {
+		t.Fatal(err)
+	}
 	var current b2backupv1.Repository
 	if err := c.Get(ctx, req.NamespacedName, &current); err != nil {
 		t.Fatal(err)
@@ -196,7 +195,7 @@ func provisionAndRetain(t *testing.T, mode b2backupv1.StorageMode) (*logSink, cl
 		t.Fatal(err)
 	}
 	reconcile(1)
-	return sink, c
+	return sink, &secret
 }
 
 func TestScheduledBackupStateChangesAreLogged(t *testing.T) {

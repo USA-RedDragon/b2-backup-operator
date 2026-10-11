@@ -56,7 +56,6 @@ func TestRetainFinalizeAlwaysReleasesTheSecret(t *testing.T) {
 	if err := c.Update(context.Background(), repo); err != nil {
 		t.Fatal(err)
 	}
-	r.DefaultCredentialsSecret.Name = missingSecret
 	_ = reconcileErr(r)
 	deleteRepo(t, c)
 	reconcileUntilGone(t, r, c)
