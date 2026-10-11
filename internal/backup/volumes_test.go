@@ -11,6 +11,9 @@ import (
 )
 
 const (
+	dropAll      = corev1.Capability("ALL")
+	appDir       = "app"
+	dataClaim    = "data"
 	dataMount    = "/data"
 	scratchMount = "/backup"
 	configClaim  = "config"
@@ -27,14 +30,14 @@ func filesBackup(volumes []b2backupv1.VolumeSpec, scratch *b2backupv1.ScratchSpe
 
 func TestValidate(t *testing.T) {
 	t.Parallel()
-	data := b2backupv1.VolumeSpec{ExistingClaim: "app", MountPath: dataMount}
+	data := b2backupv1.VolumeSpec{ExistingClaim: appDir, MountPath: dataMount}
 	blobs := b2backupv1.VolumeSpec{ExistingClaim: "blobs"}
 	tests := []struct {
 		name    string
 		sb      *b2backupv1.ScheduledBackup
 		wantErr string
 	}{
-		{"a relative path on the first volume", filesBackup([]b2backupv1.VolumeSpec{data}, nil, "app"), ""},
+		{"a relative path on the first volume", filesBackup([]b2backupv1.VolumeSpec{data}, nil, appDir), ""},
 		{"paths on two volumes", filesBackup([]b2backupv1.VolumeSpec{data, blobs}, nil, dataMount, "/blobs"), ""},
 		{"a path on scratch space", filesBackup(nil, &b2backupv1.ScratchSpec{MountPath: scratchMount}, "/backup/wx.db"), ""},
 		{"a path on no mount", filesBackup([]b2backupv1.VolumeSpec{data}, nil, "/etc"), offMount},
@@ -177,11 +180,11 @@ func TestValidateRefusesWhatForgetWouldMerge(t *testing.T) {
 	}{
 		{"two databases under the default tag", func(sb *b2backupv1.ScheduledBackup) {
 			sb.Spec.Sources = []b2backupv1.BackupSource{
-				{Type: b2backupv1.SourceTypeCNPG, Database: "app"}, {Type: b2backupv1.SourceTypeCNPG, Database: "keycloak"},
+				{Type: b2backupv1.SourceTypeCNPG, Database: appDir}, {Type: b2backupv1.SourceTypeCNPG, Database: "keycloak"},
 			}
 		}, "both tagged \"db\""},
 		{"two files sources under one tag", func(sb *b2backupv1.ScheduledBackup) {
-			sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "data", MountPath: dataMount}}
+			sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: dataClaim, MountPath: dataMount}}
 			sb.Spec.Sources = []b2backupv1.BackupSource{
 				{Type: b2backupv1.SourceTypeFiles, Paths: []string{"/data/a"}},
 				{Type: b2backupv1.SourceTypeFiles, Paths: []string{"/data/b"}},
@@ -193,7 +196,7 @@ func TestValidateRefusesWhatForgetWouldMerge(t *testing.T) {
 		}, "not applied to spec.script"},
 		{"distinct tags", func(sb *b2backupv1.ScheduledBackup) {
 			sb.Spec.Sources = []b2backupv1.BackupSource{
-				{Type: b2backupv1.SourceTypeCNPG, Database: "app"},
+				{Type: b2backupv1.SourceTypeCNPG, Database: appDir},
 				{Type: b2backupv1.SourceTypeCNPG, Database: "keycloak", Tag: "db-keycloak"},
 			}
 		}, ""},
@@ -213,5 +216,31 @@ func TestValidateRefusesWhatForgetWouldMerge(t *testing.T) {
 				t.Errorf("BuildJobTemplate() = %v, want %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestReadsEveryFile(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		pod       *corev1.PodSecurityContext
+		container *corev1.SecurityContext
+		want      bool
+	}{
+		{"the runtime default", nil, nil, true},
+		{"the operator's default", nil, &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{dropAll}, Add: []corev1.Capability{BackupCapability}}}, true},
+		{"every capability dropped", nil, &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{dropAll}}}, false},
+		{"DAC_READ_SEARCH kept", nil, &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{dropAll}, Add: []corev1.Capability{"DAC_READ_SEARCH"}}}, true},
+		{"a non-root user", &corev1.PodSecurityContext{RunAsUser: new(int64(1000))}, nil, false},
+		{"root named in the container", &corev1.PodSecurityContext{RunAsUser: new(int64(1000))},
+			&corev1.SecurityContext{RunAsUser: new(int64(0))}, true},
+	}
+	for _, tt := range tests {
+		if got := ReadsEveryFile(tt.pod, tt.container); got != tt.want {
+			t.Errorf("%s: ReadsEveryFile = %t, want %t", tt.name, got, tt.want)
+		}
 	}
 }

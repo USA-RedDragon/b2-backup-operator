@@ -225,6 +225,7 @@ type plan struct {
 	repository string
 	tags       []string
 	namespace  string
+	readsAll   bool
 }
 
 func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrateOptions) error {
@@ -300,6 +301,10 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 			differences = append(differences, fmt.Sprintf("%s: original %s, generated %s",
 				c.label, orNone(c.original), orNone(c.rendered)))
 		}
+	}
+	if original.readsAll && !rendered.readsAll {
+		differences = append(differences, "READ ACCESS DIFFERS: the original runs as root able to read every "+
+			"file on its claims, and the generated backup cannot; files it cannot read are left out of its snapshots")
 	}
 	if original.repository != "" && original.repository != rendered.repository {
 		differences = append(differences, fmt.Sprintf("REPOSITORY DIFFERS: original %s, generated %s",
@@ -379,8 +384,10 @@ func renderedPlan(path string) (plan, error) {
 	if tz == "" {
 		tz = defaultTimeZone
 	}
+	podSC, containerSC := backup.EffectiveSecurityContexts(sb)
 	out := plan{
-		script: script, schedule: schedule, timeZone: tz,
+		readsAll: backup.ReadsEveryFile(podSC, containerSC),
+		script:   script, schedule: schedule, timeZone: tz,
 		workingDir: sb.EffectiveWorkingDir(),
 		host:       sb.EffectiveResticHost(),
 		tags:       backup.SourceTags(sb.Spec.Sources),
@@ -495,7 +502,10 @@ func originalPlan(arg string) (plan, error) {
 	if tz == "" {
 		tz = defaultTimeZone
 	}
-	out := plan{script: script, schedule: controller.CronJob.Schedule, timeZone: tz, namespace: hr.Metadata.Namespace}
+	out := plan{
+		script: script, schedule: controller.CronJob.Schedule, timeZone: tz, namespace: hr.Metadata.Namespace,
+		readsAll: backup.ReadsEveryFile(hr.podSecurityContext(), container.SecurityContext),
+	}
 
 	workingDir := container.WorkingDir
 	if workingDir == "" {
