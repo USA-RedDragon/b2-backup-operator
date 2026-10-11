@@ -630,7 +630,8 @@ Does not run the CRD's CEL rules; the API server owns those.
 ### `parity <generated.yaml> <helmrelease.yaml | directory | cronjob.yaml>` — `reads`
 
 Confirms that migrating an app does not change what gets backed up, or where.
-Needs nothing on PATH. Only `--from-secret` shells out, to `sops`. The second
+Needs nothing on PATH. `--from-secret` shells out to `sops`, and the generated
+script is parsed with `bash -n` when `bash` is there. The second
 argument takes the same directory `migrate` does, or a manifest holding the
 original CronJob itself, such as `helm template` output or a CronJob read from
 the cluster. Out of several CronJobs it takes the one labelled
@@ -722,6 +723,8 @@ printed with the time of day in the schedule's time zone, such as
 | `RESTIC-ENVS UNCHECKED` | note | Without `--from-secret`, keys in `restic-envs` besides `RESTIC_REPOSITORY` and `RESTIC_PASSWORD` cannot be compared |
 | `INIT JOB REPLACED` | note | The release's `restic init` Job; the Repository initializes or adopts the repository itself |
 | `SCRIPT DIFFERS` | 1 | Followed by both scripts |
+| `SCRIPT DOES NOT PARSE` | 1 | `bash -n` rejects the generated script, such as a `}` left over from the original's own group |
+| `SYNTAX UNCHECKED` | note | `bash` is not on PATH, so the generated script was not parsed |
 | `COMMAND DIFFERS` | 1 | The original does not run `sh -c <script>` |
 | `SHELL OPTIONS ADDED` | 1 | The operator runs every script under `set -euo pipefail`, and the original did not turn on `errexit` (with more than one command), `nounset` (with a variable) or `pipefail` (with a pipe). A failure now stops what the original ran on after it, such as the dump or the forget. `migrate` notes the same |
 | `DUMP FORMAT CHANGES` | 1 | A cnpg dump moves from `backup-cnpg.sh` to `dumpdb cnpg` |
@@ -818,6 +821,10 @@ What maps across:
 | `DB_HOST`, `DB_DATABASE` and `DB_USERNAME` beside a mariadb dump | `spec.database.host`, `name` and `user`, and not `spec.env`, where the operator refuses them |
 | Plain `env` values other than `TZ`, `RESTIC_HOST`, `RESTIC_CACHE_DIR` and `CNPG_SECRET_PATH` | `spec.env` |
 | A `job` controller whose one container only runs `restic init` (or `restic init \|\| true`) | Nothing. The Repository initializes or adopts the repository itself, and the output notes the drop |
+
+A leading `{` is taken for the original's own output group, and dropped, only
+together with a closing `}` whose output goes to `ts` alone; any other group is
+kept whole. `migrate` refuses a script `bash -n` rejects.
 
 A script any of whose lines cannot become sources, such as a backup with two
 tags or its own `--stdin-filename`, a relative path, a line the shell would

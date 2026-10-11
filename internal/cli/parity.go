@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	pathpkg "path"
 	"regexp"
 	"slices"
@@ -849,6 +850,12 @@ func compareScripts(r *parityReport, o, g parityView, tags []string) {
 	if !slices.Equal(o.shell, g.shell) {
 		r.differ("COMMAND DIFFERS: original runs %q, generated %q", o.shell, g.shell)
 	}
+	switch problem, checked := scriptSyntax(g.script); {
+	case !checked:
+		r.note("SYNTAX UNCHECKED: bash is not on PATH, so the generated script was not parsed")
+	case problem != "":
+		r.differ("SCRIPT DOES NOT PARSE: bash -n rejects the generated script: %s", problem)
+	}
 	if added := shellOptionsAdded(o.script, g.script); len(added) > 0 {
 		r.differ("SHELL OPTIONS ADDED: %s; the generated script runs under set -euo pipefail, so a failing command, "+
 			"unset variable or failing pipe stage stops what follows it, which the original ran on", strings.Join(added, ", "))
@@ -898,6 +905,23 @@ func compareGrouping(r *parityReport, o, g parityView) {
 	}
 	r.differ("GROUPING DIFFERS: the original's forget grouped by %s, the generated one by %s; retention "+
 		"keeps its counts per group", original, generated)
+}
+
+// scriptSyntax parses a script with bash -n, which runs nothing. It returns
+// what bash rejects, and whether bash was there to ask.
+func scriptSyntax(script string) (string, bool) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		return "", false
+	}
+	cmd := exec.Command(bash, "-n")
+	cmd.Stdin = strings.NewReader(script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return cmpOr(strings.TrimSpace(stderr.String()), err.Error()), true
+	}
+	return "", true
 }
 
 func compareJob(r *parityReport, o, g parityView) {

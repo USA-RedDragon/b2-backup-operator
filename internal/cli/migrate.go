@@ -48,7 +48,6 @@ const (
 
 var (
 	preambleLines  = []string{"exec > >(ts '%H:%M:%S') 2>&1", "set -o pipefail", "{", "set -eu", "set -euo pipefail"}
-	postambleLines = []string{"} 2>&1 | ts '%H:%M:%S'", "restic cache --cleanup"}
 	operatorShell  = "set -euo pipefail"
 	handledEnvVars = []string{"TZ", envResticHost, cnpgSecretPathEnv, envResticCacheDir}
 )
@@ -200,8 +199,17 @@ type migration struct {
 func (m *migration) validate() error {
 	sb := m.backup.DeepCopy()
 	applyCRDDefaults(sb)
-	_, err := backup.BuildCronJob(sb, m.repo, backup.DefaultConfig())
-	return err
+	if _, err := backup.BuildCronJob(sb, m.repo, backup.DefaultConfig()); err != nil {
+		return err
+	}
+	script, err := backup.Render(sb)
+	if err != nil {
+		return err
+	}
+	if problem, _ := scriptSyntax(script); problem != "" {
+		return fmt.Errorf("%w: bash -n rejects the script it would run: %s", ErrUnsupportedCommand, problem)
+	}
+	return nil
 }
 
 func migrateHelmRelease(hr *helmRelease, loc s3Location, resticEnvs map[string]string) (*migration, error) {
@@ -854,18 +862,33 @@ func underMount(p string, mounts []hrVolume) bool {
 
 func scriptBody(script string) string {
 	lines := strings.Split(strings.TrimRight(script, "\n"), "\n")
+	closed := len(lines) > 1 && groupClosing.MatchString(strings.TrimSpace(lines[len(lines)-1]))
+	grouped := false
 	for _, want := range preambleLines {
-		if len(lines) > 0 && strings.TrimSpace(lines[0]) == want {
-			lines = lines[1:]
+		if len(lines) == 0 || strings.TrimSpace(lines[0]) != want {
+			continue
 		}
+		if want == "{" {
+			if !closed {
+				break
+			}
+			grouped = true
+		}
+		lines = lines[1:]
 	}
-	for _, want := range postambleLines {
-		if n := len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == want {
-			lines = lines[:n-1]
-		}
+	if grouped {
+		lines = lines[:len(lines)-1]
+	}
+	if n := len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == "restic cache --cleanup" {
+		lines = lines[:n-1]
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
+
+// groupClosing is the end of a { ... } group whose output only goes to ts,
+// which the operator's own group replaces. scriptBody strips a leading { only
+// together with it, and leaves any other group whole.
+var groupClosing = regexp.MustCompile(`^}(\s*2>&1)?(\s*\|\s*ts(\s+('[^']*'|"[^"]*"|[^\s|;&<>]+))*)?$`)
 
 var backupFlags = []string{"--tag=", "--exclude=", "--exclude", "--stdin-from-command"}
 
