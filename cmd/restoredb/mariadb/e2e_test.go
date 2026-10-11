@@ -652,14 +652,19 @@ INSERT INTO app.d (pid) VALUES (5);`)
 func TestMariaDBKeepsCraftedDumpsInsideStaging(t *testing.T) {
 	const setup = "DROP DATABASE IF EXISTS `1db`; CREATE DATABASE `1db`; CREATE TABLE `1db`.t (i INT);\n" +
 		"CREATE TABLE other.mt (id INT) ENGINE=MyISAM;"
-	for name, inject := range map[string]string{
-		"a database name led by a digit": "INSERT INTO 1db.t VALUES (1);\n",
-		"a MERGE table over another database": "CREATE TABLE `m` (`id` INT) ENGINE=MRG_MyISAM UNION=(`other`.`mt`) " +
-			"INSERT_METHOD=LAST;\nINSERT INTO `m` VALUES (42);\n",
-		"an sql_mode from a variable": "SET @m='ANSI_QUOTES';\nSET sql_mode=@m;\n" +
-			"INSERT INTO \"other\".\"mt\" VALUES (43);\n",
-		"an sql_mode from a hex literal": "SET sql_mode=X'414E53495F51554F544553';\n" +
-			"INSERT INTO \"other\".\"mt\" VALUES (44);\n",
+	for name, tt := range map[string]struct {
+		inject string
+		want   error
+	}{
+		"a database name led by a digit": {"INSERT INTO 1db.t VALUES (1);\n", mariadb.ErrOtherDatabase},
+		"a MERGE table over another database": {"CREATE TABLE `m` (`id` INT) ENGINE=MRG_MyISAM " +
+			"UNION=(`other`.`mt`) INSERT_METHOD=LAST;\nINSERT INTO `m` VALUES (42);\n", mariadb.ErrOtherDatabase},
+		"an sql_mode from a variable": {"SET @m='ANSI_QUOTES';\nSET sql_mode=@m;\n" +
+			"INSERT INTO \"other\".\"mt\" VALUES (43);\n", mariadb.ErrUnsupportedStatement},
+		"an sql_mode from a hex literal": {"SET sql_mode=X'414E53495F51554F544553';\n" +
+			"INSERT INTO \"other\".\"mt\" VALUES (44);\n", mariadb.ErrUnsupportedStatement},
+		"an engine named at the end of a statement": {"ALTER TABLE `keep` ENGINE=MERGE;\n",
+			mariadb.ErrOtherDatabase},
 	} {
 		t.Run(name, func(t *testing.T) {
 			backup, _ := seed(t)
@@ -667,7 +672,7 @@ func TestMariaDBKeepsCraftedDumpsInsideStaging(t *testing.T) {
 			defer sql(t, "DROP DATABASE IF EXISTS `1db`")
 			at := strings.Index(backup, "UNLOCK TABLES;\n") + len("UNLOCK TABLES;\n")
 			otherBefore, digitBefore := fingerprint(t, "other"), fingerprint(t, "1db")
-			refused(t, backup[:at]+inject+backup[at:], nil)
+			refused(t, backup[:at]+tt.inject+backup[at:], tt.want)
 			if fingerprint(t, "other") != otherBefore || fingerprint(t, "1db") != digitBefore {
 				t.Error("a database outside staging was changed")
 			}
