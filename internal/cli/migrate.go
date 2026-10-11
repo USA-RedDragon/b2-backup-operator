@@ -187,7 +187,12 @@ func migrateHelmRelease(hr *helmRelease, loc s3Location) (*migration, error) {
 		return nil, err
 	}
 
-	m := &migration{repo: migratedRepository(namespace, loc)}
+	others, err := hr.otherControllers()
+	if err != nil {
+		return nil, err
+	}
+
+	m := &migration{repo: migratedRepository(namespace, loc), notes: others}
 	if m.repo.Spec.Mode == b2backupv1.StorageModeBucket {
 		m.notes = append(m.notes, fmt.Sprintf(
 			"mode: the repository sits at the root of %s, so the Repository adopts the whole\n"+

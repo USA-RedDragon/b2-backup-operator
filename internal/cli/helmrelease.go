@@ -16,13 +16,14 @@ import (
 
 // Errors returned when reading a HelmRelease.
 var (
-	ErrNoHelmRelease      = errors.New("no HelmRelease found")
-	ErrNoResticController = errors.New("no restic controller in the HelmRelease")
-	ErrNoResticScript     = errors.New("no restic command in the HelmRelease")
-	ErrMultipleClaims     = errors.New("more than one persistent volume claim is mounted in the restic container")
-	ErrMultipleDBSecrets  = errors.New("more than one secret is mounted in the restic container")
-	ErrUnsupportedMount   = errors.New("the restic container mounts a volume a ScheduledBackup cannot")
-	ErrUnsupportedCommand = errors.New("the restic container does not run sh -c <script>")
+	ErrNoHelmRelease         = errors.New("no HelmRelease found")
+	ErrNoResticController    = errors.New("no restic controller in the HelmRelease")
+	ErrNoResticScript        = errors.New("no restic command in the HelmRelease")
+	ErrMultipleClaims        = errors.New("more than one persistent volume claim is mounted in the restic container")
+	ErrMultipleDBSecrets     = errors.New("more than one secret is mounted in the restic container")
+	ErrUnsupportedMount      = errors.New("the restic container mounts a volume a ScheduledBackup cannot")
+	ErrUnsupportedCommand    = errors.New("the restic container does not run sh -c <script>")
+	ErrUnsupportedController = errors.New("the HelmRelease runs something a ScheduledBackup cannot")
 )
 
 const resticController = "restic"
@@ -47,6 +48,8 @@ type helmRelease struct {
 }
 
 type hrController struct {
+	Enabled *bool  `json:"enabled"`
+	Type    string `json:"type"`
 	CronJob struct {
 		Schedule          string `json:"schedule"`
 		ConcurrencyPolicy string `json:"concurrencyPolicy"`
@@ -56,10 +59,25 @@ type hrController struct {
 		Affinity        *corev1.Affinity           `json:"affinity"`
 		SecurityContext *corev1.PodSecurityContext `json:"securityContext"`
 	} `json:"pod"`
-	Containers map[string]hrContainer `json:"containers"`
+	Containers     map[string]hrContainer `json:"containers"`
+	InitContainers map[string]hrContainer `json:"initContainers"`
+}
+
+func (c hrController) enabled() bool { return c.Enabled == nil || *c.Enabled }
+
+// enabledContainers returns the names of a container map's enabled containers.
+func enabledContainers(containers map[string]hrContainer) []string {
+	var out []string
+	for _, name := range sortedKeys(containers) {
+		if c := containers[name]; c.Enabled == nil || *c.Enabled {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 type hrContainer struct {
+	Enabled         *bool                        `json:"enabled"`
 	Command         []string                     `json:"command"`
 	Args            []string                     `json:"args"`
 	WorkingDir      string                       `json:"workingDir"`
@@ -158,11 +176,59 @@ func (hr *helmRelease) backupController() (hrController, hrContainer, error) {
 	if !ok {
 		return hrController{}, hrContainer{}, ErrNoResticController
 	}
-	container, ok := controller.Containers[resticController]
-	if !ok {
-		return hrController{}, hrContainer{}, ErrNoResticScript
+	switch {
+	case !controller.enabled():
+		return hrController{}, hrContainer{}, fmt.Errorf("%w: the restic controller is disabled, "+
+			"so the HelmRelease backs nothing up", ErrUnsupportedController)
+	case controller.Type != controllerTypeCronJob:
+		return hrController{}, hrContainer{}, fmt.Errorf("%w: the restic controller is a %s, not a cronjob",
+			ErrUnsupportedController, cmpOr(controller.Type, "deployment"))
 	}
-	return controller, container, nil
+	if names := enabledContainers(controller.InitContainers); len(names) > 0 {
+		return hrController{}, hrContainer{}, fmt.Errorf("%w: the restic controller runs init containers %s "+
+			"before the backup", ErrUnsupportedController, strings.Join(names, ", "))
+	}
+	if names := enabledContainers(controller.Containers); !slices.Equal(names, []string{resticController}) {
+		if !slices.Contains(names, resticController) {
+			return hrController{}, hrContainer{}, ErrNoResticScript
+		}
+		return hrController{}, hrContainer{}, fmt.Errorf("%w: the restic controller runs containers %s, "+
+			"and a ScheduledBackup runs one", ErrUnsupportedController, strings.Join(names, ", "))
+	}
+	return controller, controller.Containers[resticController], nil
+}
+
+// otherControllers checks every enabled controller but restic. The only one a
+// migration may drop is a Job that runs restic init, which the Repository does
+// itself; it returns a note for each.
+func (hr *helmRelease) otherControllers() ([]string, error) {
+	var notes []string
+	for _, name := range sortedKeys(hr.Spec.Values.Controllers) {
+		c := hr.Spec.Values.Controllers[name]
+		if name == resticController || !c.enabled() {
+			continue
+		}
+		if !c.runsResticInit() {
+			return nil, fmt.Errorf("%w: controller %s is not a Job that only runs restic init, "+
+				"and the migration would drop it", ErrUnsupportedController, name)
+		}
+		notes = append(notes, fmt.Sprintf("%s: this Job ran restic init after install. It is not migrated: "+
+			"the Repository initializes a new repository or adopts the existing one itself.", name))
+	}
+	return notes, nil
+}
+
+func (c hrController) runsResticInit() bool {
+	names := enabledContainers(c.Containers)
+	if c.Type != controllerTypeJob || len(enabledContainers(c.InitContainers)) > 0 || len(names) != 1 {
+		return false
+	}
+	script, err := c.Containers[names[0]].script()
+	if err != nil {
+		return false
+	}
+	script = strings.Join(strings.Fields(script), " ")
+	return script == "restic init" || script == "restic init || true"
 }
 
 func (hr *helmRelease) affinity() *corev1.Affinity {
