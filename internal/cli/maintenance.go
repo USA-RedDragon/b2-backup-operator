@@ -300,10 +300,17 @@ func refuseRepositoryInUse(
 			continue
 		}
 		inUse := pod.Labels[labelManagedBy] == operatorManagedBy && names[pod.Labels["app.kubernetes.io/name"]]
-		inUse = inUse || (pod.Labels[labelManagedBy] == runner.ManagedByValue && names[pod.Labels[runner.LabelScheduledBackup]])
+		if pod.Labels[labelManagedBy] == runner.ManagedByValue {
+			owner := pod.Labels[runner.LabelScheduledBackup]
+			for name := range names {
+				inUse = inUse || owner == name || (owner == "" && strings.HasPrefix(podJob(pod), name+"-b2bk-"))
+			}
+		}
 		if inUse {
 			return fmt.Errorf("%w: pod/%s is still running restic and may hold a live lock on repository/%s; wait "+
-				"for it, or unlock without --remove-all", ErrBackupRunning, pod.Name, repo.Name)
+				"for it, or unlock without --remove-all. If it stays Terminating because its node is down, make sure "+
+				"the node is really off, then kubectl delete pod -n %s %s --force --grace-period=0",
+				ErrBackupRunning, pod.Name, repo.Name, pod.Namespace, pod.Name)
 		}
 	}
 	return nil

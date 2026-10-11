@@ -455,6 +455,12 @@ func refuseActive(ctx context.Context, c client.Client, sb *b2backupv1.Scheduled
 	if err != nil || job == "" {
 		return err
 	}
+	if pod, ok := strings.CutPrefix(job, "pod/"); ok {
+		return fmt.Errorf("%w: pod/%s of scheduledbackup/%s is still running restic, though its Job is gone; "+
+			"wait for it to stop (kubectl get pod -n %s %s -o wide). If it stays Terminating because its node is "+
+			"down, make sure the node is really off, then kubectl delete pod -n %s %s --force --grace-period=0",
+			ErrBackupRunning, pod, sb.Name, sb.Namespace, pod, sb.Namespace, pod)
+	}
 	return fmt.Errorf("%w: job/%s is running for scheduledbackup/%s; wait for it with b2bk wait %s, "+
 		"or stop it with b2bk cancel %s", ErrBackupRunning, job, sb.Name, sb.Name, sb.Name)
 }

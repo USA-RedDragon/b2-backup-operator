@@ -752,8 +752,12 @@ func TestAPodThatOutlivesItsJobStillCountsAsRunning(t *testing.T) {
 	}
 	c := newClient(t, fx.objects(terminating)...)
 	f, _ := hookedFactory(t, c, &fakePod{}, true)
-	if err := restoreInPlace(context.Background(), f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true}); !errors.Is(err, ErrBackupRunning) {
-		t.Errorf("err = %v, want the restore refused while a cancelled backup's pod still runs restic", err)
+	err := restoreInPlace(context.Background(), f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true})
+	if !errors.Is(err, ErrBackupRunning) {
+		t.Fatalf("err = %v, want the restore refused while a cancelled backup's pod still runs restic", err)
+	}
+	if !strings.Contains(err.Error(), "--force --grace-period=0") || strings.Contains(err.Error(), "b2bk cancel") {
+		t.Errorf("err = %v; it should say how to clear a pod whose node is gone, not point at b2bk cancel", err)
 	}
 }
 
@@ -770,5 +774,22 @@ func TestResumeOfAnAlreadyRunningBackupSaysWhatHoldsIt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "still held") {
 		t.Errorf("resume hid the hold another backup's restore puts on it:\n%s", out.String())
+	}
+}
+
+func TestUnlockRemoveAllSeesAnOlderB2bkPodByItsJobName(t *testing.T) {
+	t.Parallel()
+	fx := currentBackup(t)
+	legacy := &corev1.Pod{
+		Namespace: testNS, Name: testBackupName + "-b2bk-prune-abcde-xyz",
+		Labels: map[string]string{labelManagedBy: runner.ManagedByValue,
+			batchv1.JobNameLabel: testBackupName + "-b2bk-prune-abcde"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	cmd := newUnlockCommand(factoryWithClient(t, newClient(t, fx.objects(legacy)...)))
+	cmd.SetArgs([]string{subjectBackup, flagRemoveAll, flagYes})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); !errors.Is(err, ErrBackupRunning) {
+		t.Errorf("err = %v, want --remove-all refused while an older b2bk pod still runs restic", err)
 	}
 }
