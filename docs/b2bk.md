@@ -834,7 +834,8 @@ What maps across:
 
 A leading `{` is taken for the original's own output group, and dropped, only
 together with a closing `}` whose output goes to `ts` alone; any other group is
-kept whole. `migrate` refuses a script `bash -n` rejects.
+kept whole. `migrate` refuses a script `bash -n` rejects, and notes when `bash`
+is not on PATH to check it.
 
 A script any of whose lines cannot become sources, such as a backup with two
 tags or its own `--stdin-filename`, a relative path, a line the shell would
