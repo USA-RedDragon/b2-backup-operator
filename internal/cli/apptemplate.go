@@ -77,7 +77,17 @@ func renderAppTemplateFile(path, namespace string) (*appTemplateRelease, error) 
 			Name string `json:"name"`
 		} `json:"metadata"`
 		Spec struct {
-			Values map[string]any `json:"values"`
+			Chart struct {
+				Spec struct {
+					Chart string `json:"chart"`
+				} `json:"spec"`
+			} `json:"chart"`
+			ChartRef struct {
+				Name string `json:"name"`
+			} `json:"chartRef"`
+			ValuesFrom    []any          `json:"valuesFrom"`
+			PostRenderers []any          `json:"postRenderers"`
+			Values        map[string]any `json:"values"`
 		} `json:"spec"`
 	}
 	if err := yaml.Unmarshal(raw, &doc, func(d *json.Decoder) *json.Decoder {
@@ -86,7 +96,16 @@ func renderAppTemplateFile(path, namespace string) (*appTemplateRelease, error) 
 	}); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	return renderAppTemplate(doc.Spec.Values, doc.Metadata.Name, namespace)
+	spec := doc.Spec
+	switch chart := cmpOr(spec.Chart.Spec.Chart, spec.ChartRef.Name); {
+	case len(spec.ValuesFrom) > 0:
+		return nil, unmodeled("spec.valuesFrom adds values from elsewhere")
+	case len(spec.PostRenderers) > 0:
+		return nil, unmodeled("spec.postRenderers change what the chart renders")
+	case chart != "" && chart != appTemplateChart:
+		return nil, unmodeled("the chart is %s, not %s", chart, appTemplateChart)
+	}
+	return renderAppTemplate(spec.Values, doc.Metadata.Name, namespace)
 }
 
 type appTemplateRenderer struct {

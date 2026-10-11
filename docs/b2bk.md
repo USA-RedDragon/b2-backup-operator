@@ -591,7 +591,8 @@ original side is rendered from the HelmRelease's values the way app-template
 4.x renders them, by a renderer of its own that does not share `migrate`'s
 reading of the values, and is checked against CronJobs the real chart rendered.
 Anything that renderer does not model, such as a Helm template in a value, a
-chart-created claim, `dependsOn` or a key it does not know, is an error rather
+chart-created claim, `dependsOn`, a key it does not know, `spec.valuesFrom`,
+`spec.postRenderers` or a chart other than `app-template`, is an error rather
 than a guess.
 
 It compares the rendered script and the command around it, the schedule, the
