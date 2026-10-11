@@ -616,7 +616,9 @@ func readCronJob(path string) (*batchv1.CronJob, error) {
 // generatedCronJob builds the CronJob the operator would run for the
 // generated ScheduledBackup, with the CRD's defaults applied, through the
 // operator's own validation.
-func generatedCronJob(path string) (*batchv1.CronJob, *b2backupv1.ScheduledBackup, *b2backupv1.Repository, error) {
+func generatedCronJob(
+	path string, cfg backup.Config,
+) (*batchv1.CronJob, *b2backupv1.ScheduledBackup, *b2backupv1.Repository, error) {
 	sb, err := readScheduledBackup(path)
 	if err != nil {
 		return nil, nil, nil, err
@@ -629,7 +631,7 @@ func generatedCronJob(path string) (*batchv1.CronJob, *b2backupv1.ScheduledBacku
 	if repo == nil {
 		repo = &b2backupv1.Repository{Namespace: sb.Namespace, Name: sb.Spec.RepositoryRef.Name}
 	}
-	cj, err := backup.BuildCronJob(sb, repo, backup.DefaultConfig())
+	cj, err := backup.BuildCronJob(sb, repo, cfg)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("the operator would not run it: %w", err)
 	}
@@ -663,7 +665,7 @@ func (r *parityReport) note(format string, args ...any) {
 }
 
 func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrateOptions) error {
-	generated, sb, repo, err := generatedCronJob(generatedPath)
+	generated, sb, repo, err := generatedCronJob(generatedPath, opts.config())
 	if err != nil {
 		return fmt.Errorf("rendering the generated resource: %w", err)
 	}

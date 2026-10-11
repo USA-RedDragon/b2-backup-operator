@@ -206,9 +206,13 @@ difference of its own, since the dump's format and file name change with it.
 Only --from-secret runs anything, sops.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveBackupImage(cmd, f, &opts); err != nil {
+				return err
+			}
 			return runParity(f.Streams.Out, args[0], args[1], opts)
 		},
 	}
+	addBackupImageFlag(cmd, &opts)
 	cmd.Flags().StringVar(&opts.repository, "repository", "",
 		"The original repository, as the s3: URL in RESTIC_REPOSITORY")
 	cmd.Flags().StringVar(&opts.fromSecret, "from-secret", "",

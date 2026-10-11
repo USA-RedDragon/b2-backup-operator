@@ -775,6 +775,7 @@ the original sets none, the operator's own security contexts.
 | --- | --- |
 | `--repository` | The original `s3:` URL, as it appears in `RESTIC_REPOSITORY` |
 | `--from-secret` | A SOPS-encrypted Secret to read it from. Its `metadata.namespace` must be the HelmRelease's. Its other keys are compared as part of the original's environment |
+| `--backup-image` | The image the operator runs backups with. Default: the `--backup-image` argument of the operator's Deployment in the current kube context, read once with a 10 second limit, else the image b2bk was built with. stderr names the one used |
 
 A forget's `--group-by` is compared on its own, as `GROUPING DIFFERS`, against
 what the original's wrapper would have added: `RESTIC_GROUP_BY` from the
@@ -817,7 +818,7 @@ printed with the time of day in the schedule's time zone, such as
 | `DAYLIGHT SAVING` | note | A daily schedule fires other than once a day in its zone: a time the clocks skip does not fire that day, and a time they repeat fires twice, as the CronJob controller's cron library reads it |
 | `FORGET SCOPED` | note | forget now expires only the backup's own tags |
 | `JOB SETTINGS CHANGE` | note | `backoffLimit`, `startingDeadlineSeconds`, the Job history limits or `ttlSecondsAfterFinished` changed. app-template retries a failed run 6 times and skips a run 30 seconds late; the operator does neither |
-| `IMAGE CHANGES` | note | `ghcr.io/gabe565/restic`, directly or through a mirror, becomes the operator's image, a fork of it with `restoredb` added |
+| `IMAGE CHANGES` | note | `ghcr.io/gabe565/restic`, directly or through a mirror, becomes the operator's image, a fork of it with `restoredb` added. The generated side runs the image `--backup-image` resolves to, so the note names the image the cluster runs |
 | `AFFINITY ADDED` | note | The original sets none and the operator adds only a preference |
 | `POD LABELS CHANGE` | note | app-template's own `app.kubernetes.io/controller`, `name` or `instance` label is gone |
 | `TIMEZONE UNSET` | note | The original CronJob sets no `timeZone`; it is compared as UTC, the kube-controller-manager's zone |
@@ -892,6 +893,7 @@ encrypted Secret, so pass it:
 | --- | --- |
 | `--repository` | The `s3:` URL, as it appears in `RESTIC_REPOSITORY` |
 | `--from-secret` | A SOPS-encrypted Secret to decrypt with `sops` and read `RESTIC_REPOSITORY` from, such as `<app>-restic.yaml` in the secrets repository. Its `metadata.namespace` must be the HelmRelease's. Its other `RESTIC_*` keys are carried into `spec.env` |
+| `--backup-image` | The image the operator runs backups with. Default: the `--backup-image` argument of the operator's Deployment in the current kube context, read once with a 10 second limit, else the image b2bk was built with. stderr names the one used |
 
 Both the `s3:https://host/bucket/path` form and the scheme-less
 `s3:host/bucket/path` form are accepted, and the bucket name must be one a

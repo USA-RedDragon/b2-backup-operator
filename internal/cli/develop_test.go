@@ -147,7 +147,7 @@ func TestParityIsIdenticalAgainstTheOperatorsOwnCronJob(t *testing.T) {
 	if err := os.WriteFile(generated, append(mustRead(t, generated), scheduled...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cj, _, _, err := generatedCronJob(generated)
+	cj, _, _, err := generatedCronJob(generated, backup.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -900,7 +900,7 @@ func TestParityComparesWhereTheBackupLivesAndWhichKeyOpensIt(t *testing.T) {
 func TestParityPicksTheResticCronJobOutOfARenderedRelease(t *testing.T) {
 	t.Parallel()
 	generated := writeGenerated(t, "36 * * * *")
-	cj, _, _, err := generatedCronJob(generated)
+	cj, _, _, err := generatedCronJob(generated, backup.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

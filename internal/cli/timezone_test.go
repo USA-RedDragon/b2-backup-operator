@@ -107,11 +107,17 @@ func runB2bk(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
 	cmd := cli.New(genericiooptions.IOStreams{In: &bytes.Buffer{}, Out: &out, ErrOut: &errOut}, "b2bk")
-	cmd.SetArgs(args)
+	offline := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(offline, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd.SetArgs(append([]string{"--kubeconfig", offline}, args...))
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
-	err := cmd.Execute()
-	return out.String() + errOut.String(), err
+	if err := cmd.Execute(); err != nil {
+		return out.String() + errOut.String(), err
+	}
+	return out.String(), nil
 }
 
 func migrateZone(t *testing.T, dir string) (string, string) {

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	batchv1 "k8s.io/api/batch/v1"
@@ -53,9 +56,57 @@ var (
 	handledEnvVars = []string{"TZ", envResticHost, cnpgSecretPathEnv, envResticCacheDir}
 )
 
+// clusterLookupTimeout bounds reading the operator Deployment for migrate and
+// parity, which otherwise work offline.
+const clusterLookupTimeout = 10 * time.Second
+
 type migrateOptions struct {
-	repository string
-	fromSecret string
+	repository  string
+	fromSecret  string
+	backupImage string
+	imageSource string
+}
+
+// image is the backup image the operator runs: --backup-image, the one read
+// from the cluster, or backup.DefaultImage.
+func (o migrateOptions) image() string {
+	if o.backupImage != "" {
+		return o.backupImage
+	}
+	return backup.DefaultImage
+}
+
+func (o migrateOptions) config() backup.Config {
+	cfg := backup.DefaultConfig()
+	cfg.Image = o.image()
+	return cfg
+}
+
+// addBackupImageFlag registers --backup-image on cmd.
+func addBackupImageFlag(cmd *cobra.Command, opts *migrateOptions) {
+	cmd.Flags().StringVar(&opts.backupImage, "backup-image", "",
+		"The image the operator runs backups with, its --backup-image. Default: read from the operator "+
+			"Deployment in the current kube context, else "+backup.DefaultImage)
+}
+
+// resolveBackupImage fills in the operator's image from its Deployment when
+// --backup-image is not given and a kube context is reachable, and says on
+// stderr which image the result is built with.
+func resolveBackupImage(cmd *cobra.Command, f *Factory, opts *migrateOptions) error {
+	switch {
+	case opts.backupImage != "":
+		opts.imageSource = "--backup-image"
+	default:
+		opts.imageSource = "the built-in default; no kube context to read the operator Deployment from"
+		if c, err := f.Client(); err == nil {
+			ctx, cancel := context.WithTimeout(cmd.Context(), clusterLookupTimeout)
+			defer cancel()
+			opts.backupImage, opts.imageSource = operatorImage(ctx, c)
+		}
+	}
+	p := newPrinter(f.Streams.ErrOut)
+	p.printf("operator backup image: %s (%s)\n", opts.image(), opts.imageSource)
+	return p.Err()
 }
 
 func newMigrateCommand(f *Factory) *cobra.Command {
@@ -88,9 +139,13 @@ RESTIC_PASSWORD; it is the only off-cluster copy of the key that decrypts
 these backups, so keep it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveBackupImage(cmd, f, &opts); err != nil {
+				return err
+			}
 			return runMigrate(f.Streams.Out, args[0], opts)
 		},
 	}
+	addBackupImageFlag(cmd, &opts)
 
 	cmd.Flags().StringVar(&opts.repository, "repository", "",
 		"The existing repository, as the s3: URL in RESTIC_REPOSITORY")
@@ -156,7 +211,11 @@ func runMigrate(out io.Writer, arg string, opts migrateOptions) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", helmReleasePath, err)
 	}
-	if err := m.validate(); err != nil {
+	if m.backup.Spec.Image == "" {
+		m.notes = append(m.notes, fmt.Sprintf("operator image: backups run %s, from %s.", opts.image(),
+			cmp.Or(opts.imageSource, "the built-in default")))
+	}
+	if err := m.validate(opts.config()); err != nil {
 		return fmt.Errorf("%s: the operator would refuse what migrate generated: %w", helmReleasePath, err)
 	}
 
@@ -197,10 +256,10 @@ type migration struct {
 }
 
 // validate builds the CronJob the operator would, with the CRD's defaults.
-func (m *migration) validate() error {
+func (m *migration) validate(cfg backup.Config) error {
 	sb := m.backup.DeepCopy()
 	applyCRDDefaults(sb)
-	if _, err := backup.BuildCronJob(sb, m.repo, backup.DefaultConfig()); err != nil {
+	if _, err := backup.BuildCronJob(sb, m.repo, cfg); err != nil {
 		return err
 	}
 	script, err := backup.Render(sb)
