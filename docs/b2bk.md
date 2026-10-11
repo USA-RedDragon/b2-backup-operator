@@ -258,11 +258,16 @@ of a claim mounted under them, which the source may exclude, nor that of a claim
 with another claim or the scratch space mounted under the restored path, whose
 part beneath it the restore never writes; restore that claim's own source, or
 check it and run `b2bk resume`. One narrowed by any of these, one of another target,
-and one that stops before writing remove nothing. `b2bk resume` removes the
+and one that stops before writing remove only the entries they recorded
+themselves. `b2bk resume` removes the
 backup's entries, from it and from every other ScheduledBackup that carries
 them, once you have checked the data. If another ScheduledBackup comes to share
-the claims or database while the restore runs, the restore stops before
-writing. `b2bk status` and `b2bk doctor` show the hold. A restore
+the claims or database before the first write, the restore stops before
+writing; one that comes to share them later is held by the operator all the
+same, which suspends the CronJob of any ScheduledBackup that mounts a claim or
+dumps a database another ScheduledBackup's lock or recorded entries name.
+`b2bk resume` leaves alone the entries of a ScheduledBackup a running restore
+holds. `b2bk status` and `b2bk doctor` show the hold. A restore
 killed before it lets go leaves the lock behind: once it and its Job are gone
 (`kubectl get jobs -l b2backup.mcswain.dev/b2bk-purpose`), remove it with
 `kubectl annotate scheduledbackup NAME b2backup.mcswain.dev/restore-lock-`. What

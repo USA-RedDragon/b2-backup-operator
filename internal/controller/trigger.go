@@ -25,6 +25,7 @@ func (r *ScheduledBackupReconciler) reconcileTrigger(
 	sb *b2backupv1.ScheduledBackup,
 	repo *b2backupv1.Repository,
 	runs []observedRun,
+	hold string,
 ) error {
 	raw := sb.Annotations[b2backupv1.AnnotationTriggerAt]
 	if raw == "" {
@@ -42,7 +43,7 @@ func (r *ScheduledBackupReconciler) reconcileTrigger(
 		return nil
 	}
 
-	if hold := backup.RestoreHold(sb); hold != "" {
+	if hold != "" {
 		r.Recorder.Eventf(sb, nil, corev1.EventTypeWarning, "TriggerSkipped", "Trigger",
 			"Not starting a backup: %s", hold)
 		sb.Status.LastTriggerTime = &metav1.Time{Time: at}

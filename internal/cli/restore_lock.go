@@ -66,18 +66,7 @@ func restoreLockID() string {
 	return fmt.Sprintf("b2bk pid %d on %s at %s", os.Getpid(), host, time.Now().UTC().Format(time.RFC3339))
 }
 
-// partialTargets reads AnnotationRestorePartial.
-func partialTargets(sb *b2backupv1.ScheduledBackup) []string {
-	raw := sb.Annotations[b2backupv1.AnnotationRestorePartial]
-	if raw == "" {
-		return nil
-	}
-	var targets []string
-	if err := json.Unmarshal([]byte(raw), &targets); err != nil || len(targets) == 0 {
-		return []string{raw}
-	}
-	return targets
-}
+func partialTargets(sb *b2backupv1.ScheduledBackup) []string { return backup.PartialTargets(sb) }
 
 func setPartialTargets(sb *b2backupv1.ScheduledBackup, targets []string) {
 	slices.Sort(targets)
