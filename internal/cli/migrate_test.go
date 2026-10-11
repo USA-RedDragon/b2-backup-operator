@@ -1505,3 +1505,13 @@ func TestParityReadsPruneTrueAsPrune(t *testing.T) {
 		t.Error("--prune=false compared equal to --prune")
 	}
 }
+
+func TestMigrateAndParityLeaveShellOptionsUncheckedWhereTheyWouldGuess(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "                exec > >(ts '%H:%M:%S') 2>&1\n                set -eu\n",
+		"                if true; then set -eu; fi\n", 1)
+	_, migrateOut, parityOut, _ := migrateAndParity(t, body, migrateOptions{repository: sopsRepoURL})
+	if !strings.Contains(migrateOut, "does not follow") || !strings.Contains(parityOut, "SHELL OPTIONS UNCHECKED") {
+		t.Errorf("want the shell options reported as unchecked:\n%s\n%s", migrateOut, parityOut)
+	}
+}

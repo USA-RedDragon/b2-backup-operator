@@ -965,7 +965,8 @@ func TestShellOptionsAddedOnlyCountWhatTheScriptUses(t *testing.T) {
 	}
 	for _, tt := range tests {
 		generated := strings.Replace(operator, "BODY\n", scriptBody(tt.original), 1)
-		if got := strings.Join(shellOptionsAdded(tt.original, generated), ", "); got != tt.want {
+		added, _ := shellOptionsAdded(tt.original, generated)
+		if got := strings.Join(added, ", "); got != tt.want {
 			t.Errorf("shellOptionsAdded(%q) = %q, want %q", tt.original, got, tt.want)
 		}
 	}
@@ -1008,7 +1009,8 @@ func TestShellOptionsAddedSeeEachCommand(t *testing.T) {
 	}
 	for _, tt := range tests {
 		generated := strings.Replace(operator, "BODY\n", scriptBody(tt.original), 1)
-		if got := strings.Join(shellOptionsAdded(tt.original, generated), ", "); got != tt.want {
+		added, _ := shellOptionsAdded(tt.original, generated)
+		if got := strings.Join(added, ", "); got != tt.want {
 			t.Errorf("shellOptionsAdded(%q) = %q, want %q", tt.original, got, tt.want)
 		}
 	}
@@ -1046,8 +1048,31 @@ func TestShellOptionsSetInAPipedGroupEndWithIt(t *testing.T) {
 	}
 	for _, tt := range tests {
 		generated := strings.Replace(operator, "BODY\n", scriptBody(tt.original), 1)
-		if got := strings.Join(shellOptionsAdded(tt.original, generated), ", "); got != tt.want {
+		added, _ := shellOptionsAdded(tt.original, generated)
+		if got := strings.Join(added, ", "); got != tt.want {
 			t.Errorf("shellOptionsAdded(%q) = %q, want %q", tt.original, got, tt.want)
 		}
+	}
+}
+
+func TestShellOptionsUncheckedWhereTheTrackerWouldGuess(t *testing.T) {
+	t.Parallel()
+	const operator = "set -o pipefail\n{\nset -euo pipefail\nBODY\nrestic cache --cleanup\n} 2>&1 | ts '%H:%M:%S'\n"
+	for _, original := range []string{
+		"{\nf() { set -e; }\nrestic backup /a\n} 2>&1 | ts\nrestic forget --keep-daily=1\n",
+		"(( n = 1 ))\nrestic backup /a\nrestic forget --keep-daily=1\n",
+		"{ set -e; restic backup /a; } &\nrestic forget --keep-daily=1\n",
+		"case x in x) set -e ;; esac\nrestic backup /a\nrestic forget --keep-daily=1\n",
+		"cat <<EOF\nset -e\nEOF\nrestic backup /a\n",
+		"if true; then set -e; fi\nrestic backup /a\nrestic forget --keep-daily=1\n",
+	} {
+		generated := strings.Replace(operator, "BODY\n", scriptBody(original), 1)
+		if added, checked := shellOptionsAdded(original, generated); checked {
+			t.Errorf("shellOptionsAdded(%q) = %q, checked; want it unchecked", original, added)
+		}
+	}
+	if _, checked := shellOptionsAdded("set -eu\nrestic backup /a 2>&1\nrestic forget --keep-daily=1 && echo ok\n",
+		strings.Replace(operator, "BODY\n", "restic backup /a 2>&1\nrestic forget --keep-daily=1 && echo ok\n", 1)); !checked {
+		t.Error("a plain script was left unchecked")
 	}
 }
