@@ -412,40 +412,62 @@ func TestUpdateLifecycleRulesUsesTheRevision(t *testing.T) {
 }
 
 func TestMergeLifecycleRule(t *testing.T) {
-	one, two := 1, 2
-	want := b2.LifecycleRule{FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &one}
-	other := b2.LifecycleRule{FileNamePrefix: "media/", DaysFromHidingToDeleting: &two}
+	t.Parallel()
+	one, seven, thirty := 1, 7, 30
+	cancel := 3
+	other := b2.LifecycleRule{FileNamePrefix: "media/", DaysFromHidingToDeleting: &seven}
+	parent := func(days *int) b2.LifecycleRule {
+		return b2.LifecycleRule{FileNamePrefix: parentPrefix, DaysFromHidingToDeleting: days}
+	}
+	exact := func(days *int) b2.LifecycleRule {
+		return b2.LifecycleRule{FileNamePrefix: appPrefix, DaysFromHidingToDeleting: days}
+	}
 
 	tests := []struct {
-		name    string
-		rules   []b2.LifecycleRule
-		outcome b2.RuleOutcome
-		count   int
+		name     string
+		rules    []b2.LifecycleRule
+		days     int
+		explicit bool
+		outcome  b2.RuleOutcome
+		decider  string
+		count    int
 	}{
-		{"added beside an unrelated rule", []b2.LifecycleRule{other}, b2.RuleAdded, 2},
-		{"already present", []b2.LifecycleRule{other, want}, b2.RuleUnchanged, 2},
-		{"updated in place", []b2.LifecycleRule{
-			other, {FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &two},
-		}, b2.RuleUpdated, 2},
-		{"covered by a parent rule", []b2.LifecycleRule{
-			{FileNamePrefix: parentPrefix, DaysFromHidingToDeleting: &one},
-		}, b2.RuleCovered, 1},
-		{"not covered by a slower parent rule", []b2.LifecycleRule{
-			{FileNamePrefix: parentPrefix, DaysFromHidingToDeleting: &two},
-		}, b2.RuleAdded, 2},
-		{"added beside a child rule, which B2 allows", []b2.LifecycleRule{
+		{"added beside an unrelated rule", []b2.LifecycleRule{other}, 30, false, b2.RuleAdded, appPrefix, 2},
+		{"a longer parent covers", []b2.LifecycleRule{parent(&thirty)}, 1, false, b2.RuleCovered, parentPrefix, 1},
+		{"a shorter parent covers", []b2.LifecycleRule{parent(&one)}, 30, false, b2.RuleCovered, parentPrefix, 1},
+		{"the bucket-wide rule covers", []b2.LifecycleRule{{FileNamePrefix: "", DaysFromHidingToDeleting: &thirty}},
+			1, false, b2.RuleCovered, "", 1},
+		{"a parent that only cancels large files does not cover", []b2.LifecycleRule{
+			{FileNamePrefix: parentPrefix, DaysFromStartingToCancelingUnfinishedLargeFiles: &cancel},
+		}, 30, false, b2.RuleAdded, appPrefix, 2},
+		{"an own rule under a parent is removed", []b2.LifecycleRule{parent(&thirty), exact(&one)},
+			30, false, b2.RuleRemoved, parentPrefix, 1},
+		{"someone else's rule under a parent is kept", []b2.LifecycleRule{parent(&thirty), {
+			FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &one, DaysFromStartingToCancelingUnfinishedLargeFiles: &cancel,
+		}}, 30, false, b2.RuleCovered, parentPrefix, 2},
+		{"an exact rule with other days covers", []b2.LifecycleRule{exact(&seven)}, 30, false, b2.RuleCovered, appPrefix, 1},
+		{"an exact rule with the same days is unchanged", []b2.LifecycleRule{exact(&thirty)}, 30, false, b2.RuleUnchanged, appPrefix, 1},
+		{"an exact rule without hiding days gains them", []b2.LifecycleRule{
+			{FileNamePrefix: appPrefix, DaysFromStartingToCancelingUnfinishedLargeFiles: &cancel},
+		}, 30, false, b2.RuleUpdated, appPrefix, 1},
+		{"explicit adds under a parent", []b2.LifecycleRule{parent(&thirty)}, 7, true, b2.RuleAdded, appPrefix, 2},
+		{"explicit updates the exact rule", []b2.LifecycleRule{parent(&thirty), exact(&one)}, 7, true, b2.RuleUpdated, appPrefix, 2},
+		{"explicit with the same days", []b2.LifecycleRule{exact(&seven)}, 7, true, b2.RuleUnchanged, appPrefix, 1},
+		{"a child rule neither covers nor blocks", []b2.LifecycleRule{
 			{FileNamePrefix: "restic/app/sub/", DaysFromHidingToDeleting: &one},
-		}, b2.RuleAdded, 2},
+		}, 30, false, b2.RuleAdded, appPrefix, 2},
 		{"a sibling with a shared stem is not a parent", []b2.LifecycleRule{
 			{FileNamePrefix: siblingPrefix, DaysFromHidingToDeleting: &one},
-		}, b2.RuleAdded, 2},
+		}, 30, false, b2.RuleAdded, appPrefix, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			before := slices.Clone(tt.rules)
-			got, outcome, _ := b2.MergeLifecycleRule(tt.rules, want)
-			if outcome != tt.outcome || len(got) != tt.count {
-				t.Errorf("outcome %v with %d rules, want %v with %d", outcome, len(got), tt.outcome, tt.count)
+			got, outcome, decider := b2.MergeLifecycleRule(tt.rules, appPrefix, tt.days, tt.explicit)
+			if outcome != tt.outcome || len(got) != tt.count || decider.FileNamePrefix != tt.decider {
+				t.Errorf("outcome %v by %q with %d rules, want %v by %q with %d",
+					outcome, decider.FileNamePrefix, len(got), tt.outcome, tt.decider, tt.count)
 			}
 			if !slices.EqualFunc(tt.rules, before, func(a, b b2.LifecycleRule) bool {
 				return a.FileNamePrefix == b.FileNamePrefix && a.DaysFromHidingToDeleting == b.DaysFromHidingToDeleting
@@ -453,11 +475,33 @@ func TestMergeLifecycleRule(t *testing.T) {
 				t.Error("MergeLifecycleRule modified its input")
 			}
 			for _, r := range got {
-				if r.FileNamePrefix == other.FileNamePrefix && *r.DaysFromHidingToDeleting != two {
+				if r.FileNamePrefix == other.FileNamePrefix && *r.DaysFromHidingToDeleting != seven {
 					t.Error("another prefix's rule was changed")
+				}
+				if r.FileNamePrefix == appPrefix && r.DaysFromStartingToCancelingUnfinishedLargeFiles == nil &&
+					slices.ContainsFunc(before, func(b b2.LifecycleRule) bool {
+						return b.FileNamePrefix == appPrefix && b.DaysFromStartingToCancelingUnfinishedLargeFiles != nil
+					}) {
+					t.Error("an updated rule lost a field it had")
 				}
 			}
 		})
+	}
+}
+
+func TestEffectiveHidingDaysIsTheSmallestMatchingRule(t *testing.T) {
+	t.Parallel()
+	one, seven, thirty := 1, 7, 30
+	rules := []b2.LifecycleRule{
+		{FileNamePrefix: "", DaysFromHidingToDeleting: &thirty},
+		{FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &seven},
+		{FileNamePrefix: siblingPrefix, DaysFromHidingToDeleting: &one},
+	}
+	if days, ok := b2.EffectiveHidingDays(rules, appPrefix); !ok || days != seven {
+		t.Errorf("EffectiveHidingDays = %d, %t; want 7", days, ok)
+	}
+	if _, ok := b2.EffectiveHidingDays(rules[1:], "media/"); ok {
+		t.Error("an unrelated prefix reported a window")
 	}
 }
 
@@ -474,8 +518,9 @@ func TestHidingRulesFindsRulesThatWouldHideLiveFiles(t *testing.T) {
 	}
 }
 
-func TestRemoveLifecycleRuleOnlyRemovesTheExactPrefix(t *testing.T) {
-	one := 1
+func TestRemoveLifecycleRuleOnlyRemovesItsOwnExactPrefix(t *testing.T) {
+	t.Parallel()
+	one, three := 1, 3
 	rules := []b2.LifecycleRule{
 		{FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &one},
 		{FileNamePrefix: siblingPrefix, DaysFromHidingToDeleting: &one},
@@ -486,6 +531,12 @@ func TestRemoveLifecycleRuleOnlyRemovesTheExactPrefix(t *testing.T) {
 	}
 	if _, removed := b2.RemoveLifecycleRule(rules, parentPrefix); removed {
 		t.Error("a parent prefix removed a rule it does not own")
+	}
+	shared := []b2.LifecycleRule{{
+		FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &one, DaysFromStartingToCancelingUnfinishedLargeFiles: &three,
+	}}
+	if _, removed := b2.RemoveLifecycleRule(shared, appPrefix); removed {
+		t.Error("a rule carrying another tool's field was removed")
 	}
 }
 
@@ -577,8 +628,7 @@ func TestLifecycleRulesRoundTripEveryField(t *testing.T) {
 	if got := bucket.LifecycleRules[0].DaysFromStartingToCancelingUnfinishedLargeFiles; got == nil || *got != 7 {
 		t.Fatalf("daysFromStartingToCancelingUnfinishedLargeFiles = %v, want 7", got)
 	}
-	thirty := 30
-	rules, outcome, _ := b2.MergeLifecycleRule(bucket.LifecycleRules, b2.LifecycleRule{FileNamePrefix: appPrefix, DaysFromHidingToDeleting: &thirty})
+	rules, outcome, _ := b2.MergeLifecycleRule(bucket.LifecycleRules, appPrefix, 30, false)
 	if outcome != b2.RuleAdded {
 		t.Fatalf("outcome = %v, want RuleAdded", outcome)
 	}
