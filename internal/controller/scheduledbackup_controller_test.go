@@ -538,8 +538,15 @@ func TestTwoBackupsIntoOneRepositoryNeedTagsOfTheirOwn(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: moreBackupName + "-backup"}, &cj); !apierrors.IsNotFound(err) {
 		t.Errorf("the newer backup got a CronJob that would expire the older one's snapshots: %v", err)
 	}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil {
-		t.Errorf("the older backup lost its CronJob: %v", err)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: resticName}); err != nil {
+		t.Fatal(err)
+	}
+	switch err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		t.Fatal(err)
+	case cj.Spec.Suspend == nil || !*cj.Spec.Suspend:
+		t.Error("the older backup's CronJob kept running beside a conflict")
 	}
 
 	newer = &got
@@ -576,11 +583,16 @@ func TestAScriptForgettingEveryTagConflicts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, name := range []string{resticName, moreBackupName, elsewhereBackupName} {
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	tests := []struct {
 		name     string
 		conflict bool
 	}{
-		{resticName, false},
+		{resticName, true},
 		{moreBackupName, true},
 		{elsewhereBackupName, true},
 	}
@@ -639,5 +651,65 @@ func TestAScriptBackupConflictsWithAnyOther(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestEditingTheOlderBackupIntoAConflictStopsIt(t *testing.T) {
+	t.Parallel()
+	older := scheduledBackup()
+	older.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	older.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: "old-own"}}
+	newer := scheduledBackup()
+	newer.Name = moreBackupName
+	newer.CreationTimestamp = metav1.NewTime(time.Now())
+	newer.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: reportingTag}}
+	r, c := backupHarness(t, initializedRepo(), older, newer)
+	reconcile := func(name string) {
+		t.Helper()
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcile(resticName)
+	reconcile(moreBackupName)
+
+	var edited b2backupv1.ScheduledBackup
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: resticName}, &edited); err != nil {
+		t.Fatal(err)
+	}
+	edited.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: reportingTag}}
+	if err := c.Update(context.Background(), &edited); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(resticName)
+
+	var got b2backupv1.ScheduledBackup
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: resticName}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, b2backupv1.ScheduledBackupConditionReady); cond == nil ||
+		cond.Reason != reasonTagConflict {
+		t.Errorf("Ready = %+v, want the edited older backup stopped with TagConflict", cond)
+	}
+	var cj batchv1.CronJob
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil ||
+		cj.Spec.Suspend == nil || !*cj.Spec.Suspend {
+		t.Errorf("the edited older backup's CronJob still runs a forget over the newer one's tag: %v", err)
+	}
+	if got := r.siblingBackups(context.Background(), &edited); len(got) != 1 || got[0].Name != moreBackupName {
+		t.Errorf("siblingBackups = %v, want the other backup re-checked", got)
+	}
+
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: resticName}, &edited); err != nil {
+		t.Fatal(err)
+	}
+	edited.Spec.Sources = []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG, Tag: "old-own"}}
+	if err := c.Update(context.Background(), &edited); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(resticName)
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: cronJobName}, &cj); err != nil ||
+		cj.Spec.Suspend == nil || *cj.Spec.Suspend {
+		t.Errorf("the CronJob stayed suspended after the conflict was resolved: %v", err)
 	}
 }
