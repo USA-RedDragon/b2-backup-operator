@@ -52,7 +52,7 @@ func TestAJobStillRunningAnOldForgetHoldsOffTheBackupNowUsingItsTag(t *testing.T
 	if _, err := r.Reconcile(ctx, ctrl.Request{Namespace: testNS, Name: resticName}); err != nil {
 		t.Fatal(err)
 	}
-	cond := readyReason(t, c, resticName)
+	cond := readyReason(t, c)
 	if cond == nil || cond.Reason != reasonTagConflict || !strings.Contains(cond.Message, oldJobName) {
 		t.Fatalf("Ready = %+v, want TagConflict naming the Job whose forget still covers tag db", cond)
 	}
@@ -71,7 +71,7 @@ func TestAJobStillRunningAnOldForgetHoldsOffTheBackupNowUsingItsTag(t *testing.T
 	if _, err := r.Reconcile(ctx, ctrl.Request{Namespace: testNS, Name: resticName}); err != nil {
 		t.Fatal(err)
 	}
-	if cond := readyReason(t, c, resticName); cond == nil || cond.Status != metav1.ConditionTrue {
+	if cond := readyReason(t, c); cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Errorf("Ready = %+v, want the backup released once the old Job finished", cond)
 	}
 	if cronJobSuspended(t, c, cronJobName) {

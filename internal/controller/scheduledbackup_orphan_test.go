@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -21,10 +20,10 @@ const (
 	goneCronJob           = "gone-backup"
 )
 
-func readyReason(t *testing.T, c client.Client, name string) *metav1.Condition {
+func readyReason(t *testing.T, c client.Client) *metav1.Condition {
 	t.Helper()
 	var sb b2backupv1.ScheduledBackup
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: name}, &sb); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: resticName}, &sb); err != nil {
 		t.Fatal(err)
 	}
 	return apimeta.FindStatusCondition(sb.Status.Conditions, b2backupv1.ScheduledBackupConditionReady)
@@ -84,38 +83,25 @@ func orphanCronJob(scope string) *batchv1.CronJob {
 	return cj
 }
 
-func TestAnOrphanedCronJobSharingATagIsAConflict(t *testing.T) {
+func TestAnOrphanedCronJobIsSuspendedWhateverItsScope(t *testing.T) {
 	t.Parallel()
 	host := scheduledBackup().EffectiveResticHost()
-	tests := []struct {
-		name     string
-		scope    string
-		conflict bool
-	}{
-		{"same tag", `{"repository":"` + resticName + `","host":"` + host + `","tags":["db"]}`, true},
-		{"rendered before scopes were recorded", "", true},
-		{"another tag", `{"repository":"` + resticName + `","host":"` + host + `","tags":["other"]}`, false},
-		{"another repository", `{"repository":"elsewhere","host":"` + host + `","tags":["db"]}`, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for name, scope := range map[string]string{
+		"same tag":                             `{"repository":"` + resticName + `","host":"` + host + `","tags":["db"]}`,
+		"rendered before scopes were recorded": "",
+		"another tag":                          `{"repository":"` + resticName + `","host":"` + host + `","tags":["other"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			r, c := backupHarness(t, initializedRepo(), scheduledBackup(), orphanCronJob(tt.scope))
+			r, c := backupHarness(t, initializedRepo(), scheduledBackup(), orphanCronJob(scope))
 			if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: resticName}); err != nil {
 				t.Fatal(err)
 			}
-			cond := readyReason(t, c, resticName)
-			if got := cond != nil && cond.Reason == reasonTagConflict; got != tt.conflict {
-				t.Fatalf("Ready = %+v, want conflict %t", cond, tt.conflict)
-			}
-			if !tt.conflict {
-				return
-			}
-			if !strings.Contains(cond.Message, goneCronJob) {
-				t.Errorf("the conflict does not name the orphaned CronJob: %s", cond.Message)
-			}
 			if !cronJobSuspended(t, c, goneCronJob) {
-				t.Error("the orphaned CronJob, which nothing else reconciles, kept forgetting under the shared tag")
+				t.Error("the orphaned CronJob, which nothing else reconciles, kept backing up and forgetting")
+			}
+			if cond := readyReason(t, c); cond == nil || cond.Status != metav1.ConditionTrue {
+				t.Errorf("Ready = %+v; a suspended stray forgets nothing and should not hold this backup", cond)
 			}
 		})
 	}
@@ -134,5 +120,20 @@ func TestBackupJobsRecordTheirForgetScope(t *testing.T) {
 	want := `{"repository":"` + resticName + `","host":"` + host + `","tags":["db"]}`
 	if got := cj.Spec.JobTemplate.Annotations[forgetScopeAnnotation]; got != want {
 		t.Errorf("job template scope = %q, want %q", got, want)
+	}
+}
+
+func TestAnOrphanedCronJobNoBackupCanAdoptIsSuspended(t *testing.T) {
+	t.Parallel()
+	scope := `{"repository":"elsewhere","host":"` + scheduledBackup().EffectiveResticHost() + `","tags":["db"]}`
+	r, c := backupHarness(t, initializedRepo(), scheduledBackup(), orphanCronJob(scope))
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{Namespace: testNS, Name: resticName}); err != nil {
+		t.Fatal(err)
+	}
+	if cond := readyReason(t, c); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("Ready = %+v; a stray CronJob on another Repository is no conflict", cond)
+	}
+	if !cronJobSuspended(t, c, goneCronJob) {
+		t.Error("a CronJob whose ScheduledBackup is gone kept backing up and forgetting under a spec that no longer exists")
 	}
 }
