@@ -110,7 +110,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 	}()
 
 	if err := r.suspendStrays(ctx, sb.Namespace); err != nil {
-		return ctrl.Result{}, err
+		log.FromContext(ctx).Error(err, "Failed to suspend a CronJob no ScheduledBackup owns")
 	}
 
 	var repo b2backupv1.Repository
@@ -308,6 +308,7 @@ func (r *ScheduledBackupReconciler) suspendStrays(ctx context.Context, namespace
 	}
 	live := map[types.UID]bool{}
 	names := map[string]bool{}
+	var errs []error
 	for i := range backups.Items {
 		if backups.Items[i].DeletionTimestamp.IsZero() {
 			live[backups.Items[i].UID] = true
@@ -321,12 +322,15 @@ func (r *ScheduledBackupReconciler) suspendStrays(ctx context.Context, namespace
 			continue
 		}
 		if err := r.suspendCronJob(ctx, cj); err != nil {
-			return err
+			if !apierrors.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("suspending CronJob %s: %w", cj.Name, err))
+			}
+			continue
 		}
 		r.Recorder.Eventf(cj, nil, corev1.EventTypeWarning, "StrayCronJobSuspended", "Suspend",
 			"Suspended CronJob %s: no ScheduledBackup owns it", cj.Name)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // suspendOwnCronJob stops this ScheduledBackup's CronJob from firing. It runs
