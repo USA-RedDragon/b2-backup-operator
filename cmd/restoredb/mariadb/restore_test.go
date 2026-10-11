@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,11 +26,20 @@ type fakeConn struct {
 	oldHeld bool
 	foreign string
 	failOn  string
-	loaded  bytes.Buffer
-	execs   []string
+	// dropAfterSwap makes the swap report an error after it was applied, as a
+	// connection lost before the reply would, and every query fail after it
+	// when queriesFail is set too.
+	dropAfterSwap bool
+	queriesFail   bool
+	swapped       bool
+	loaded        bytes.Buffer
+	execs         []string
 }
 
 func (f *fakeConn) query(_ context.Context, sql string) ([][]string, error) {
+	if f.swapped && f.queriesFail {
+		return nil, errors.New("ERROR 2013: Lost connection to server during query")
+	}
 	schema := func(name string) bool { return strings.Contains(sql, literal(name)) }
 	var rows [][]string
 	switch {
@@ -75,6 +85,10 @@ func (f *fakeConn) execute(_ context.Context, sql string) error {
 	if strings.Contains(sql, "RENAME TABLE `app`.") {
 		f.tables[testLive], f.tables[testOld] = f.tables[testStaging], f.tables[testLive]
 		f.tables[testStaging] = nil
+		f.swapped = true
+		if f.dropAfterSwap {
+			return errors.New("ERROR 2013: Lost connection to server during query")
+		}
 	}
 	return nil
 }
@@ -265,4 +279,40 @@ func TestFilterLeavesOutADatabaseStatementLongerThanItsBuffer(t *testing.T) {
 	if err != nil || f.database != name || out.String() != "\n"+goodDump {
 		t.Errorf("database %q, passed %q, err %v", f.database, out.String(), err)
 	}
+}
+
+// A swap that reports an error may still have been applied, as when the
+// connection drops after the server ran it. The tables are looked at again
+// before saying what happened.
+func TestRestoreRechecksAFailedSwap(t *testing.T) {
+	t.Parallel()
+
+	t.Run("applied", func(t *testing.T) {
+		t.Parallel()
+		f := newFake()
+		f.dropAfterSwap = true
+		out, err := runRestore(t, f, goodDump, false, false)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if !strings.Contains(out, "the swap was applied") || !strings.Contains(out, "Lost connection") {
+			t.Errorf("the output does not say the swap went through despite the error:\n%s", out)
+		}
+		if slices.Contains(f.execs, "DROP DATABASE IF EXISTS `app__b2bk_old`") {
+			t.Errorf("the rollback copy was dropped: %q", f.execs)
+		}
+	})
+
+	t.Run("unknown", func(t *testing.T) {
+		t.Parallel()
+		f := newFake()
+		f.dropAfterSwap, f.queriesFail = true, true
+		_, err := runRestore(t, f, goodDump, false, false)
+		if err == nil || strings.Contains(err.Error(), "was not changed") || !strings.Contains(err.Error(), "unknown") {
+			t.Errorf("err = %v", err)
+		}
+		if slices.Contains(f.execs, "DROP DATABASE IF EXISTS `app__b2bk_old`") {
+			t.Errorf("the rollback database was dropped: %q", f.execs)
+		}
+	})
 }

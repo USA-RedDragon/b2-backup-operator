@@ -2,10 +2,12 @@ package mariadb
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
 
@@ -285,7 +287,9 @@ func (r *restore) swap(ctx context.Context, stmt string) error {
 	}
 	if stmt != "" {
 		if err := r.db.execute(ctx, swapTimeout+"; "+stmt); err != nil {
-			return r.abort(ctx, fmt.Errorf("swap: %w", err))
+			if err := r.afterFailedSwap(context.WithoutCancel(ctx), err); err != nil {
+				return err
+			}
 		}
 	}
 	r.printf("restored %s: %d tables swapped in, %d moved to %s\n",
@@ -307,6 +311,32 @@ func (r *restore) swap(ctx context.Context, stmt string) error {
 			QuoteIdent(r.staging), SchemaComment, back, QuoteIdent(r.staging))
 	}
 	return nil
+}
+
+// afterFailedSwap looks at where the tables are after the swap reported err,
+// since a connection lost after the server ran the RENAME TABLE reports an
+// error for a swap that happened. It returns nil when the swap was applied,
+// and otherwise an error that says what is known.
+func (r *restore) afterFailedSwap(ctx context.Context, err error) error {
+	live, lerr := r.tables(ctx, r.live)
+	staging, serr := r.tables(ctx, r.staging)
+	old, oerr := r.tables(ctx, r.old)
+	if lerr := cmp.Or(lerr, serr, oerr); lerr != nil {
+		return fmt.Errorf("swap: %w; whether it was applied is unknown, since the tables could not be listed "+
+			"afterwards (%w). If %s holds the restored tables, %s holds the replaced ones; otherwise the swap did "+
+			"not happen and %s still holds the restored tables. Nothing was dropped", err, lerr,
+			QuoteIdent(r.live), QuoteIdent(r.old), QuoteIdent(r.staging))
+	}
+	switch {
+	case slices.Equal(live, r.incoming) && slices.Equal(old, r.liveTables) && len(staging) == 0:
+		r.printf("the swap was applied although the client reported an error: %v\n", err)
+		return nil
+	case slices.Equal(live, r.liveTables) && slices.Equal(staging, r.incoming) && len(old) == 0:
+		return r.abort(ctx, fmt.Errorf("swap: %w", err))
+	}
+	return fmt.Errorf("swap: %w; afterwards %s holds %d tables, %s %d and %s %d, which is neither the state "+
+		"before the swap nor after it. Nothing was dropped", err, QuoteIdent(r.live), len(live),
+		QuoteIdent(r.staging), len(staging), QuoteIdent(r.old), len(old))
 }
 
 // abort drops the staging database and the rollback database, which is still
