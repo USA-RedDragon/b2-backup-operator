@@ -545,7 +545,7 @@ func mountedVolumes(hr *helmRelease, container hrContainer, script string, m *mi
 	for _, v := range volumes {
 		mountPath := path.Clean(v.path)
 		switch {
-		case v.kind != volumeSecret && cacheDir != "" && mountPath == cacheDir && !scriptNames(script, cacheDir):
+		case v.kind != volumeSecret && cacheDir != "" && mountPath == cacheDir && !scriptNames(script, cacheDir, container.WorkingDir):
 			if err := migrateCache(hr, v, cacheDir, script, m); err != nil {
 				return nil, nil, err
 			}

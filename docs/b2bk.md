@@ -647,7 +647,8 @@ one side and the operator's on the other.
 Some differences are the operator's by design and are normalized away: its
 restic cache claim, and a cache volume on the original side mounted where restic
 keeps its cache (`--cache-dir`, then `RESTIC_CACHE_DIR`, then the image's
-`/cache`) when the script backs nothing up from there; the database Secret's
+`/cache`) when the script names no path there and does not run in a working
+directory there; the database Secret's
 mount path, as long as every dump on the generated side reads its credentials
 where a Secret is mounted (`DATABASE SECRET UNREAD` otherwise); the
 Repository's Secret in place of `restic-envs` and `restic-b2`; the pod's restart
@@ -788,7 +789,7 @@ What maps across:
 | `restic forget --prune --keep-...` | `spec.retention`, which the operator scopes to the backup's own tags |
 | Every `existingClaim` mounted in the restic container | `spec.volumes`, with the mount path and read-only flag app-template gives each, the working directory's claim first. Like app-template, `globalMounts` and the container's `advancedMounts` both apply |
 | An `emptyDir` mounted in the restic container | `spec.scratch`, with its `sizeLimit` |
-| The volume restic keeps its cache on: mounted where `--cache-dir`, then `RESTIC_CACHE_DIR`, then the image's `/cache` points, and not backed up by the script | Nothing, or `spec.cache.storageClass` for a claim the chart created. The operator mounts a cache claim of its own at `/cache`, and `RESTIC_CACHE_DIR` is dropped. A volume anywhere else is data, whatever its name |
+| The volume restic keeps its cache on: mounted where `--cache-dir`, then `RESTIC_CACHE_DIR`, then the image's `/cache` points, and not backed up by the script, which names no path there and does not run in a working directory there | Nothing, or `spec.cache.storageClass` for a claim the chart created. The operator mounts a cache claim of its own at `/cache`, and `RESTIC_CACHE_DIR` is dropped. A volume anywhere else is data, whatever its name |
 | The container's `workingDir` | `spec.workingDir`, when it is not the default the operator would use |
 | The one Secret mounted | `spec.database.secretName`; a `<cluster>-app` or `<cluster>-superuser` name also sets `cnpgCluster` |
 | `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` and `labels`, from the controller's `pod` or else `defaultPodOptions` | `spec.affinity`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` and `spec.podLabels`, verbatim |
