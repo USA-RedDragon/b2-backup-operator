@@ -14,6 +14,9 @@ const (
 	nameQuoted
 	// nameDot is a dot after a name.
 	nameDot
+	// nameNumber is a word of digits so far. MariaDB reads one that goes on
+	// with a letter, such as 1db, as a name.
+	nameNumber
 )
 
 // qualifiedNames watches the whole text of a statement, as the client sends
@@ -70,6 +73,9 @@ func (q *qualifiedNames) byte(c, inString byte) {
 	}
 	if q.inWord {
 		if isNameStart(c) || isDigit(c) {
+			if q.last == nameNumber && isNameStart(c) {
+				q.last = nameWord
+			}
 			if len(q.word) < maxNameWord {
 				q.word = append(q.word, c)
 			}
@@ -89,10 +95,17 @@ func (q *qualifiedNames) byte(c, inString byte) {
 		q.startName(nameWord)
 		q.word = append(q.word, c)
 		q.inWord = true
-	case isDigit(c):
+	case isDigit(c) && (q.at || q.last != nameDot):
+		q.last = nameNumber
+		if q.at {
+			q.last = nameOther
+		}
 		q.at = false
-		q.last = nameOther
-		q.word = q.word[:0]
+		q.word = append(q.word[:0], c)
+		q.inWord = true
+	case isDigit(c):
+		q.startName(nameWord)
+		q.word = append(q.word, c)
 		q.inWord = true
 	case isClientSpace(c):
 	case c == '.' && (q.last == nameWord || q.last == nameQuoted):

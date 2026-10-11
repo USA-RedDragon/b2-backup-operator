@@ -548,3 +548,23 @@ func TestClientLoadKillsTheClientWhenTheDumpIsRefused(t *testing.T) {
 		t.Error("the client read to the end of its input")
 	}
 }
+
+// MariaDB reads a word led by a digit, such as 1db, as a name unless it is all
+// digits, so 1db.t names a table in database 1db.
+func TestFilterRefusesADatabaseNameLedByADigit(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		"INSERT INTO 1db.t VALUES (1)",
+		"UPDATE `t` SET `c` = (SELECT c FROM 9x.t2)",
+		"DO `other`.1f()",
+		"DO 1db . `f`()",
+	} {
+		got, _, err := filterString(t, createTable+stmt+";\n")
+		if !errors.Is(err, ErrOtherDatabase) || got != createTable {
+			t.Errorf("%q: err = %v, passed on %q", stmt, err, got)
+		}
+	}
+	if _, _, err := filterString(t, "INSERT INTO `t` VALUES (1.e3,1.5e3,0x1F,1e5,.5,1.,12.34);\n"); err != nil {
+		t.Errorf("numbers: err = %v", err)
+	}
+}
