@@ -166,6 +166,18 @@ func hasEvent(recorded []string, reason string) bool {
 	return slices.ContainsFunc(recorded, func(e string) bool { return strings.Contains(e, " "+reason+" ") })
 }
 
+func loseSecret(t *testing.T, c client.Client) {
+	t.Helper()
+	secret := getSecret(t, c, credsSecretName)
+	secret.Finalizers = nil
+	if err := c.Update(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func ownKeys(f *b2fake.Server) []b2.Key {
 	return slices.DeleteFunc(f.Keys(), func(k b2.Key) bool { return !strings.HasPrefix(k.KeyName, "b2bk-") })
 }
@@ -445,9 +457,7 @@ func TestNeverInventsAPasswordOnceProvisioned(t *testing.T) {
 	r, c := newHarness(t, f, bucketRepo(nil))
 	reconcileN(t, r, 1)
 
-	if err := c.Delete(context.Background(), getSecret(t, c, credsSecretName)); err != nil {
-		t.Fatal(err)
-	}
+	loseSecret(t, c)
 	if err := reconcileErr(r); err == nil {
 		t.Fatal("a fresh password was generated after the Secret was lost")
 	}
@@ -462,10 +472,9 @@ func TestALostSecretGetsANewKeyAndTheOldOneIsDeleted(t *testing.T) {
 	r, c := newHarness(t, f, prefixRepo(usePasswordSeed), seedSecretFixture())
 	reconcileN(t, r, 1)
 	oldKey := getRepo(t, c).Status.ApplicationKeyID
+	succeedInitJob(t, c)
 
-	if err := c.Delete(context.Background(), getSecret(t, c, credsSecretName)); err != nil {
-		t.Fatal(err)
-	}
+	loseSecret(t, c)
 	reconcileN(t, r, 1)
 
 	newKey := getRepo(t, c).Status.ApplicationKeyID
