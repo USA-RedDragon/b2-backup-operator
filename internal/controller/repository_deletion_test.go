@@ -522,3 +522,20 @@ func TestAPasswordWrittenBeforeStatusWasRecordedKeepsItsFinalizer(t *testing.T) 
 		t.Error("the only copy of a password written for a provisioned key lost its finalizer")
 	}
 }
+
+func TestAnUnlabelledInitJobOfAnotherIsReported(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	foreign := &batchv1.Job{Name: resticName + initJobSuffix, Namespace: testNS}
+	r, c := newHarness(t, f, prefixRepo(nil), foreign)
+	for range 2 {
+		_ = reconcileErr(r)
+	}
+	if cond := condition(t, c, b2backupv1.RepositoryConditionInitialized); cond == nil || cond.Reason != reasonInitJobNotOwned {
+		t.Errorf("Initialized = %+v, want %s naming the Job in the way", cond, reasonInitJobNotOwned)
+	}
+	if getRepo(t, c).Status.Initialized {
+		t.Error("recorded as initialized from a Job it does not own")
+	}
+}
