@@ -38,8 +38,6 @@ import (
 const (
 	repositoryRefField = ".spec.repositoryRef.name"
 
-	annotationSpecHash = "b2backup.mcswain.dev/spec-hash"
-
 	backupRequeueInterval = 5 * time.Minute
 
 	reasonTagConflict = "TagConflict"
@@ -171,7 +169,8 @@ func (r *ScheduledBackupReconciler) reconcile(
 	if desired.Annotations == nil {
 		desired.Annotations = map[string]string{}
 	}
-	desired.Annotations[annotationSpecHash] = hash
+	desired.Annotations[backup.AnnotationSpecHash] = hash
+	desired.Annotations[backup.AnnotationRenderedFrom] = backup.RenderedFrom(sb, &repo)
 
 	var cronJobUID types.UID
 
@@ -212,7 +211,8 @@ func (r *ScheduledBackupReconciler) reconcile(
 			if updated.Annotations == nil {
 				updated.Annotations = map[string]string{}
 			}
-			updated.Annotations[annotationSpecHash] = hash
+			updated.Annotations[backup.AnnotationSpecHash] = hash
+			updated.Annotations[backup.AnnotationRenderedFrom] = desired.Annotations[backup.AnnotationRenderedFrom]
 			if err := r.Update(ctx, updated); err != nil {
 				return ctrl.Result{}, fmt.Errorf("updating cronjob: %w", err)
 			}
@@ -312,7 +312,8 @@ func (r *ScheduledBackupReconciler) suspendCronJob(ctx context.Context, cj *batc
 }
 
 func cronJobDrifted(current, desired *batchv1.CronJob) bool {
-	return current.Annotations[annotationSpecHash] != desired.Annotations[annotationSpecHash] ||
+	return current.Annotations[backup.AnnotationSpecHash] != desired.Annotations[backup.AnnotationSpecHash] ||
+		current.Annotations[backup.AnnotationRenderedFrom] != desired.Annotations[backup.AnnotationRenderedFrom] ||
 		!equality.Semantic.DeepDerivative(desired.Labels, current.Labels) ||
 		!equality.Semantic.DeepDerivative(desired.Spec, current.Spec)
 }

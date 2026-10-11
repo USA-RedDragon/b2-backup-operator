@@ -104,7 +104,12 @@ space after a retention change rather than routine upkeep.
 
 Like the scheduled forget, it only considers this backup's own snapshots: those
 tagged with one of its sources' tags, on its host. Another ScheduledBackup
-writing into the same repository keeps its own retention.`,
+writing into the same repository keeps its own retention.
+
+It runs only once the operator has rendered the backup's CronJob from the
+ScheduledBackup and Repository as they are now and reports it Ready, and only
+while nothing else in the namespace forgets under its tags: a ScheduledBackup,
+a CronJob left without one, or a backup Job still running an older spec.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !dryRun {
@@ -112,7 +117,7 @@ writing into the same repository keeps its own retention.`,
 					return err
 				}
 			}
-			return runRestic(cmd.Context(), f, args[0], "prune",
+			return runResticGuarded(cmd.Context(), f, args[0], "prune", requireCurrent,
 				func(sb *b2backupv1.ScheduledBackup, repo *b2backupv1.Repository) ([]string, error) {
 					flags := retentionFlags(sb.Spec.Retention)
 					if len(flags) == 0 {
@@ -143,8 +148,8 @@ writing into the same repository keeps its own retention.`,
 func pruneArgs(sb *b2backupv1.ScheduledBackup, keep []string) ([]string, error) {
 	if cond := apimeta.FindStatusCondition(sb.Status.Conditions, b2backupv1.ScheduledBackupConditionReady); cond != nil &&
 		cond.Reason == "TagConflict" {
-		return nil, fmt.Errorf("scheduledbackup/%s is in a tag conflict, so its forget would reach another "+
-			"backup's snapshots: %s", sb.Name, cond.Message)
+		return nil, fmt.Errorf("%w: scheduledbackup/%s's forget would reach another backup's snapshots: %s",
+			ErrTagConflict, sb.Name, cond.Message)
 	}
 	tags := backup.SourceTags(sb.Spec.Sources)
 	if len(tags) == 0 {
