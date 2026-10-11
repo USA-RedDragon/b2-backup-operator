@@ -159,8 +159,19 @@ func (r *ScheduledBackupReconciler) reconcile(
 		cronJobUID = desired.UID
 	case err != nil:
 		return ctrl.Result{}, err
+	case !metav1.IsControlledBy(&current, sb) &&
+		(current.Labels[labelManagedBy] != managedByValue || metav1.GetControllerOf(&current) != nil):
+		r.setCondition(sb, metav1.Condition{
+			Type:   b2backupv1.ScheduledBackupConditionReady,
+			Status: metav1.ConditionFalse,
+			Reason: "CronJobNotManaged",
+			Message: fmt.Sprintf("CronJob %s already exists, is not labelled %s=%s and is not owned by "+
+				"this ScheduledBackup, so it was left alone. Delete it or rename the ScheduledBackup",
+				desired.Name, labelManagedBy, managedByValue),
+		})
+		return ctrl.Result{RequeueAfter: backupRequeueInterval}, nil
 	default:
-		if cronJobDrifted(&current, desired, sb) {
+		if !metav1.IsControlledBy(&current, sb) || cronJobDrifted(&current, desired) {
 			updated := current.DeepCopy()
 			updated.Spec = desired.Spec
 			updated.Labels = desired.Labels
@@ -201,9 +212,8 @@ func (r *ScheduledBackupReconciler) reconcile(
 	return ctrl.Result{RequeueAfter: backupRequeueInterval}, nil
 }
 
-func cronJobDrifted(current, desired *batchv1.CronJob, sb *b2backupv1.ScheduledBackup) bool {
-	return !metav1.IsControlledBy(current, sb) ||
-		current.Annotations[annotationSpecHash] != desired.Annotations[annotationSpecHash] ||
+func cronJobDrifted(current, desired *batchv1.CronJob) bool {
+	return current.Annotations[annotationSpecHash] != desired.Annotations[annotationSpecHash] ||
 		!equality.Semantic.DeepDerivative(desired.Labels, current.Labels) ||
 		!equality.Semantic.DeepDerivative(desired.Spec, current.Spec)
 }
