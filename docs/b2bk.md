@@ -312,6 +312,7 @@ database partly restored.
 | --- | --- | --- |
 | `--snapshot` | all | Default `latest`, as described above |
 | `--tag` | all | The source to restore, when a backup has several, or a script backup's dump |
+| `--host` | all | The host the snapshot was taken on, instead of `spec.resticHost` or the namespace: for a snapshot from before the host changed. A named `--snapshot` from another host is refused without it |
 | `--database` | `--to-database` | The database to restore into, instead of the source's |
 | `--size` | `--to-new-pvc` | Override the new claim's size |
 | `--yes` | `--in-place`, `--to-database` | Skip the typed confirmation. The other two never ask |

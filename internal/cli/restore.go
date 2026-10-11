@@ -30,6 +30,7 @@ const restoreMountPath = "/restore"
 type restoreOptions struct {
 	snapshot string
 	tag      string
+	host     string
 	database string
 
 	inPlace    bool
@@ -93,6 +94,8 @@ func newRestoreCommand(f *Factory) *cobra.Command {
 
 Every target restores the latest snapshot this backup took of the source,
 matched by its tag, its host and its exact paths, unless --snapshot names one.
+A named snapshot must have been taken on the backup's host too; --host names
+another, for a snapshot from before spec.resticHost changed.
 A named snapshot must carry the source's tag and paths under the source's own,
 so a database dump is never restored over files or files into a database.
 Files go back where they were backed up from: restic records absolute paths,
@@ -132,6 +135,8 @@ targets and exits, so a script never restores somewhere it did not name.
 
 	cmd.Flags().StringVar(&o.snapshot, "snapshot", latest, "Snapshot to restore")
 	cmd.Flags().StringVar(&o.tag, "tag", "", "Restore the source with this tag")
+	cmd.Flags().StringVar(&o.host, "host", "",
+		"Restore a snapshot taken on this host (default: the backup's spec.resticHost, else its namespace)")
 	cmd.Flags().StringVar(&o.database, "database", "",
 		"With --to-database, restore into this database (default: the source's, else the Secret's dbname)")
 	cmd.Flags().BoolVar(&o.inPlace, "in-place", false, "Restore over the backup's source volume")

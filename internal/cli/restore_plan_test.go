@@ -107,7 +107,9 @@ func TestChooseSnapshot(t *testing.T) {
 		{"nothing matches", latest, byID(snapOther), files, "", nil},
 		{"a named snapshot of the source", snapOlder, byID(snapOlder), files, snapOlder, nil},
 		{"a named snapshot under the source path", snapSub, byID(snapSub), files, snapSub, nil},
-		{"a named snapshot from before a host rename", snapOther, byID(snapOther), files, snapOther, nil},
+		{"a named snapshot from another host", snapOther, byID(snapOther), files, "", ErrWrongSnapshot},
+		{"a named snapshot from before a host rename, with --host", snapOther, byID(snapOther),
+			restoreSource{tag: filesTag, host: "renamed", paths: []string{dataDir}}, snapOther, nil},
 		{"a named dump restored over files", snapDB, byID(snapDB), files, "", ErrWrongSnapshot},
 		{"a named files snapshot restored into a database", snapFiles, byID(snapFiles), db, "", ErrWrongSnapshot},
 		{"a named old plain-SQL dump", snapOldDump, byID(snapOldDump), db, snapOldDump, nil},
@@ -813,5 +815,14 @@ func TestADatabaseRestoreConfirmsTheDumpBeforeRestoringIt(t *testing.T) {
 		if strings.Contains(cmd, "restoredb") {
 			t.Errorf("restored after the confirmation was declined: %s", cmd)
 		}
+	}
+}
+
+func TestANamedSnapshotMustBeFromTheBackupsHost(t *testing.T) {
+	t.Parallel()
+	o := &restoreOptions{snapshot: snapOther}
+	_, err := o.chooseSnapshot(byID(snapOther), restoreSource{tag: filesTag, host: testNS, paths: []string{dataDir}})
+	if !errors.Is(err, ErrWrongSnapshot) || !strings.Contains(err.Error(), "renamed") {
+		t.Errorf("err = %v, want a snapshot from host renamed refused", err)
 	}
 }

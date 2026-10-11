@@ -108,6 +108,10 @@ func (o *restoreOptions) chooseSnapshot(snaps []resticSnapshot, src restoreSourc
 		if !slices.Contains(s.Tags, src.tag) {
 			return fmt.Errorf("%w: snapshot %s is tagged %v, not %s", ErrWrongSnapshot, s.short(), s.Tags, src.tag)
 		}
+		if s.Hostname != src.host {
+			return fmt.Errorf("%w: snapshot %s was taken on host %s, not %s", ErrWrongSnapshot, s.short(),
+				s.Hostname, src.host)
+		}
 		if database {
 			if len(s.Paths) != 1 {
 				return fmt.Errorf("%w: snapshot %s holds %v, not one database dump", ErrWrongSnapshot, s.short(), s.Paths)
@@ -414,7 +418,7 @@ func (o *restoreOptions) filesSource(sb *b2backupv1.ScheduledBackup) (restoreSou
 	}
 	return restoreSource{
 		tag:     chosen.EffectiveTag(),
-		host:    sb.EffectiveResticHost(),
+		host:    o.sourceHost(sb),
 		paths:   slices.Sorted(slices.Values(chosen.ResolvedPaths(sb.EffectiveWorkingDir()))),
 		exclude: chosen.Exclude,
 	}, nil
@@ -572,8 +576,17 @@ func sourceVolume(sb *b2backupv1.ScheduledBackup, src restoreSource) (*b2backupv
 	return found, nil
 }
 
+// sourceHost is the host a restored snapshot must have been taken on: the
+// backup's own, or --host for one taken before the host changed.
+func (o *restoreOptions) sourceHost(sb *b2backupv1.ScheduledBackup) string {
+	if o.host != "" {
+		return o.host
+	}
+	return sb.EffectiveResticHost()
+}
+
 func (o *restoreOptions) databaseSource(sb *b2backupv1.ScheduledBackup) (restoreSource, error) {
-	src := restoreSource{tag: o.tag, host: sb.EffectiveResticHost(), database: o.database}
+	src := restoreSource{tag: o.tag, host: o.sourceHost(sb), database: o.database}
 	var tags []string
 	var chosen *b2backupv1.BackupSource
 	for i := range sb.Spec.Sources {
