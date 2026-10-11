@@ -19,11 +19,14 @@ const (
 	// the operator keeps the CronJob suspended and starts no triggered backup.
 	AnnotationRestoreLock = "b2backup.mcswain.dev/restore-lock"
 
-	// AnnotationRestorePartial lists, comma-separated, what a failed restore may
-	// have left half-written: pvc/<claim>:<path> and db/<engine>/<secret>/<database>
-	// entries. While it is set the operator keeps the CronJob suspended and starts
-	// no triggered backup, so a partial restore is never saved over good
-	// snapshots. A later complete restore of an entry removes it; b2bk resume
+	// AnnotationRestorePartial lists, as a JSON array, what a restore may have
+	// left half-written: pvc/<claim>:<path> and
+	// db/<engine>/<secret>/<host>/<database> entries, recorded before its first
+	// write. While it is set the operator keeps the CronJob suspended and starts
+	// no triggered backup, here and on every ScheduledBackup that mounts a named
+	// claim or dumps a named database, so a partial restore is never saved over
+	// good snapshots. An entry in another form holds every ScheduledBackup in the
+	// namespace. A later complete restore of an entry removes it; b2bk resume
 	// removes them all.
 	AnnotationRestorePartial = "b2backup.mcswain.dev/restore-partial"
 

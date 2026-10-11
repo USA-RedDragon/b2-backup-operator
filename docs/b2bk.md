@@ -267,7 +267,10 @@ writing; one that comes to share them later is held by the operator all the
 same, which suspends the CronJob of any ScheduledBackup that mounts a claim or
 dumps a database another ScheduledBackup's lock or recorded entries name.
 `b2bk resume` leaves alone the entries of a ScheduledBackup a running restore
-holds. `b2bk status` and `b2bk doctor` show the hold. A restore
+holds, and says when another ScheduledBackup's lock or entries still hold the
+one it resumed; `b2bk resume` of that one releases it. An entry in a form other
+than `pvc/...` or `db/...`, which only a hand edit makes, holds every
+ScheduledBackup in the namespace. `b2bk status` and `b2bk doctor` show the hold. A restore
 killed before it lets go leaves the lock behind: once it and its Job are gone
 (`kubectl get jobs -l b2backup.mcswain.dev/b2bk-purpose`), remove it with
 `kubectl annotate scheduledbackup NAME b2backup.mcswain.dev/restore-lock-`. What

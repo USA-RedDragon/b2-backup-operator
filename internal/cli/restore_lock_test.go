@@ -30,6 +30,7 @@ const (
 	appDataPartial  = `["pvc/app-data:/"]`
 	mediaMount      = "/data/media"
 	mediaClaim      = "media"
+	staleLockHolder = "b2bk pid 1"
 	batchAPIVersion = "batch/v1"
 )
 
@@ -379,7 +380,7 @@ func TestNothingStartsABackupWhileARestoreHoldsIt(t *testing.T) {
 
 	sb := newBackup(testBackupName, testRepoName)
 	sb.Spec.Suspend = true
-	sb.Annotations = map[string]string{b2backupv1.AnnotationRestoreLock: "b2bk pid 1"}
+	sb.Annotations = map[string]string{b2backupv1.AnnotationRestoreLock: staleLockHolder}
 	c := newClient(t, sb)
 	if err := runSetSuspend(ctx, c, io.Discard, testNS, subjectBackup, false, "resumed"); !errors.Is(err, ErrRestoreRunning) {
 		t.Errorf("resume err = %v, want it refused while a restore runs", err)
@@ -665,7 +666,7 @@ func TestResumeLeavesARunningRestoresEntriesAlone(t *testing.T) {
 	other := newBackup(otherBackup, testRepoName)
 	other.Annotations = map[string]string{
 		b2backupv1.AnnotationRestorePartial: appDataPartial,
-		b2backupv1.AnnotationRestoreLock:    "b2bk pid 1",
+		b2backupv1.AnnotationRestoreLock:    staleLockHolder,
 	}
 	c := newClient(t, sb, other)
 	if err := runSetSuspend(context.Background(), c, io.Discard, testNS, subjectBackup, false, "resumed"); err != nil {
@@ -697,5 +698,25 @@ func TestAnotherBackupsRestoreHoldShowsAndStopsATrigger(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "scheduledbackup/"+otherBackup) {
 		t.Errorf("status does not show the hold another backup's restore put on it:\n%s", out.String())
+	}
+}
+
+func TestResumeSaysWhenAnotherBackupStillHoldsIt(t *testing.T) {
+	t.Parallel()
+	sb := newBackup(testBackupName, testRepoName)
+	sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: testClaimName, MountPath: dataDir}}
+	sb.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: appDataPartial}
+	other := newBackup(otherBackup, testRepoName)
+	other.Annotations = map[string]string{
+		b2backupv1.AnnotationRestorePartial: appDataPartial,
+		b2backupv1.AnnotationRestoreLock:    staleLockHolder,
+	}
+	c := newClient(t, sb, other)
+	var out bytes.Buffer
+	if err := runSetSuspend(context.Background(), c, &out, testNS, subjectBackup, false, "resumed"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "still held") || !strings.Contains(out.String(), otherBackup) {
+		t.Errorf("resume did not say the backup is still held through %s:\n%s", otherBackup, out.String())
 	}
 }
