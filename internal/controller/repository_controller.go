@@ -137,6 +137,7 @@ type RepositoryReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
 
 // Reconcile brings the B2 bucket, application key and credentials Secret in line with the spec.
 func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -399,12 +400,7 @@ func (r *RepositoryReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
-	r.setCondition(repo, metav1.Condition{
-		Type:    b2backupv1.RepositoryConditionInitialized,
-		Status:  metav1.ConditionTrue,
-		Reason:  "Initialized",
-		Message: "repository is initialized",
-	})
+	r.markInitialized(repo)
 	ready := metav1.Condition{
 		Type:    b2backupv1.RepositoryConditionReady,
 		Status:  metav1.ConditionTrue,
@@ -425,6 +421,21 @@ func (r *RepositoryReconciler) reconcile(
 		requeue = min(requeue, keyRecheck)
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// markInitialized sets Initialized unless it is already True, so the reason
+// the init Job's pass gave, Created or FoundExisting, stays.
+func (r *RepositoryReconciler) markInitialized(repo *b2backupv1.Repository) {
+	if init := apimeta.FindStatusCondition(repo.Status.Conditions, b2backupv1.RepositoryConditionInitialized); init != nil &&
+		init.Status == metav1.ConditionTrue {
+		return
+	}
+	r.setCondition(repo, metav1.Condition{
+		Type:    b2backupv1.RepositoryConditionInitialized,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Initialized",
+		Message: "repository is initialized",
+	})
 }
 
 // noteAdoption records that the path already held a restic repository. found
@@ -747,7 +758,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 		return 0, err
 	}
 
-	password, generated, err := r.resolvePassword(ctx, repo, &existing, creds.url, mustExist || repo.Status.Adopted)
+	password, source, err := r.resolvePassword(ctx, repo, &existing, creds.url, mustExist || repo.Status.Adopted)
 	if err != nil {
 		return 0, err
 	}
@@ -812,10 +823,17 @@ func (r *RepositoryReconciler) reconcileSecret(
 		}
 		return 0, err
 	}
-	if generated {
+	switch source {
+	case passwordGenerated:
 		log.FromContext(ctx).Info("Generated restic password", "secret", name)
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "PasswordGenerated", "Generate",
 			"Generated a new restic password in Secret %s; back it up, it cannot be recovered", name)
+	case passwordFromSeed:
+		ref := repo.Spec.PasswordSecretRef
+		log.FromContext(ctx).Info("Took restic password from passwordSecretRef", "secret", name,
+			"passwordSecret", ref.Name, "key", ref.Key)
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "PasswordFromSecret", "Configure",
+			"Using the restic password from Secret %s key %s, written into Secret %s", ref.Name, ref.Key, name)
 	}
 	if op != "" {
 		log.FromContext(ctx).Info("Reconciled credentials Secret", "secret", name, "operation", op)
@@ -879,30 +897,37 @@ func (r *RepositoryReconciler) passwordPreserved(
 	return true, true, ""
 }
 
+type passwordSource int
+
+const (
+	passwordFromCredentials passwordSource = iota
+	passwordFromSeed
+	passwordGenerated
+)
+
 // resolvePassword returns the restic password for the repository at url, and
-// whether it was generated. The password in the existing credentials Secret
+// where it came from. The password in the existing credentials Secret
 // wins only when that Secret is this Repository's own: it names url, carries
 // this Repository's UID, or status records it. A Secret another Repository
 // left behind holds another repository's password, so the seed, or a new
 // password for an empty path, is used instead.
 func (r *RepositoryReconciler) resolvePassword(
 	ctx context.Context, repo *b2backupv1.Repository, existing *corev1.Secret, url string, mustExist bool,
-) (string, bool, error) {
-	var password string
+) (string, passwordSource, error) {
 	if secretBelongsTo(existing, repo, url) {
-		password = string(existing.Data[KeyResticPassword])
-	}
-	if password == "" && repo.Spec.PasswordSecretRef != nil {
-		var err error
-		if password, err = r.readSecretKey(ctx, repo.Namespace, repo.Spec.PasswordSecretRef); err != nil {
-			return "", false, withReason("PasswordUnavailable", fmt.Errorf("reading passwordSecretRef: %w", err))
+		if password := string(existing.Data[KeyResticPassword]); password != "" {
+			return password, passwordFromCredentials, nil
 		}
 	}
-	if password != "" {
-		return password, false, nil
+	if repo.Spec.PasswordSecretRef != nil {
+		password, err := r.readSecretKey(ctx, repo.Namespace, repo.Spec.PasswordSecretRef)
+		if err != nil {
+			return "", 0, withReason("PasswordUnavailable", fmt.Errorf("reading passwordSecretRef: %w", err))
+		}
+		return password, passwordFromSeed, nil
 	}
 	if mustExist {
-		return "", false, withReason("PasswordUnavailable", fmt.Errorf(
+		return "", 0, withReason("PasswordUnavailable", fmt.Errorf(
 			"%s/%s already holds a repository or data, or this resource has provisioned one, "+
 				"but no password is available; restore Secret %s or set spec.passwordSecretRef to "+
 				"the existing RESTIC_PASSWORD", repo.Spec.Bucket, displayPath(repo.EffectivePath()),
@@ -910,9 +935,9 @@ func (r *RepositoryReconciler) resolvePassword(
 	}
 	password, err := secrets.GeneratePassword()
 	if err != nil {
-		return "", false, err
+		return "", 0, err
 	}
-	return password, true, nil
+	return password, passwordGenerated, nil
 }
 
 func secretBelongsTo(secret *corev1.Secret, repo *b2backupv1.Repository, url string) bool {
@@ -1388,9 +1413,7 @@ func (r *RepositoryReconciler) reconcileInitJob(
 			}
 			repo.Status.Initialized = true
 			if !recorded {
-				log.FromContext(ctx).Info("Initialized restic repository", "job", name)
-				r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initialized", "Initialize",
-					"restic init completed successfully")
+				r.reportInitOutcome(ctx, repo, &job)
 			}
 			return 0, nil
 		}
@@ -1507,7 +1530,9 @@ func (r *RepositoryReconciler) buildInitJob(repo *b2backupv1.Repository, name st
 						Name:  "init",
 						Image: r.BackupImage,
 
-						Command: []string{"sh", "-c", "restic cat config >/dev/null 2>&1 || restic init"},
+						Command:                  []string{"sh", "-c", initScript},
+						TerminationMessagePath:   corev1.TerminationMessagePathDefault,
+						TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
 								Name: repo.SecretName(),
@@ -1532,6 +1557,78 @@ func (r *RepositoryReconciler) buildInitJob(repo *b2backupv1.Repository, name st
 			},
 		},
 	}
+}
+
+// initScript opens the repository with the Secret's password, or creates one
+// where there is none, and says which in its termination message.
+const initScript = `if restic cat config >/dev/null 2>&1; then
+  outcome=` + initFound + `
+else
+  restic init || exit
+  outcome=` + initCreated + `
+fi
+echo "restic repository: $outcome"
+echo "$outcome" 2>/dev/null >` + corev1.TerminationMessagePathDefault + ` || true`
+
+const (
+	initFound   = "found"
+	initCreated = "created"
+)
+
+// initOutcome reads what the succeeded init Job did from the termination
+// message of a pod the Job controls, or "" when none says.
+func (r *RepositoryReconciler) initOutcome(ctx context.Context, job *batchv1.Job) string {
+	var pods corev1.PodList
+	if err := r.uncached().List(ctx, &pods, client.InNamespace(job.Namespace),
+		client.MatchingLabels{batchv1.ControllerUidLabel: string(job.UID)}); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list init Job pods", "job", job.Name)
+		return ""
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if !metav1.IsControlledBy(pod, job) || pod.Status.Phase != corev1.PodSucceeded {
+			continue
+		}
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Terminated == nil {
+				continue
+			}
+			switch strings.TrimSpace(cs.State.Terminated.Message) {
+			case initFound:
+				return initFound
+			case initCreated:
+				return initCreated
+			}
+		}
+	}
+	return ""
+}
+
+func (r *RepositoryReconciler) reportInitOutcome(ctx context.Context, repo *b2backupv1.Repository, job *batchv1.Job) {
+	where := fmt.Sprintf("%s/%s", repo.Status.BucketName, displayPath(repo.Status.Path))
+	cond := metav1.Condition{Type: b2backupv1.RepositoryConditionInitialized, Status: metav1.ConditionTrue}
+	switch r.initOutcome(ctx, job) {
+	case initCreated:
+		log.FromContext(ctx).Info("Created restic repository", "job", job.Name, "bucket", repo.Status.BucketName,
+			"path", displayPath(repo.Status.Path))
+		cond.Reason = "Created"
+		cond.Message = fmt.Sprintf("Created a new restic repository at %s with the password in Secret %s",
+			where, repo.SecretName())
+	case initFound:
+		log.FromContext(ctx).Info("Opened existing restic repository", "job", job.Name,
+			"bucket", repo.Status.BucketName, "path", displayPath(repo.Status.Path))
+		cond.Reason = "FoundExisting"
+		cond.Message = fmt.Sprintf("Found the existing restic repository at %s and opened it with the password "+
+			"in Secret %s; nothing was created", where, repo.SecretName())
+	default:
+		log.FromContext(ctx).Info("Opened restic repository", "job", job.Name, "bucket", repo.Status.BucketName,
+			"path", displayPath(repo.Status.Path))
+		cond.Reason = "Initialized"
+		cond.Message = fmt.Sprintf("Opened the restic repository at %s with the password in Secret %s; "+
+			"init Job %s did not say whether it created it", where, repo.SecretName(), job.Name)
+	}
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initialized", "Initialize", "%s", cond.Message)
+	r.setCondition(repo, cond)
 }
 
 func (r *RepositoryReconciler) deleteJob(ctx context.Context, job *batchv1.Job) error {

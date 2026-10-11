@@ -243,8 +243,9 @@ func TestBucketModeCreatesABucketAKeyAndTheSecret(t *testing.T) {
 
 	job := initJob(t, c)
 	container := job.Spec.Template.Spec.Containers[0]
-	if got := container.Command[len(container.Command)-1]; got != "restic cat config >/dev/null 2>&1 || restic init" {
-		t.Errorf("init command = %q", got)
+	if got := container.Command[len(container.Command)-1]; !strings.Contains(got, "if restic cat config >/dev/null 2>&1; then") ||
+		!strings.Contains(got, "restic init || exit") || container.TerminationMessagePolicy != corev1.TerminationMessageReadFile {
+		t.Errorf("init command = %q, termination message policy %q", got, container.TerminationMessagePolicy)
 	}
 	if container.EnvFrom[0].SecretRef.Name != credsSecretName {
 		t.Errorf("init job reads %s", container.EnvFrom[0].SecretRef.Name)

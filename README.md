@@ -155,6 +155,8 @@ Without it, the operator generates a password once, and only for a path that hol
 
 A path that holds any file version but no `config` is not a restic repository the operator can adopt. Perhaps it is the parent of other repositories, or another tool's files. The Repository goes `Ready=False` with reason `ForeignData` and the operator does nothing else there: no key, no Secret, no lifecycle rule, no init Job, and no location recorded in status. The same goes for a Bucket mode Repository whose bucket already holds files but no `config` at its root. Point `spec.path` somewhere else, or empty the path.
 
+The init Job opens the repository with the password in the credentials Secret, or runs `restic init` where there is no `config`, and writes which it did to its termination message. The operator reads it from the Job's pod (it lists pods for that) and says so in the `Initialized` event, the log and the `Initialized` condition: reason `Created` for a new repository, `FoundExisting` for one it adopted, or `Initialized` with a neutral message when the pod is gone or did not say. When the password comes from `passwordSecretRef`, a `PasswordFromSecret` event names that Secret and key, as `PasswordGenerated` does for a generated one.
+
 #### Old file versions
 
 Because restic's deletes only hide files, a bucket keeps every pack restic has ever pruned until something deletes the hidden versions. The operator relies on a bucket lifecycle rule for that, and is careful never to shorten a window someone else set.

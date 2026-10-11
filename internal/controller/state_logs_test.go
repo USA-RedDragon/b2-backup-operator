@@ -70,7 +70,7 @@ func TestRepositoryStateChangesAreLogged(t *testing.T) {
 		{mode: b2backupv1.StorageModeBucket, msg: "Generated restic password",
 			keys: []string{`"secret"="` + logRepo + `-credentials"`}},
 		{mode: b2backupv1.StorageModeBucket, msg: "Started init Job", keys: []string{`"job"="` + logRepo + `-init"`}},
-		{mode: b2backupv1.StorageModeBucket, msg: "Initialized restic repository",
+		{mode: b2backupv1.StorageModeBucket, msg: "Opened restic repository",
 			keys: []string{`"job"="` + logRepo + `-init"`}},
 		{mode: b2backupv1.StorageModeBucket, msg: "Retained repository data and deleted its application key",
 			keys: []string{bucketKey, `"keyID"=`, `"secret"="` + logRepo + `-credentials"`, `"credentials"="kept`}},
