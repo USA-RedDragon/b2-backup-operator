@@ -27,15 +27,26 @@ type RunOpts struct {
 	DryRun bool
 	Stdin  io.Reader
 
-	// Complete, when set, is shown the last tailSize bytes of stdin once it is
-	// read to the end. Unless it returns true the command is killed before it
-	// sees the end of its input, so a tool that commits at end of input, such as
-	// psql --single-transaction, never commits a truncated stream.
+	// Complete, when set, is shown the last tailSize bytes of what the command
+	// was given once stdin is read to the end. Unless it returns true the
+	// command is killed before it sees the end of its input, so a tool that
+	// commits at end of input, such as psql --single-transaction, never commits
+	// a truncated stream. That holds only if nothing in the input commits
+	// earlier; Filter is where such input is changed or refused.
 	Complete func(tail []byte) bool
+
+	// Filter, when set with Complete, copies stdin to the command in place of
+	// io.Copy. If it fails, the command is killed before it sees the end of its
+	// input.
+	Filter func(dst io.Writer, src io.Reader) error
 }
 
-// ErrIncomplete is returned when Complete rejected the input.
-var ErrIncomplete = errors.New("the input ended before it was complete, so the command was stopped before it could commit")
+var (
+	// ErrIncomplete is returned when Complete rejected the input.
+	ErrIncomplete = errors.New("the input ended before it was complete, so the command was stopped before it could commit")
+	// ErrStopped is returned when stdin could not be read or Filter failed.
+	ErrStopped = errors.New("the command was stopped before it could commit")
+)
 
 const tailSize = 64 << 10
 
@@ -65,13 +76,20 @@ func RunCmd(cmd *cobra.Command, name string, args []string, opts *RunOpts) error
 		return nil
 	}
 	if opts.Complete != nil {
-		return runGuarded(e, opts.Complete)
+		filter := opts.Filter
+		if filter == nil {
+			filter = func(dst io.Writer, src io.Reader) error {
+				_, err := io.Copy(dst, src)
+				return err
+			}
+		}
+		return runGuarded(e, opts.Complete, filter)
 	}
 
 	return e.Run()
 }
 
-func runGuarded(e *exec.Cmd, complete func(tail []byte) bool) error {
+func runGuarded(e *exec.Cmd, complete func(tail []byte) bool, filter func(io.Writer, io.Reader) error) error {
 	in := e.Stdin
 	e.Stdin = nil
 	pipe, err := e.StdinPipe()
@@ -83,7 +101,7 @@ func runGuarded(e *exec.Cmd, complete func(tail []byte) bool) error {
 	}
 
 	tail := &tailWriter{}
-	_, copyErr := io.Copy(io.MultiWriter(pipe, tail), in)
+	copyErr := filter(io.MultiWriter(pipe, tail), in)
 	if copyErr != nil || !complete(tail.buf) {
 		_ = e.Process.Kill()
 		state, _ := e.Process.Wait()
@@ -93,7 +111,7 @@ func runGuarded(e *exec.Cmd, complete func(tail []byte) bool) error {
 			return &exec.ExitError{ProcessState: state}
 		}
 		if copyErr != nil {
-			return fmt.Errorf("%w: %w", ErrIncomplete, copyErr)
+			return fmt.Errorf("%w: %w", ErrStopped, copyErr)
 		}
 		return ErrIncomplete
 	}

@@ -140,7 +140,11 @@ one of these:
 - **A plain-SQL restore commits only a complete dump.** psql
   `--single-transaction` commits at end of input, so `restoredb` runs it through
   `dumpdb.RunOpts.Complete` and kills it before closing stdin unless the dump
-  ends with pg_dump's `dump complete` trailer.
+  ends with pg_dump's `dump complete` trailer. A `COMMIT` inside the dump would
+  commit early, so `postgres.PlainFilter` follows the dump with a copy of
+  psql's lexer rules, comments out pg_dump's own `BEGIN;`/`COMMIT;` lines around
+  large objects and refuses any other transaction control. Verify changes with
+  `make test-postgres`, which runs `restoredb` inside a real Postgres container.
 - **A MariaDB restore never touches the live database until the swap.**
   mariadb-dump output cannot run in a transaction, so `restoredb mariadb`
   restores into `<db>__b2bk_restore` with the dump's `USE` and `CREATE

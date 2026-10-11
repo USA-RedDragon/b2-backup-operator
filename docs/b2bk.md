@@ -319,6 +319,12 @@ same key on its `\unrestrict` line as on the `\restrict` line at its head, and
 stops psql before it can commit a dump that ends without it. A plain dump from a
 pg_dump older than 17.6 has no `\restrict` line, so only the trailer is checked;
 every dump `backup-cnpg.sh` took has one, since it always passed `--restrict-key`.
+pg_dump wraps the data of large objects in its own `BEGIN;` and `COMMIT;` lines,
+and that `COMMIT` would end the restore's transaction partway. `restoredb`
+follows the dump the way psql reads it, so it turns those lines into comments
+when they stand alone between statements, and leaves the same text inside COPY
+data, strings and function bodies alone. Any other statement that ends, rolls
+back or prepares a transaction is refused before psql runs it.
 
 A mariadb restore is all or nothing too, although a mariadb-dump cannot run in
 one transaction: its `DROP TABLE` and `CREATE TABLE` commit on their own. So

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -113,5 +114,27 @@ func TestBadFlagStillPrintsUsage(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Usage:") {
 		t.Errorf("a bad flag should still print usage:\n%s", out.String())
+	}
+}
+
+// A Filter that fails stops the command before it sees the end of its input,
+// even though Complete would accept what reached it.
+func TestFailingFilterStopsTheCommand(t *testing.T) {
+	status := t.TempDir() + "/status"
+	var out bytes.Buffer
+	refused := errors.New("refused")
+	err := dumpdb.RunCmd(testCmd(&out), "sh", []string{"-c", "cat >/dev/null; echo done >" + status}, &dumpdb.RunOpts{
+		Stdin:    strings.NewReader("first\nsecond\n"),
+		Complete: func([]byte) bool { return true },
+		Filter: func(dst io.Writer, _ io.Reader) error {
+			_, _ = io.WriteString(dst, "first\n")
+			return refused
+		},
+	})
+	if !errors.Is(err, refused) || !errors.Is(err, dumpdb.ErrStopped) {
+		t.Errorf("err = %v", err)
+	}
+	if _, statErr := os.Stat(status); statErr == nil {
+		t.Error("the command reached the end of its input")
 	}
 }
