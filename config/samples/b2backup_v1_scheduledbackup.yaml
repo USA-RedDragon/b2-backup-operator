@@ -29,7 +29,7 @@ spec:
     existingClaim: myapp-prod-storage
     mountPath: /data
   cache:
-    storageClass: nfs-regional-ssd
+    storageClass: longhorn
 ---
 apiVersion: b2backup.mcswain.dev/v1
 kind: ScheduledBackup
@@ -62,7 +62,7 @@ spec:
   volume:
     existingClaim: otherapp-prod-data
   cache:
-    storageClass: nfs-regional-ssd
+    storageClass: longhorn
 ---
 apiVersion: b2backup.mcswain.dev/v1
 kind: ScheduledBackup
@@ -86,4 +86,4 @@ spec:
     mountPath: /data
     readOnly: true
   cache:
-    storageClass: nfs-regional-ssd
+    storageClass: longhorn

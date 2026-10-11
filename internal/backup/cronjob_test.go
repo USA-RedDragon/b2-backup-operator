@@ -26,7 +26,7 @@ const (
 func testConfig() Config {
 	return Config{
 		Image:             "ghcr.io/usa-reddragon/b2-backup-operator-restic:test",
-		CacheStorageClass: "nfs-regional-ssd",
+		CacheStorageClass: "longhorn",
 	}
 }
 
@@ -118,7 +118,7 @@ func TestCacheMountsWhereTheImageExpects(t *testing.T) {
 	if pvc.Name != containerName+"-cache" {
 		t.Errorf("cache pvc name = %q", pvc.Name)
 	}
-	if ptr.Deref(pvc.Spec.StorageClassName, "") != "nfs-regional-ssd" {
+	if ptr.Deref(pvc.Spec.StorageClassName, "") != "longhorn" {
 		t.Errorf("cache storage class = %v", pvc.Spec.StorageClassName)
 	}
 }
