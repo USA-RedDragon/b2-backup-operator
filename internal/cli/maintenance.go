@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/runner"
 )
 
@@ -98,7 +99,11 @@ func newPruneCommand(f *Factory) *cobra.Command {
 		Long: `Run restic forget --prune using the ScheduledBackup's retention policy.
 
 Backups already prune themselves after each run, so this is for reclaiming
-space after a retention change rather than routine upkeep.`,
+space after a retention change rather than routine upkeep.
+
+Like the scheduled forget, it only considers this backup's own snapshots: those
+tagged with one of its sources' tags, on its host. Another ScheduledBackup
+writing into the same repository keeps its own retention.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !dryRun {
@@ -115,7 +120,10 @@ space after a retention change rather than routine upkeep.`,
 							sb.Name)
 					}
 
-					argv := append([]string{"forget", "--prune"}, flags...)
+					argv, err := pruneArgs(sb, flags)
+					if err != nil {
+						return nil, err
+					}
 					if dryRun {
 						argv = append(argv, "--dry-run")
 					}
@@ -129,6 +137,19 @@ space after a retention change rather than routine upkeep.`,
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the confirmation prompt")
 	f.AddPodStartTimeoutFlag(cmd)
 	return cmd
+}
+
+func pruneArgs(sb *b2backupv1.ScheduledBackup, keep []string) ([]string, error) {
+	tags := backup.SourceTags(sb.Spec.Sources)
+	if len(tags) == 0 {
+		return nil, fmt.Errorf("scheduledbackup/%s runs a script and has no source tags to scope forget to; "+
+			"run restic forget with --tag yourself through b2bk exec %s", sb.Name, sb.Name)
+	}
+	argv := []string{"forget", "--prune", "--host=" + sb.EffectiveResticHost()}
+	for _, tag := range tags {
+		argv = append(argv, "--tag="+tag)
+	}
+	return append(argv, keep...), nil
 }
 
 func retentionFlags(r *b2backupv1.Retention) []string {
