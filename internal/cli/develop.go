@@ -223,6 +223,7 @@ type plan struct {
 	host       string
 	env        string
 	repository string
+	tags       []string
 	namespace  string
 }
 
@@ -250,13 +251,16 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string, opts migrat
 	p := newPrinter(out)
 	var differences, notes []string
 
-	renderedScript, renderedDumps := normalizeScript(rendered.script)
+	renderedScript, renderedDumps, scoped := normalizeRendered(rendered.script, rendered.tags)
 	originalScript, originalDumps := normalizeScript(original.script)
 	scriptDiffers := renderedScript != originalScript
 	if scriptDiffers {
 		differences = append(differences, "SCRIPT DIFFERS")
 	} else if dumps := dumpChanges(originalDumps, renderedDumps); len(dumps) > 0 {
 		differences = append(differences, dumps...)
+	}
+	if scoped != "" && !scriptDiffers {
+		notes = append(notes, scoped)
 	}
 
 	renderedCadence, err := cadenceOf(rendered.schedule)
@@ -374,6 +378,7 @@ func renderedPlan(path string) (plan, error) {
 		script: script, schedule: schedule, timeZone: tz,
 		workingDir: sb.EffectiveWorkingDir(),
 		host:       sb.EffectiveResticHost(),
+		tags:       backup.SourceTags(sb.Spec.Sources),
 	}
 	var volumes []string
 	for i := range sb.Spec.Volumes {
@@ -546,6 +551,39 @@ var (
 )
 
 const cnpgDumpToken = "-- <cnpg dump>"
+
+var forgetScope = regexp.MustCompile(` --(?:tag=(\S+)|host="\$RESTIC_HOST")`)
+
+// normalizeRendered normalizes a rendered script like normalizeScript, and also
+// takes out of restic forget the --host and --tag scoping the operator adds when
+// it names exactly this backup's own tags. restic already defaults --host to
+// $RESTIC_HOST, so only the tags change what forget considers, and the returned
+// note says so.
+func normalizeRendered(s string, tags []string) (string, []string, string) {
+	var lines []string
+	note := ""
+	for line := range strings.SplitSeq(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "restic forget ") {
+			var found []string
+			stripped := forgetScope.ReplaceAllStringFunc(line, func(m string) string {
+				if tag := forgetScope.FindStringSubmatch(m)[1]; tag != "" {
+					found = append(found, tag)
+				}
+				return ""
+			})
+			if slices.Equal(found, tags) {
+				line = stripped
+				if len(tags) > 0 {
+					note = fmt.Sprintf("FORGET SCOPED: forget now only expires snapshots tagged %s on this host; "+
+						"snapshots under any other tag are no longer expired by this backup", strings.Join(tags, ", "))
+				}
+			}
+		}
+		lines = append(lines, line)
+	}
+	out, dumps := normalizeScript(strings.Join(lines, "\n"))
+	return out, dumps, note
+}
 
 func normalizeScript(s string) (string, []string) {
 	var lines, dumps []string

@@ -52,7 +52,7 @@ restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --s
 restic backup --retry-lock=5m0s --tag=files /data/app \
   --exclude='**/temp*' \
   --exclude='app/export-logs'
-restic forget --prune --retry-lock=5m0s --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
+restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=db --tag=files --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
 		},
@@ -89,7 +89,7 @@ set -eu
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb --secret-mount=/var/run/secrets/b2backup/database -- --skip-ssl
 restic backup --retry-lock=5m0s --tag=files /data \
   --exclude='dumps'
-restic forget --prune --retry-lock=5m0s --keep-daily=90 --keep-monthly=24 --keep-yearly=10
+restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=db --tag=files --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
 		},
@@ -106,7 +106,7 @@ restic cache --cleanup
 set -eu
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 restic backup --retry-lock=5m0s --tag=db-external --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database --database=reporting
-restic forget --prune --retry-lock=5m0s --keep-daily=90 --keep-monthly=24 --keep-yearly=10
+restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=db --tag=db-external --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
 		},
@@ -119,7 +119,7 @@ restic cache --cleanup
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
 restic backup --retry-lock=5m0s --tag=files /data
-restic forget --prune --retry-lock=5m0s --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
+restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=files --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
 		},
@@ -132,7 +132,7 @@ restic cache --cleanup
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
-restic forget --prune --retry-lock=5m0s --keep-hourly=28 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
+restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=db --keep-hourly=28 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
 		},
@@ -152,7 +152,7 @@ restic cache --cleanup
 set -eu
 restic backup --retry-lock=5m0s --tag=files /data /blobs
 restic backup --retry-lock=5m0s --tag=server /data/server
-restic forget --prune --retry-lock=5m0s --keep-daily=90 --keep-monthly=24 --keep-yearly=10
+restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=files --tag=server --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
 		},
@@ -239,7 +239,7 @@ func TestRetryLockIsAppliedToLockingCommands(t *testing.T) {
 	for _, want := range []string{
 		"restic backup --retry-lock=1m30s --tag=db",
 		"restic backup --retry-lock=1m30s --tag=files",
-		"restic forget --prune --retry-lock=1m30s --keep-hourly=168",
+		"restic forget --prune --retry-lock=1m30s --host=\"$RESTIC_HOST\" --tag=db --tag=files --keep-hourly=168",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Render() missing %q\n--- got ---\n%s", want, got)

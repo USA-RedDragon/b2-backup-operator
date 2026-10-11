@@ -3,6 +3,7 @@ package backup
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -37,7 +38,7 @@ func Render(sb *b2backupv1.ScheduledBackup) (string, error) {
 		b.WriteString("\n")
 	}
 
-	if forget := renderForget(spec.Retention, retryLockFlag(spec)); forget != "" {
+	if forget := renderForget(spec.Retention, SourceTags(spec.Sources), retryLockFlag(spec)); forget != "" {
 		b.WriteString(forget)
 		b.WriteString("\n")
 	}
@@ -52,6 +53,17 @@ func retryLockFlag(spec *b2backupv1.ScheduledBackupSpec) string {
 		return ""
 	}
 	return " --retry-lock=" + spec.RetryLock.Duration.String()
+}
+
+// SourceTags returns the distinct tags of sources, in order.
+func SourceTags(sources []b2backupv1.BackupSource) []string {
+	var tags []string
+	for _, src := range sources {
+		if tag := src.EffectiveTag(); !slices.Contains(tags, tag) {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
 }
 
 func renderSource(src b2backupv1.BackupSource, workingDir, retryLock string) (string, error) {
@@ -97,7 +109,11 @@ func renderSource(src b2backupv1.BackupSource, workingDir, retryLock string) (st
 	}
 }
 
-func renderForget(r *b2backupv1.Retention, retryLock string) string {
+// ForgetHostFlag scopes restic forget to the host this backup's snapshots carry.
+// restic already defaults --host to $RESTIC_HOST; the flag makes it explicit.
+const ForgetHostFlag = `--host="$RESTIC_HOST"`
+
+func renderForget(r *b2backupv1.Retention, tags []string, retryLock string) string {
 	if r == nil {
 		return ""
 	}
@@ -120,7 +136,11 @@ func renderForget(r *b2backupv1.Retention, retryLock string) string {
 	if len(flags) == 0 {
 		return ""
 	}
-	return "restic forget --prune" + retryLock + " " + strings.Join(flags, " ")
+	scope := []string{ForgetHostFlag}
+	for _, tag := range tags {
+		scope = append(scope, "--tag="+tag)
+	}
+	return "restic forget --prune" + retryLock + " " + strings.Join(append(scope, flags...), " ")
 }
 
 func shellQuote(s string) string {

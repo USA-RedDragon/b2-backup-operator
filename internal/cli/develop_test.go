@@ -514,7 +514,7 @@ func TestParityComparesEverythingThatDecidesWhereABackupGoes(t *testing.T) {
 				if err != nil {
 					t.Errorf("parity = %v", err)
 				}
-				for _, note := range []string{"daily at 00:44 America/Chicago"} {
+				for _, note := range []string{"FORGET SCOPED", "daily at 00:44 America/Chicago"} {
 					if !strings.Contains(out.String(), note) {
 						t.Errorf("want %q noted in:\n%s", note, out.String())
 					}
@@ -523,5 +523,17 @@ func TestParityComparesEverythingThatDecidesWhereABackupGoes(t *testing.T) {
 				t.Errorf("parity = %v, want ErrParityDiffers", err)
 			}
 		})
+	}
+}
+
+func TestNormalizeRenderedKeepsAForgetScopedToOtherTags(t *testing.T) {
+	t.Parallel()
+	rendered := `restic forget --prune --host="$RESTIC_HOST" --tag=files --keep-daily=7`
+	if got, _, note := normalizeRendered(rendered, []string{filesTag}); got != "restic forget --prune --keep-daily=7" ||
+		note == "" {
+		t.Errorf("normalized = %q, note %q", got, note)
+	}
+	if got, _, _ := normalizeRendered(rendered, []string{"db"}); !strings.Contains(got, "--tag=files") {
+		t.Errorf("a forget scoped to tags the backup does not take was normalized away: %q", got)
 	}
 }
