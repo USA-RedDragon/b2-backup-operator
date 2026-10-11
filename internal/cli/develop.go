@@ -614,9 +614,13 @@ func normalizeRendered(s string, tags []string) (string, []string, string) {
 	return out, dumps, note
 }
 
+// normalizeScript drops the preamble and postamble around a backup script,
+// both the operator's and the one hand-written scripts carried, and what the
+// operator adds to each line, so two scripts compare equal when they run the
+// same commands.
 func normalizeScript(s string) (string, []string) {
 	var lines, dumps []string
-	for _, line := range joinContinuations(s) {
+	for _, line := range joinContinuations(scriptBody(s)) {
 		line = ignoredFlags.ReplaceAllString(line, "")
 		line = quotedExclude.ReplaceAllString(line, "--exclude=$1$2")
 		if m := cnpgDump.FindStringSubmatchIndex(line); m != nil {

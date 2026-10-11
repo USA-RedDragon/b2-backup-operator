@@ -761,3 +761,40 @@ func TestMigrateCarriesSecurityContextsAndParityChecksReadAccess(t *testing.T) {
 		t.Errorf("a backup that can no longer read every file passed parity: %v\n%s", err, out.String())
 	}
 }
+
+func TestMigrateKeepsLinesTheShellWouldRewriteVerbatim(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, line string }{
+		{"a backslash-escaped glob", `restic backup --tag=mirror /mirror --exclude=\*.log`},
+		{"a variable in double quotes", `restic backup --tag=mirror /mirror --exclude="$HOME/cache"`},
+		{"an unquoted glob", `restic backup --tag=mirror /mirror --exclude=*.log`},
+		{"a command substitution", "restic backup --tag=mirror /mirror --exclude=`cat list`"},
+		{"a redirection", `restic backup --tag=mirror /mirror > /dev/null`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			body := strings.Replace(homeClusterRelease, "restic backup --tag=mirror /mirror", tt.line, 1)
+			dir := writeHomeClusterRelease(t, body)
+			var buf bytes.Buffer
+			if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			_, sb := migrated(t, buf.String())
+			if sb.Spec.Sources != nil || !strings.Contains(sb.Spec.Script, tt.line) {
+				t.Errorf("a line the shell rewrites became sources: %+v", sb.Spec)
+			}
+			generated := filepath.Join(t.TempDir(), "generated.yaml")
+			if err := os.WriteFile(generated, buf.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := runParity(&out, generated, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+				t.Errorf("parity of a verbatim script: %v\n%s", err, out.String())
+			}
+		})
+	}
+	if shellSpecial(`restic backup --tag=files /data --exclude='**/temp*' --exclude="app/x"`) {
+		t.Error("quoted patterns were taken for shell expansion")
+	}
+}

@@ -9,9 +9,14 @@ import (
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 )
 
+// The body runs in a group piped through ts, rather than behind
+// exec > >(ts ...): busybox ash kills the process substitution when the shell
+// exits, and a fast failure lost every line of its output. pipefail makes the
+// script's status the body's, and inside the body a failed dump piped into
+// restic fails the run instead of being saved.
 const (
-	preamble  = "exec > >(ts '%H:%M:%S') 2>&1\nset -eu"
-	postamble = "restic cache --cleanup"
+	preamble  = "set -o pipefail\n{\nset -euo pipefail"
+	postamble = "restic cache --cleanup\n} 2>&1 | ts '%H:%M:%S'"
 )
 
 // Render builds the shell script the backup container runs.

@@ -40,20 +40,22 @@ func TestRender(t *testing.T) {
 					{Type: b2backupv1.SourceTypeCNPG},
 					{
 						Type:    b2backupv1.SourceTypeFiles,
-						Paths:   []string{"app"},
+						Paths:   []string{appDir},
 						Exclude: []string{"**/temp*", "app/export-logs"},
 					},
 				},
 				Retention: hourlyRetention(),
 			},
-			want: `exec > >(ts '%H:%M:%S') 2>&1
-set -eu
+			want: `set -o pipefail
+{
+set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 restic backup --retry-lock=5m0s --tag=files /data/app \
   --exclude='**/temp*' \
   --exclude='app/export-logs'
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=db --tag=files --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
+} 2>&1 | ts '%H:%M:%S'
 `,
 		},
 		{
@@ -69,10 +71,12 @@ restic cache --cleanup
 					},
 				}},
 			},
-			want: `exec > >(ts '%H:%M:%S') 2>&1
-set -eu
+			want: `set -o pipefail
+{
+set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb --secret-mount=/var/run/secrets/b2backup/database -- --single-transaction '--where=id > 5' '--ignore-table=app.*' '--comment=it'\''s fine'
 restic cache --cleanup
+} 2>&1 | ts '%H:%M:%S'
 `,
 		},
 		{
@@ -84,13 +88,15 @@ restic cache --cleanup
 				},
 				Retention: dailyRetention(),
 			},
-			want: `exec > >(ts '%H:%M:%S') 2>&1
-set -eu
+			want: `set -o pipefail
+{
+set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb --secret-mount=/var/run/secrets/b2backup/database -- --skip-ssl
 restic backup --retry-lock=5m0s --tag=files /data \
   --exclude='dumps'
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=db --tag=files --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
+} 2>&1 | ts '%H:%M:%S'
 `,
 		},
 		{
@@ -102,12 +108,14 @@ restic cache --cleanup
 				},
 				Retention: dailyRetention(),
 			},
-			want: `exec > >(ts '%H:%M:%S') 2>&1
-set -eu
+			want: `set -o pipefail
+{
+set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 restic backup --retry-lock=5m0s --tag=db-external --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database --database=reporting
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=db --tag=db-external --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
+} 2>&1 | ts '%H:%M:%S'
 `,
 		},
 		{
@@ -116,11 +124,13 @@ restic cache --cleanup
 				Sources:   []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeFiles}},
 				Retention: hourlyRetention(),
 			},
-			want: `exec > >(ts '%H:%M:%S') 2>&1
-set -eu
+			want: `set -o pipefail
+{
+set -euo pipefail
 restic backup --retry-lock=5m0s --tag=files /data
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=files --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
+} 2>&1 | ts '%H:%M:%S'
 `,
 		},
 		{
@@ -129,11 +139,13 @@ restic cache --cleanup
 				Sources:   []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}},
 				Retention: sixHourlyRetention(),
 			},
-			want: `exec > >(ts '%H:%M:%S') 2>&1
-set -eu
+			want: `set -o pipefail
+{
+set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=db --keep-hourly=28 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
+} 2>&1 | ts '%H:%M:%S'
 `,
 		},
 		{
@@ -148,12 +160,14 @@ restic cache --cleanup
 				},
 				Retention: dailyRetention(),
 			},
-			want: `exec > >(ts '%H:%M:%S') 2>&1
-set -eu
+			want: `set -o pipefail
+{
+set -euo pipefail
 restic backup --retry-lock=5m0s --tag=files /data /blobs
 restic backup --retry-lock=5m0s --tag=server /data/server
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --tag=files --tag=server --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
+} 2>&1 | ts '%H:%M:%S'
 `,
 		},
 		{
@@ -161,10 +175,12 @@ restic cache --cleanup
 			spec: b2backupv1.ScheduledBackupSpec{
 				Script: "restic backup --retry-lock=5m0s --tag=custom /data\n",
 			},
-			want: `exec > >(ts '%H:%M:%S') 2>&1
-set -eu
+			want: `set -o pipefail
+{
+set -euo pipefail
 restic backup --retry-lock=5m0s --tag=custom /data
 restic cache --cleanup
+} 2>&1 | ts '%H:%M:%S'
 `,
 		},
 		{
@@ -172,10 +188,12 @@ restic cache --cleanup
 			spec: b2backupv1.ScheduledBackupSpec{
 				Sources: []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}},
 			},
-			want: `exec > >(ts '%H:%M:%S') 2>&1
-set -eu
+			want: `set -o pipefail
+{
+set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 restic cache --cleanup
+} 2>&1 | ts '%H:%M:%S'
 `,
 		},
 	}
@@ -186,7 +204,7 @@ restic cache --cleanup
 				tt.spec.RetryLock = &metav1.Duration{Duration: 5 * time.Minute}
 			}
 			if tt.spec.Volumes == nil {
-				tt.spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "data"}}
+				tt.spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: dataClaim}}
 			}
 			got, err := Render(&b2backupv1.ScheduledBackup{Spec: tt.spec})
 			if err != nil {
@@ -293,6 +311,6 @@ func TestPathWithSpaceIsQuoted(t *testing.T) {
 }
 
 func withSpec(spec b2backupv1.ScheduledBackupSpec) *b2backupv1.ScheduledBackup {
-	spec.Volumes = append(spec.Volumes, b2backupv1.VolumeSpec{ExistingClaim: "data"})
+	spec.Volumes = append(spec.Volumes, b2backupv1.VolumeSpec{ExistingClaim: dataClaim})
 	return &b2backupv1.ScheduledBackup{Spec: spec}
 }
