@@ -52,6 +52,9 @@ func restoreToDir(
 	if err != nil {
 		return err
 	}
+	if err := requireRepositoryOwnsItsSecret(ctx, f, sb); err != nil {
+		return err
+	}
 
 	dest, err := filepath.Abs(o.toDir)
 	if err != nil {
@@ -262,6 +265,9 @@ func restoreToNewPVC(
 ) error {
 	src, err := o.filesSource(sb)
 	if err != nil {
+		return err
+	}
+	if err := requireRepositoryOwnsItsSecret(ctx, f, sb); err != nil {
 		return err
 	}
 	claim, err := sourceVolume(sb, src)
