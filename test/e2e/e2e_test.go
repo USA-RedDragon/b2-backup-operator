@@ -32,6 +32,21 @@ const unrecognizedOperation = "unrecognized B2 operation"
 
 const stubEndpoint = "https://s3.us-east-005.b2-stub.invalid"
 
+const passwordFinalizer = "b2backup.mcswain.dev/protect-password"
+
+// deleteTestNamespace removes the password finalizer the operator puts on a
+// credentials Secret holding a generated password, which a test has no copy of
+// to archive, and then deletes the namespace.
+func deleteTestNamespace(ns string) {
+	out, _ := utils.Run(exec.Command("kubectl", "get", "secret", "-n", ns,
+		"-l", "app.kubernetes.io/managed-by=b2-backup-operator", "-o", "name"))
+	for name := range strings.FieldsSeq(out) {
+		_, _ = utils.Run(exec.Command("kubectl", "patch", name, "-n", ns, "--type=json",
+			"-p", `[{"op":"remove","path":"/metadata/finalizers"}]`))
+	}
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", ns, "--ignore-not-found"))
+}
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
@@ -279,7 +294,7 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
 			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+				deleteTestNamespace(testNS)
 			})
 
 			By("applying a ScheduledBackup that references a missing Repository")
@@ -331,7 +346,7 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
 			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+				deleteTestNamespace(testNS)
 			})
 
 			By("applying a Bucket mode Repository")
@@ -395,6 +410,13 @@ spec:
 			Expect(owners).To(BeEmpty(),
 				"Retain must not own the Secret; it is the only copy of the encryption key")
 
+			By("checking the Secret holding the only copy of the generated password is protected")
+			cmd = exec.Command("kubectl", "get", "secret", name+"-credentials", "-n", testNS,
+				"-o", "jsonpath={.metadata.finalizers}")
+			finalizers, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(finalizers).To(ContainSubstring(passwordFinalizer))
+
 			By("checking the lifecycle rule condition")
 			cmd = exec.Command("kubectl", "get", "repository", name, "-n", testNS,
 				"-o", "jsonpath={.status.conditions[?(@.type=='LifecycleRule')].reason}")
@@ -431,6 +453,26 @@ spec:
 				g.Expect(reason).To(Equal("Initializing"),
 					"the init Job has not failed but the Repository is not initializing")
 			}, 2*time.Minute).Should(Succeed())
+
+			By("deleting the namespace, which must leave the only password copy behind")
+			cmd = exec.Command("kubectl", "delete", "ns", testNS, "--wait=false")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "the Repository was not finalized")
+			}, 2*time.Minute).Should(Succeed())
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "secret", name+"-credentials", "-n", testNS,
+					"-o", "jsonpath={.metadata.deletionTimestamp},{.data.RESTIC_PASSWORD}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "the only copy of the password was deleted with its namespace")
+				parts := strings.Split(strings.TrimSpace(out), ",")
+				g.Expect(parts).To(HaveLen(2))
+				g.Expect(parts[0]).NotTo(BeEmpty(), "the Secret is not being deleted")
+				g.Expect(parts[1]).NotTo(BeEmpty(), "the password is gone")
+			}, 20*time.Second, 5*time.Second).Should(Succeed())
 		})
 
 		It("should adopt an existing repository in a shared bucket", func() {
@@ -444,7 +486,7 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
 			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+				deleteTestNamespace(testNS)
 			})
 			cmd = exec.Command("kubectl", "create", "secret", "generic", "restic-envs", "-n", testNS,
 				"--from-literal=RESTIC_PASSWORD=existing-password")
@@ -505,7 +547,7 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
 			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+				deleteTestNamespace(testNS)
 			})
 
 			By("pointing a Repository without passwordSecretRef at existing data")
@@ -548,7 +590,7 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
 			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+				deleteTestNamespace(testNS)
 			})
 			cmd = exec.Command("kubectl", "create", "secret", "generic", "restic-envs", "-n", testNS,
 				"--from-literal=RESTIC_PASSWORD=any-password")
@@ -599,7 +641,7 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
 			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+				deleteTestNamespace(testNS)
 			})
 
 			manifest := fmt.Sprintf(`apiVersion: b2backup.mcswain.dev/v1
@@ -644,7 +686,7 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
 			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+				deleteTestNamespace(testNS)
 			})
 
 			manifest := fmt.Sprintf(`apiVersion: b2backup.mcswain.dev/v1
@@ -712,7 +754,7 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
 			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+				deleteTestNamespace(testNS)
 			})
 
 			By("applying a Repository")
