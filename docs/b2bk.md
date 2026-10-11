@@ -692,8 +692,15 @@ Converts an app's hand-written backup, an app-template HelmRelease with a
 is applied and nothing in the GitOps repository is modified.
 
 Given a directory it reads `helmrelease.yaml`, or `helm.yaml`; given a file it
-reads that, such as a second HelmRelease named `restic.yaml` beside an app. A `kustomization.yaml` beside it that sets `namespace` wins over the
-HelmRelease's own, as it does when Flux applies it. The ScheduledBackup is named
+reads that, such as a second HelmRelease named `restic.yaml` beside an app.
+
+The namespace is the one the CronJob lands in when Flux applies the file: the
+HelmRelease's own `spec.targetNamespace`, else the `targetNamespace` of the Flux
+Kustomization whose `spec.path` holds the file (found in the file's directory or
+one above it, up to the repository root), else the outermost
+`kustomization.yaml` `namespace` between that path and the file, else
+`metadata.namespace`. Two Flux Kustomizations for the same path with different
+`targetNamespace`s are refused. The ScheduledBackup is named
 after the HelmRelease and backs up into a Repository named `restic`, so two
 HelmReleases that share one `restic-envs` Secret, and therefore one repository,
 come out sharing one Repository.
@@ -768,6 +775,10 @@ other than the operator's 3600, any `envFrom` other than `restic-envs` and
 point restic at another repository or key (`RESTIC_REPOSITORY_FILE`,
 `RESTIC_PASSWORD_FILE`, `RESTIC_PASSWORD_COMMAND`), or a credential, since
 `spec.env` is plaintext.
+
+A number in `env` is carried only when app-template would print it as written.
+Helm reads values as float64, so `1000000` reaches the container as `1e+06`;
+such a value is refused, to be quoted in the HelmRelease.
 
 `migrate` refuses a HelmRelease whose `restic` controller is disabled or is not
 a `cronjob`, runs init containers or any container but `restic`, or that runs

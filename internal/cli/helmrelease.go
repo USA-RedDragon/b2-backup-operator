@@ -48,9 +48,10 @@ type helmRelease struct {
 		ChartRef *struct {
 			Name string `json:"name"`
 		} `json:"chartRef"`
-		ValuesFrom    []any           `json:"valuesFrom"`
-		PostRenderers []any           `json:"postRenderers"`
-		RawValues     json.RawMessage `json:"values"`
+		TargetNamespace string          `json:"targetNamespace"`
+		ValuesFrom      []any           `json:"valuesFrom"`
+		PostRenderers   []any           `json:"postRenderers"`
+		RawValues       json.RawMessage `json:"values"`
 
 		Values hrValues `json:"-"`
 	} `json:"spec"`
@@ -197,7 +198,11 @@ func readHelmRelease(path string) (*helmRelease, error) {
 	if err := hr.decodeValues(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	hr.Metadata.Namespace = releaseNamespace(path, hr.Metadata.Namespace)
+	namespace, err := releaseNamespace(path, hr.Metadata.Namespace, hr.Spec.TargetNamespace)
+	if err != nil {
+		return nil, err
+	}
+	hr.Metadata.Namespace = namespace
 	return &hr, nil
 }
 
@@ -234,12 +239,105 @@ func (hr *helmRelease) decodeValues() error {
 	return nil
 }
 
-// releaseNamespace is the namespace a HelmRelease file is applied in.
-func releaseNamespace(path, declared string) string {
-	if ns := kustomizeNamespace(filepath.Dir(path)); ns != "" {
-		return ns
+// releaseNamespace is the namespace the CronJob of the HelmRelease in path
+// lands in. The HelmRelease's own spec.targetNamespace wins, as that is where
+// Helm installs it; then the targetNamespace of the Flux Kustomization that
+// applies the file; then the outermost kustomization.yaml namespace between
+// that Kustomization's path and the file; then metadata.namespace.
+func releaseNamespace(path, declared, releaseTarget string) (string, error) {
+	if releaseTarget != "" {
+		return releaseTarget, nil
 	}
-	return declared
+	dir, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	top, target, err := fluxKustomizationFor(dir)
+	if err != nil {
+		return "", err
+	}
+	if target != "" {
+		return target, nil
+	}
+	namespace := declared
+	for d := dir; ; d = filepath.Dir(d) {
+		if ns := kustomizeNamespace(d); ns != "" {
+			namespace = ns
+		}
+		if top == "" || d == top || d == filepath.Dir(d) {
+			break
+		}
+	}
+	return namespace, nil
+}
+
+// fluxKustomizationFor finds the Flux Kustomization that applies dir: the one
+// in dir or a directory above it, up to the repository root, whose spec.path
+// holds dir most closely. It returns that path and its targetNamespace.
+func fluxKustomizationFor(dir string) (string, string, error) {
+	root := ""
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			root = d
+			break
+		}
+		if d == filepath.Dir(d) {
+			return "", "", nil
+		}
+	}
+	var bestPath, bestTarget string
+	conflict := false
+	for d := dir; ; d = filepath.Dir(d) {
+		files, _ := filepath.Glob(filepath.Join(d, "*.yaml"))
+		for _, f := range files {
+			for _, k := range fluxKustomizations(f) {
+				p := filepath.Join(root, k.Spec.Path)
+				if p != dir && !strings.HasPrefix(dir, p+string(filepath.Separator)) {
+					continue
+				}
+				switch {
+				case len(p) > len(bestPath):
+					bestPath, bestTarget, conflict = p, k.Spec.TargetNamespace, false
+				case p == bestPath && k.Spec.TargetNamespace != bestTarget:
+					conflict = true
+				}
+			}
+		}
+		if d == root {
+			break
+		}
+	}
+	if conflict {
+		return "", "", fmt.Errorf("%w: more than one Flux Kustomization applies %s, with different "+
+			"targetNamespaces", ErrUnsupportedValues, dir)
+	}
+	return bestPath, bestTarget, nil
+}
+
+type fluxKustomization struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Spec       struct {
+		Path            string `json:"path"`
+		TargetNamespace string `json:"targetNamespace"`
+	} `json:"spec"`
+}
+
+func fluxKustomizations(file string) []fluxKustomization {
+	raw, err := os.ReadFile(file)
+	if err != nil || !bytes.Contains(raw, []byte("kustomize.toolkit.fluxcd.io")) {
+		return nil
+	}
+	var out []fluxKustomization
+	for doc := range strings.SplitSeq(string(raw), "\n---") {
+		var k fluxKustomization
+		if yaml.Unmarshal([]byte(doc), &k) != nil || k.Kind != "Kustomization" ||
+			!strings.HasPrefix(k.APIVersion, "kustomize.toolkit.fluxcd.io/") {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
 }
 
 func kustomizeNamespace(dir string) string {
@@ -389,6 +487,23 @@ func (c hrContainer) script() (string, error) {
 		return "", fmt.Errorf("%w: it runs %q", ErrUnsupportedCommand, argv)
 	}
 	return argv[2], nil
+}
+
+// checkNumbers refuses a number in env whose YAML text app-template would
+// print differently: Helm reads values as float64, so 1000000 reaches the
+// container as 1e+06, and carrying either over would surprise someone.
+func (c hrContainer) checkNumbers() error {
+	for _, name := range sortedKeys(c.Env) {
+		n, ok := c.Env[name].(json.Number)
+		if !ok {
+			continue
+		}
+		if rendered, err := helmString(n); err != nil || rendered != n.String() {
+			return fmt.Errorf("%w: env %s is %s, which app-template renders as %s; quote it in the HelmRelease "+
+				"so the value is the one meant", ErrUnsupportedValues, name, n, rendered)
+		}
+	}
+	return nil
 }
 
 func (c hrContainer) env(name string) string {
