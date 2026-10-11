@@ -39,7 +39,7 @@ const (
 )
 
 func withVolume(sb *b2backupv1.ScheduledBackup) {
-	sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: testClaimName, MountPath: "/app"}}
+	sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: testClaimName, MountPath: appMount}}
 	sb.Spec.Sources = append(sb.Spec.Sources, b2backupv1.BackupSource{Type: b2backupv1.SourceTypeFiles})
 }
 

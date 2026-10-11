@@ -236,20 +236,47 @@ var globMeta = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`)
 func literalPattern(p string) string { return globMeta.Replace(p) }
 
 // sourceExcludes rewrites the source's backup excludes for a restore rooted at
-// snapPath. A pattern without a leading slash matches anywhere and is kept; an
-// absolute one is made relative to snapPath, or dropped when outside it.
-func sourceExcludes(exclude []string, snapPath string) []string {
-	var out []string
+// snapPath. A pattern without a leading slash matches anywhere and is kept. An
+// absolute one is matched segment by segment against snapPath and the rest of it
+// kept relative to snapPath, or dropped when it cannot match under snapPath at
+// all. One that cannot be rebased that way, with ** before or at snapPath's
+// depth or matching snapPath itself, is returned in unrebased.
+func sourceExcludes(exclude []string, snapPath string) (rebased, unrebased []string) {
+	root := strings.Split(strings.Trim(snapPath, "/"), "/")
+	if snapPath == "/" {
+		root = nil
+	}
 	for _, p := range exclude {
 		if !strings.HasPrefix(p, "/") {
-			out = append(out, p)
+			rebased = append(rebased, p)
 			continue
 		}
-		if under(p, snapPath) && p != snapPath {
-			out = append(out, "/"+strings.TrimPrefix(strings.TrimPrefix(p, snapPath), "/"))
+		segs := strings.Split(strings.Trim(p, "/"), "/")
+		outside, ok := false, true
+		for i, dir := range root {
+			if i >= len(segs) || strings.Contains(segs[i], "**") {
+				ok = false
+				break
+			}
+			matched, err := path.Match(segs[i], dir)
+			if err != nil {
+				ok = false
+				break
+			}
+			if !matched {
+				outside = true
+				break
+			}
+		}
+		switch {
+		case outside:
+		case !ok || len(segs) == len(root):
+			unrebased = append(unrebased, p)
+		default:
+			rebased = append(rebased, "/"+strings.Join(segs[len(root):], "/"))
 		}
 	}
-	return out
+	return rebased, unrebased
 }
 
 // restoreArgs builds restic restore for one step. restic refuses includes and
@@ -265,8 +292,14 @@ func (o *restoreOptions) restoreArgs(
 		includes = append(includes, literalPattern(step.sub))
 	}
 	includes = append(includes, o.include...)
-	excludes := sourceExcludes(src.exclude, step.snapPath)
+	excludes, unrebased := sourceExcludes(src.exclude, step.snapPath)
 	switch {
+	case step.sub != "" && len(o.include) > 0:
+		return nil, fmt.Errorf("--include cannot be combined with --path, or used on a source that is a single " +
+			"file: restic ORs includes, so it would widen what is restored, and deleted, beyond them")
+	case o.delete && len(unrebased) > 0:
+		return nil, fmt.Errorf("--delete would remove what the backup excludes with %s, which cannot be applied "+
+			"under %s; drop --delete", strings.Join(unrebased, ", "), step.snapPath)
 	case len(includes) > 0 && len(o.exclude) > 0:
 		return nil, fmt.Errorf("--exclude cannot be combined with --path or --include: restic restore takes " +
 			"one or the other")

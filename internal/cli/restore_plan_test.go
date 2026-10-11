@@ -585,7 +585,7 @@ func TestVolumeRestoreArguments(t *testing.T) {
 	t.Parallel()
 	snap := resticSnapshot{ID: snapFiles, Paths: []string{dataDir}}
 	src := restoreSource{tag: filesTag, paths: []string{dataDir},
-		exclude: []string{cacheDir, "**/tmp*", "/data/logs", "/elsewhere", "/data"}}
+		exclude: []string{cacheDir, "**/tmp*", "/data/logs", "/elsewhere", "/*/thumbs", "/d?ta/x/*.tmp"}}
 	tests := []struct {
 		name string
 		o    restoreOptions
@@ -595,7 +595,8 @@ func TestVolumeRestoreArguments(t *testing.T) {
 	}{
 		{"the backup's own excludes protect what it never saved", restoreOptions{delete: true},
 			restoreStep{snapPath: dataDir},
-			[]string{"--exclude=cache", "--exclude=**/tmp*", "--exclude=/logs", "--delete"},
+			[]string{"--exclude=cache", "--exclude=**/tmp*", "--exclude=/logs", "--exclude=/thumbs",
+				"--exclude=/x/*.tmp", "--delete"},
 			[]string{"/elsewhere", "--exclude=/data", "--exclude=/\n"}},
 		{"a path is matched literally, and the excludes left out", restoreOptions{path: "Movie [1080p]*.mkv"},
 			restoreStep{snapPath: dataDir, sub: "/Movie [1080p]*.mkv"},
@@ -632,25 +633,40 @@ func TestRestoreArgumentsRestic(t *testing.T) {
 	tests := []struct {
 		name string
 		o    restoreOptions
+		sub  string
 		src  restoreSource
 		want string
 	}{
 		{"an include and an exclude", restoreOptions{include: []string{"app/**"}, exclude: []string{"*.log"}},
-			restoreSource{}, "--exclude cannot be combined"},
+			"", restoreSource{}, "--exclude cannot be combined"},
 		{"a path deleting under a source that excludes", restoreOptions{delete: true},
-			excluding, "would remove what the backup excludes"},
+			appMount, excluding, "would remove what the backup excludes"},
+		{"an include beside a path, which restic would OR", restoreOptions{include: []string{"*.db"}},
+			appMount, restoreSource{}, "--include cannot be combined with --path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			step := restoreStep{snapPath: dataDir}
-			if tt.o.delete {
-				step.sub = "/app"
-			}
+			step := restoreStep{snapPath: dataDir, sub: tt.sub}
 			if _, err := tt.o.restoreArgs(snap, step, tt.src, dataDir); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("err = %v, want %q: restic would refuse, or delete what was never saved", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestExcludesThatCannotBeRebasedStopDelete(t *testing.T) {
+	t.Parallel()
+	snap := resticSnapshot{ID: snapFiles, Paths: []string{dataDir}}
+	for _, exclude := range []string{"/**/cache", "/*", "/[d/x"} {
+		src := restoreSource{paths: []string{dataDir}, exclude: []string{exclude}}
+		if _, err := (&restoreOptions{delete: true}).restoreArgs(snap, restoreStep{snapPath: dataDir}, src, dataDir); err == nil ||
+			!strings.Contains(err.Error(), "drop --delete") {
+			t.Errorf("exclude %s: err = %v, want --delete refused", exclude, err)
+		}
+		if _, err := (&restoreOptions{}).restoreArgs(snap, restoreStep{snapPath: dataDir}, src, dataDir); err != nil {
+			t.Errorf("exclude %s without --delete: %v", exclude, err)
+		}
 	}
 }
 
