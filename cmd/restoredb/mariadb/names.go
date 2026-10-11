@@ -1,6 +1,9 @@
 package mariadb
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 type nameToken int
 
@@ -34,7 +37,17 @@ type qualifiedNames struct {
 	prevName  string
 	qualifier string
 	sawSelect bool
+	// afterEngine is set after the word ENGINE, until its value.
+	afterEngine bool
+	// reach names an engine or table option that reaches tables outside the
+	// staging database, such as MERGE's UNION or FEDERATED's CONNECTION.
+	reach string
 }
+
+// reachingEngines read and write tables other than their own, in another
+// database or on another server.
+var reachingEngines = []string{"MERGE", "MRG_MYISAM", "MRG_ISAM", "FEDERATED", "FEDERATEDX", "CONNECT", "SPIDER",
+	"OQGRAPH"}
 
 const maxNameWord = 64
 
@@ -54,21 +67,12 @@ func (q *qualifiedNames) text(p []byte, inString byte) {
 }
 
 func (q *qualifiedNames) byte(c, inString byte) {
-	switch inString {
-	case '\'', '"':
-		q.endWord()
-		q.last = nameOther
-		return
-	case '`':
-		if q.last != nameQuoted {
-			q.startName(nameQuoted)
-			if c == '`' {
-				return
-			}
-		}
-		if len(q.word) < maxNameWord {
-			q.word = append(q.word, c)
-		}
+	if q.afterEngine && inString != 0 {
+		q.afterEngine = false
+		q.see("a quoted ENGINE")
+	}
+	if inString != 0 {
+		q.quoted(c, inString)
 		return
 	}
 	if q.inWord {
@@ -107,7 +111,7 @@ func (q *qualifiedNames) byte(c, inString byte) {
 		q.startName(nameWord)
 		q.word = append(q.word, c)
 		q.inWord = true
-	case isClientSpace(c):
+	case isClientSpace(c), c == '=' && q.afterEngine:
 	case c == '.' && (q.last == nameWord || q.last == nameQuoted):
 		q.prevName = string(q.word)
 		q.last = nameDot
@@ -117,6 +121,33 @@ func (q *qualifiedNames) byte(c, inString byte) {
 	default:
 		q.at = false
 		q.last = nameOther
+	}
+	if !isClientSpace(c) && c != '=' && !q.inWord {
+		q.afterEngine = false
+	}
+}
+
+// quoted sees a byte of a quoted string or a backquoted name.
+func (q *qualifiedNames) quoted(c, inString byte) {
+	if inString != '`' {
+		q.endWord()
+		q.last = nameOther
+		return
+	}
+	if q.last != nameQuoted {
+		q.startName(nameQuoted)
+		if c == '`' {
+			return
+		}
+	}
+	if len(q.word) < maxNameWord {
+		q.word = append(q.word, c)
+	}
+}
+
+func (q *qualifiedNames) see(reach string) {
+	if q.reach == "" {
+		q.reach = reach
 	}
 }
 
@@ -135,8 +166,23 @@ func (q *qualifiedNames) endWord() {
 		return
 	}
 	q.inWord = false
-	if q.last == nameWord && strings.EqualFold(string(q.word), "SELECT") {
+	if q.last != nameWord {
+		return
+	}
+	word := strings.ToUpper(string(q.word))
+	if q.afterEngine {
+		q.afterEngine = false
+		if slices.Contains(reachingEngines, word) {
+			q.see("ENGINE=" + word)
+		}
+	}
+	switch word {
+	case "SELECT":
 		q.sawSelect = true
+	case "ENGINE":
+		q.afterEngine = true
+	case "UNION", "CONNECTION":
+		q.see(word)
 	}
 }
 

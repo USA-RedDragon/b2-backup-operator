@@ -191,6 +191,8 @@ func (f *dumpFilter) decide(complete bool) error {
 // a table runs nothing, unless it fills the table with a SELECT.
 func (f *dumpFilter) checkNames() error {
 	switch {
+	case f.names.reach != "":
+		return fmt.Errorf("%w: %s reaches tables outside it: %.200s", ErrOtherDatabase, f.names.reach, f.head)
 	case f.createTable && f.names.sawSelect:
 		return fmt.Errorf("%w: a CREATE TABLE that fills the table with a SELECT: %.200s",
 			ErrUnsupportedStatement, f.head)
