@@ -522,8 +522,10 @@ func TestStaleKeysOfThisRepositoryAreDeletedAndOthersAreNot(t *testing.T) {
 	foreign := f.AddKey("b2bk-otherns-restic-0123456789ab", "", "")
 	handmade := f.AddKey("my-laptop", "", "")
 
-	r, _ := newHarness(t, f, repo)
-	reconcileN(t, r, 2)
+	r, c := newHarness(t, f, repo)
+	reconcileN(t, r, 1)
+	succeedInitJob(t, c)
+	reconcileN(t, r, 1)
 
 	ids := make([]string, 0, len(f.Keys()))
 	for _, k := range f.Keys() {

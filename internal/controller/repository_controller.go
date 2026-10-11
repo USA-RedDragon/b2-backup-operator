@@ -307,7 +307,8 @@ func (r *RepositoryReconciler) reconcile(
 		url:    resticURL(auth.S3APIURL, bucket.BucketName, path),
 		region: region,
 	}
-	if err := r.reconcileSecret(ctx, repo, api, bucket, creds, known || dataExists); err != nil {
+	keyRecheck, err := r.reconcileSecret(ctx, repo, api, bucket, creds, known || dataExists)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -354,7 +355,11 @@ func (r *RepositoryReconciler) reconcile(
 	if justInitialized {
 		return ctrl.Result{RequeueAfter: initCleanupDelay}, nil
 	}
-	return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
+	requeue := r.interval(repo)
+	if keyRecheck > 0 {
+		requeue = min(requeue, keyRecheck)
+	}
+	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
 func (r *RepositoryReconciler) reconcileReinit(ctx context.Context, repo *b2backupv1.Repository) error {
@@ -546,17 +551,20 @@ type credentials struct {
 //
 // mustExist says whether a password must already exist somewhere: this resource
 // has written credentials before, or the path already holds data.
+//
+// It returns how soon to look again when a superseded key is still waiting for
+// the Jobs that may hold it.
 func (r *RepositoryReconciler) reconcileSecret(
 	ctx context.Context, repo *b2backupv1.Repository, api b2.API, bucket *b2.Bucket,
 	creds credentials, mustExist bool,
-) error {
+) (time.Duration, error) {
 	name := repo.SecretName()
 	var existing corev1.Secret
 	err := r.Get(ctx, types.NamespacedName{Namespace: repo.Namespace, Name: name}, &existing)
 	switch {
 	case err == nil:
 		if existing.Labels[labelManagedBy] != managedByValue {
-			return withReason("SecretNotManaged", fmt.Errorf(
+			return 0, withReason("SecretNotManaged", fmt.Errorf(
 				"secret %s/%s already exists and is not managed by this operator; "+
 					"set spec.secretName to a name the operator owns",
 				existing.Namespace, existing.Name))
@@ -564,17 +572,17 @@ func (r *RepositoryReconciler) reconcileSecret(
 	case apierrors.IsNotFound(err):
 		existing = corev1.Secret{}
 	default:
-		return err
+		return 0, err
 	}
 
 	password, generated, err := r.resolvePassword(ctx, repo, &existing, mustExist || repo.Status.Adopted)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	keys, err := api.ListKeys(ctx)
 	if err != nil {
-		return fmt.Errorf("listing application keys: %w", err)
+		return 0, fmt.Errorf("listing application keys: %w", err)
 	}
 
 	keyID := string(existing.Data[KeyAccessKeyID])
@@ -593,7 +601,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 			NamePrefix:   filePrefix(repo.EffectivePath()),
 		})
 		if err != nil {
-			return fmt.Errorf("creating an application key: %w", err)
+			return 0, fmt.Errorf("creating an application key: %w", err)
 		}
 		keyID, keySecret = created.ApplicationKeyID, created.ApplicationKey
 	}
@@ -615,7 +623,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 	}
 	if repo.Spec.DeletionPolicy == b2backupv1.DeletionPolicyDelete {
 		if err := controllerutil.SetControllerReference(repo, desired, r.Scheme); err != nil {
-			return err
+			return 0, err
 		}
 	} else if preserved, _ := r.passwordPreserved(ctx, repo, password); !preserved {
 		controllerutil.AddFinalizer(desired, SecretFinalizer)
@@ -629,7 +637,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 					err, created.ApplicationKeyID, delErr)
 			}
 		}
-		return err
+		return 0, err
 	}
 	if generated {
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "PasswordGenerated", "Generate",
@@ -642,12 +650,15 @@ func (r *RepositoryReconciler) reconcileSecret(
 
 	if created != nil {
 		if err := r.recordKey(ctx, repo, created.ApplicationKeyID); err != nil {
-			return err
+			return 0, err
 		}
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "KeyCreated", "Create",
 			"Created application key %s restricted to %s/%s", created.ApplicationKeyID,
 			bucket.BucketName, displayPath(repo.EffectivePath()))
-		return nil
+		if slices.ContainsFunc(keys, func(k b2.Key) bool { return k.KeyName == keyName(repo) }) {
+			return initCleanupDelay, nil
+		}
+		return 0, nil
 	}
 
 	return r.deleteStaleKeys(ctx, repo, api, keys)
@@ -709,29 +720,122 @@ func (r *RepositoryReconciler) resolvePassword(
 func (r *RepositoryReconciler) recordKey(ctx context.Context, repo *b2backupv1.Repository, keyID string) error {
 	obj := repo.DeepCopy()
 	base := obj.DeepCopy()
+	now := &metav1.Time{Time: r.now()}
 	obj.Status.ApplicationKeyID = keyID
+	obj.Status.KeyRotationTime = now
 	if err := r.Status().Patch(ctx, obj, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("recording application key %s on %s/%s: %w", keyID, repo.Namespace, repo.Name, err)
 	}
 	repo.Status.ApplicationKeyID = keyID
+	repo.Status.KeyRotationTime = now
 	return nil
 }
 
+// deleteStaleKeys deletes every other key carrying this Repository's name, once
+// no Job that started before the current key was written is still running: a
+// pod reads the Secret when it starts, so such a Job may still be using the old
+// key. After staleKeyDeadline it deletes them regardless.
 func (r *RepositoryReconciler) deleteStaleKeys(
 	ctx context.Context, repo *b2backupv1.Repository, api b2.API, keys []b2.Key,
-) error {
+) (time.Duration, error) {
 	name := keyName(repo)
+	var stale []b2.Key
 	for _, k := range keys {
-		if k.KeyName != name || k.ApplicationKeyID == repo.Status.ApplicationKeyID {
-			continue
+		if k.KeyName == name && k.ApplicationKeyID != repo.Status.ApplicationKeyID {
+			stale = append(stale, k)
 		}
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+
+	if rotated := repo.Status.KeyRotationTime; rotated != nil {
+		holders, err := r.jobsStartedBefore(ctx, repo, rotated.Time)
+		if err != nil {
+			return 0, err
+		}
+		if len(holders) > 0 {
+			if r.now().Sub(rotated.Time) < staleKeyDeadline {
+				log.FromContext(ctx).Info("Deferred deleting superseded application keys",
+					"jobs", holders, "rotated", rotated.Time)
+				return staleKeyRecheck, nil
+			}
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "StaleKeyDeadline", "Delete",
+				"Deleting superseded application keys %d hours after rotation although Jobs %s, "+
+					"which started before it, are still running and may fail",
+				int(staleKeyDeadline.Hours()), strings.Join(holders, ", "))
+		}
+	}
+
+	for _, k := range stale {
 		if err := api.DeleteKey(ctx, k.ApplicationKeyID); err != nil && !errors.Is(err, b2.ErrNotFound) {
-			return fmt.Errorf("deleting superseded application key %s: %w", k.ApplicationKeyID, err)
+			return 0, fmt.Errorf("deleting superseded application key %s: %w", k.ApplicationKeyID, err)
 		}
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "KeyDeleted", "Delete",
 			"Deleted superseded application key %s", k.ApplicationKeyID)
 	}
-	return nil
+	return 0, nil
+}
+
+// jobsStartedBefore returns the unfinished Jobs in the Repository's namespace that
+// read its credentials Secret and started before t. That covers scheduled and
+// triggered backups, b2bk's one-off Jobs and the init Job alike.
+func (r *RepositoryReconciler) jobsStartedBefore(
+	ctx context.Context, repo *b2backupv1.Repository, t time.Time,
+) ([]string, error) {
+	var jobs batchv1.JobList
+	if err := r.List(ctx, &jobs, client.InNamespace(repo.Namespace)); err != nil {
+		return nil, fmt.Errorf("listing jobs: %w", err)
+	}
+	secret := repo.SecretName()
+	var out []string
+	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		started := job.CreationTimestamp.Time
+		if job.Status.StartTime != nil {
+			started = job.Status.StartTime.Time
+		}
+		if !started.Before(t) || jobFinished(job) || !readsSecret(&job.Spec.Template.Spec, secret) {
+			continue
+		}
+		out = append(out, job.Name)
+	}
+	return out, nil
+}
+
+func jobFinished(job *batchv1.Job) bool {
+	if job.Status.CompletionTime != nil || (job.Status.Active == 0 && job.Status.Succeeded > 0) {
+		return true
+	}
+	for _, c := range job.Status.Conditions {
+		if (c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed) && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+func readsSecret(pod *corev1.PodSpec, name string) bool {
+	for _, v := range pod.Volumes {
+		if v.Secret != nil && v.Secret.SecretName == name {
+			return true
+		}
+	}
+	for _, list := range [][]corev1.Container{pod.InitContainers, pod.Containers} {
+		for _, c := range list {
+			for _, from := range c.EnvFrom {
+				if from.SecretRef != nil && from.SecretRef.Name == name {
+					return true
+				}
+			}
+			for _, e := range c.Env {
+				if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.SecretKeyRef.Name == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func keyMatches(k b2.Key, bucketID, path string) bool {
