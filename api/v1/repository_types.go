@@ -226,8 +226,8 @@ type RepositoryStatus struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:validation:XValidation:rule="has(self.spec.path) == has(oldSelf.spec.path) && (!has(self.spec.path) || self.spec.path == oldSelf.spec.path)",message="path cannot be added, changed or removed once the Repository exists"
 // +kubebuilder:validation:XValidation:rule="(has(self.spec.secretName) && size(self.spec.secretName) > 0 ? self.spec.secretName : self.metadata.name + '-credentials') == (has(oldSelf.spec.secretName) && size(oldSelf.spec.secretName) > 0 ? oldSelf.spec.secretName : oldSelf.metadata.name + '-credentials')",message="secretName cannot be changed once the Repository exists; it may only be set to or cleared from the default <name>-credentials"
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.passwordSecretRef) || !has(self.spec.secretName) || self.spec.secretName != self.spec.passwordSecretRef.name",message="secretName must not be the passwordSecretRef Secret; the operator never writes to the seed"
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.credentialsSecretRef) || !has(self.spec.secretName) || self.spec.secretName != self.spec.credentialsSecretRef.name",message="secretName must not be the credentialsSecretRef Secret; the operator never writes to it"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.passwordSecretRef) || self.spec.passwordSecretRef.name != (has(self.spec.secretName) && size(self.spec.secretName) > 0 ? self.spec.secretName : self.metadata.name + '-credentials')",message="secretName must not be the passwordSecretRef Secret; the operator never writes to the seed"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.credentialsSecretRef) || self.spec.credentialsSecretRef.name != (has(self.spec.secretName) && size(self.spec.secretName) > 0 ? self.spec.secretName : self.metadata.name + '-credentials')",message="secretName must not be the credentialsSecretRef Secret; the operator never writes to it"
 type Repository struct {
 	metav1.TypeMeta `json:",inline"`
 
