@@ -120,9 +120,11 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 		f.out = append(f.out, p...)
 		return nil
 	}
+	cut := len(p)
 	switch kind {
 	case byteText:
-		f.head = append(f.head, p[:min(len(p), max(0, headSize-len(f.head)))]...)
+		cut = min(len(p), max(0, headSize-len(f.head)))
+		f.head = append(f.head, p[:cut]...)
 		f.names.text(p, f.lex.inString)
 		f.values.text(p, f.lex.inString)
 	case byteEnd:
@@ -161,9 +163,27 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 		}
 		return err
 	case f.mode == modeHold && (len(f.head) >= headSize || len(f.held) >= holdSize):
-		return f.decide(false)
+		if err := f.decide(false); err != nil {
+			return err
+		}
+		return f.checkRest(p, cut)
 	}
 	return nil
+}
+
+// checkRest hands the value watch the part of the run that decided the
+// statement past the head: the watch only starts once the statement is
+// decided, and allowStatement saw no more than the head.
+func (f *dumpFilter) checkRest(p []byte, cut int) error {
+	if !f.values.on || cut >= len(p) {
+		return nil
+	}
+	start := cut
+	for start > 0 && isWordByte(p[start-1]) && isWordByte(p[cut]) {
+		start--
+	}
+	f.values.text(p[start:], f.lex.inString)
+	return f.checkValues()
 }
 
 // decide classifies the statement held so far and passes it on, leaves it
