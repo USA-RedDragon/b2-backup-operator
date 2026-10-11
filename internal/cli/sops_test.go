@@ -115,7 +115,7 @@ data:
 		t.Run(tt.name, func(t *testing.T) {
 			path := fakeSops(t, sopsEmitting(tt.plaintext))
 
-			got, err := repositoryURLFromSecret(path)
+			got, _, err := repositoryURLFromSecret(path)
 			if err != nil {
 				t.Fatalf("repositoryURLFromSecret() error = %v", err)
 			}
@@ -135,7 +135,7 @@ func TestRepositoryURLFromSecretDecryptsRatherThanReadingCiphertext(t *testing.T
 		t.Fatal(err)
 	}
 
-	got, err := repositoryURLFromSecret(path)
+	got, _, err := repositoryURLFromSecret(path)
 	if err != nil {
 		t.Fatalf("repositoryURLFromSecret() error = %v", err)
 	}
@@ -172,7 +172,7 @@ func TestRepositoryURLFromSecretRefusesWhatItCannotRead(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := repositoryURLFromSecret(fakeSops(t, tt.script))
+			got, _, err := repositoryURLFromSecret(fakeSops(t, tt.script))
 			if err == nil {
 				t.Fatalf("repositoryURLFromSecret() = %q, want an error", got)
 			}
@@ -192,7 +192,7 @@ func TestRepositoryURLFromSecretPointsAtTheWayOut(t *testing.T) {
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
-		_, err := repositoryURLFromSecret(path)
+		_, _, err := repositoryURLFromSecret(path)
 		if err == nil || !strings.Contains(err.Error(), "--repository") {
 			t.Errorf("error = %v, want it to suggest --repository", err)
 		}
@@ -203,7 +203,7 @@ func TestRepositoryURLFromSecretPointsAtTheWayOut(t *testing.T) {
 		if err := os.Remove(filepath.Join(filepath.Dir(path), "sops")); err != nil {
 			t.Fatal(err)
 		}
-		_, err := repositoryURLFromSecret(path)
+		_, _, err := repositoryURLFromSecret(path)
 		if !errors.Is(err, ErrSopsUnavailable) {
 			t.Errorf("error = %v, want ErrSopsUnavailable", err)
 		}
@@ -211,4 +211,41 @@ func TestRepositoryURLFromSecretPointsAtTheWayOut(t *testing.T) {
 			t.Errorf("error = %v, want it to suggest --repository", err)
 		}
 	})
+}
+
+func TestParseS3RepositoryNeverEchoesCredentials(t *testing.T) {
+	t.Parallel()
+	const secret = "sekrit"
+	tests := []struct {
+		name, url, secret string
+	}{
+		{"userinfo", "s3:https://AKIA123:sekrit@s3.us-east-005.backblazeb2.com/acme-backups/a", secret},
+		{"userinfo without a scheme", "s3:AKIA123:sekrit@s3.us-east-005.backblazeb2.com/acme-backups/a", secret},
+		{"a query", "s3:https://s3.us-east-005.backblazeb2.com/acme-backups/a?token=sekrit", secret},
+		{"a bad scheme with userinfo", "s3:http://u:sekrit@host/b/a", secret},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := parseS3Repository(tt.url)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if strings.Contains(err.Error(), tt.secret) || strings.Contains(err.Error(), "AKIA123") {
+				t.Errorf("the error echoes credentials: %v", err)
+			}
+		})
+	}
+}
+
+func TestFromSecretMustBelongToTheHelmReleasesNamespace(t *testing.T) {
+	path := fakeSops(t, sopsEmitting("metadata:\n  namespace: other\nstringData:\n  RESTIC_REPOSITORY: "+sopsRepoURL+"\n"))
+	opts := migrateOptions{fromSecret: path}
+	if _, err := opts.repositoryURL("myapp", true); !errors.Is(err, ErrNoRepositoryURL) ||
+		!strings.Contains(err.Error(), "namespace other") {
+		t.Errorf("err = %v, want a namespace mismatch", err)
+	}
+	if got, err := opts.repositoryURL("other", true); err != nil || got != sopsRepoURL {
+		t.Errorf("repositoryURL = %q, %v; want the URL for the matching namespace", got, err)
+	}
 }
