@@ -5,6 +5,7 @@ run:
     - e2e
     - envtest
     - mariadb
+    - postgres
 linters:
   default: none
   enable:

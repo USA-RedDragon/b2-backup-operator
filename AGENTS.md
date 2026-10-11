@@ -176,6 +176,7 @@ make test        # unit tests: plain go test, no cluster, no envtest binaries
 make test-crd    # CRD validation against a real API server (envtest)
 make test-e2e    # full deploy against a throwaway Kind cluster
 make test-mariadb # restoredb mariadb against a throwaway MariaDB container
+make test-postgres # restoredb postgres against a throwaway Postgres container
 make lint        # golangci-lint with the logcheck plugin
 ```
 
@@ -190,8 +191,8 @@ does not recognize.
 Tests are standard `testing`, not Ginkgo, except the e2e suite: it is Ginkgo, and
 its `test/e2e/e2e_suite_test.go` is the only `suite_test.go` in the tree. Both it
 and the envtest CRD tests sit behind build tags (`e2e` and `envtest`), as do the
-Docker MariaDB tests (`mariadb`), so `make test` -- a plain `go test` over
-everything but `/e2e` -- compiles none of them.
+Docker MariaDB and Postgres tests (`mariadb`, `postgres`), so `make test` -- a
+plain `go test` over everything but `/e2e` -- compiles none of them.
 
 **Validation lives in CEL on the CRDs**, so `make test` cannot see it. A rule
 that fails to compile makes every CRD install fail, and one that never fires is
