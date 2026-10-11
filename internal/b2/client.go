@@ -495,9 +495,9 @@ func listBody(req ListFilesRequest, startIDField string) map[string]any {
 	}
 	if req.StartFileName != "" {
 		body["startFileName"] = req.StartFileName
-	}
-	if req.StartFileID != "" && startIDField != "" {
-		body[startIDField] = req.StartFileID
+		if req.StartFileID != "" && startIDField != "" {
+			body[startIDField] = req.StartFileID
+		}
 	}
 	count := req.MaxFileCount
 	if count <= 0 || count > MaxFileCount {

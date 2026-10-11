@@ -1,6 +1,7 @@
 package b2
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -27,6 +28,7 @@ const (
 	CodeNotFound            = "not_found"
 	CodeFileNotPresent      = "file_not_present"
 	CodeBadBucketID         = "bad_bucket_id"
+	CodeInvalidBucketID     = "invalid_bucket_id"
 	CodeDuplicateBucketName = "duplicate_bucket_name"
 	CodeTooManyBuckets      = "too_many_buckets"
 	CodeConflict            = "conflict"
@@ -76,6 +78,7 @@ func (e *APIError) Is(target error) bool {
 	switch target {
 	case ErrNotFound:
 		return e.Code == CodeNotFound || e.Code == CodeFileNotPresent || e.Code == CodeBadBucketID ||
+			e.Code == CodeInvalidBucketID ||
 			(e.Code == CodeBadRequest && isMissingResourceMessage(e.Message))
 	case ErrDuplicateBucketName:
 		return e.Code == CodeDuplicateBucketName
@@ -131,11 +134,63 @@ func RegionFromS3URL(raw string) (string, error) {
 	return region, nil
 }
 
-// LifecycleRule is a bucket lifecycle rule.
+// LifecycleRule is a bucket lifecycle rule. Fields this package does not know
+// are kept in Extra and written back unchanged, so a read-modify-write of the
+// bucket's rules never drops what another tool set.
 type LifecycleRule struct {
-	FileNamePrefix            string `json:"fileNamePrefix"`
-	DaysFromUploadingToHiding *int   `json:"daysFromUploadingToHiding"`
-	DaysFromHidingToDeleting  *int   `json:"daysFromHidingToDeleting"`
+	FileNamePrefix                                  string
+	DaysFromUploadingToHiding                       *int
+	DaysFromHidingToDeleting                        *int
+	DaysFromStartingToCancelingUnfinishedLargeFiles *int
+	Extra                                           map[string]json.RawMessage
+}
+
+const (
+	fieldFileNamePrefix = "fileNamePrefix"
+	fieldUploadToHide   = "daysFromUploadingToHiding"
+	fieldHideToDelete   = "daysFromHidingToDeleting"
+	fieldStartToCancel  = "daysFromStartingToCancelingUnfinishedLargeFiles"
+)
+
+// MarshalJSON writes the known fields, null when unset, and every unknown field verbatim.
+func (r LifecycleRule) MarshalJSON() ([]byte, error) {
+	out := make(map[string]any, len(r.Extra)+4)
+	for k, v := range r.Extra {
+		out[k] = v
+	}
+	out[fieldFileNamePrefix] = r.FileNamePrefix
+	out[fieldUploadToHide] = r.DaysFromUploadingToHiding
+	out[fieldHideToDelete] = r.DaysFromHidingToDeleting
+	out[fieldStartToCancel] = r.DaysFromStartingToCancelingUnfinishedLargeFiles
+	return json.Marshal(out)
+}
+
+// UnmarshalJSON reads the known fields and keeps every other one in Extra.
+func (r *LifecycleRule) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = LifecycleRule{}
+	for key, dst := range map[string]any{
+		fieldFileNamePrefix: &r.FileNamePrefix,
+		fieldUploadToHide:   &r.DaysFromUploadingToHiding,
+		fieldHideToDelete:   &r.DaysFromHidingToDeleting,
+		fieldStartToCancel:  &r.DaysFromStartingToCancelingUnfinishedLargeFiles,
+	} {
+		v, ok := raw[key]
+		if !ok {
+			continue
+		}
+		delete(raw, key)
+		if err := json.Unmarshal(v, dst); err != nil {
+			return fmt.Errorf("lifecycle rule field %s: %w", key, err)
+		}
+	}
+	if len(raw) > 0 {
+		r.Extra = raw
+	}
+	return nil
 }
 
 // Bucket is a B2 bucket.

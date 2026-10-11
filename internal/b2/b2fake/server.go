@@ -453,7 +453,8 @@ func decodeRules(raw any) ([]b2.LifecycleRule, error) {
 		return nil, fmt.Errorf("a bucket can have at most 100 lifecycle rules")
 	}
 	for i, a := range rules {
-		if a.DaysFromHidingToDeleting == nil && a.DaysFromUploadingToHiding == nil {
+		if a.DaysFromHidingToDeleting == nil && a.DaysFromUploadingToHiding == nil &&
+			a.DaysFromStartingToCancelingUnfinishedLargeFiles == nil {
 			return nil, fmt.Errorf("lifecycle rule %q sets no days", a.FileNamePrefix)
 		}
 		for j, b := range rules {
@@ -602,6 +603,10 @@ func (s *Server) listFileVersions(w http.ResponseWriter, body map[string]any) {
 		return
 	}
 	start := str(body["startFileName"])
+	if start == "" && str(body["startFileId"]) != "" {
+		writeError(w, http.StatusBadRequest, b2.CodeBadRequest, "startFileId requires startFileName")
+		return
+	}
 	size := pageSize(body, 100, b2.MaxFileCount)
 	var all []b2.File
 	for _, f := range s.sortedVersions(str(body["bucketId"]), str(body["prefix"])) {
