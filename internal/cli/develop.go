@@ -363,7 +363,7 @@ func renderedPlan(path string) (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
-	if err := backup.ValidateMounts(sb); err != nil {
+	if err := backup.Validate(sb); err != nil {
 		return plan{}, err
 	}
 	script, err := backup.Render(sb)

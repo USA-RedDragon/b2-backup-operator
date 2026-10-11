@@ -25,7 +25,7 @@ func filesBackup(volumes []b2backupv1.VolumeSpec, scratch *b2backupv1.ScratchSpe
 	})
 }
 
-func TestValidateMounts(t *testing.T) {
+func TestValidate(t *testing.T) {
 	t.Parallel()
 	data := b2backupv1.VolumeSpec{ExistingClaim: "app", MountPath: dataMount}
 	blobs := b2backupv1.VolumeSpec{ExistingClaim: "blobs"}
@@ -53,12 +53,12 @@ func TestValidateMounts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := ValidateMounts(tt.sb)
+			err := Validate(tt.sb)
 			switch {
 			case tt.wantErr == "" && err != nil:
-				t.Errorf("ValidateMounts() = %v, want nil", err)
+				t.Errorf("Validate() = %v, want nil", err)
 			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
-				t.Errorf("ValidateMounts() = %v, want an error containing %q", err, tt.wantErr)
+				t.Errorf("Validate() = %v, want an error containing %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -164,5 +164,54 @@ func TestMountFor(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("MountFor(%s) = %q, want %q", tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestValidateRefusesWhatForgetWouldMerge(t *testing.T) {
+	t.Parallel()
+	retention := &b2backupv1.Retention{Daily: new(int32(7))}
+	tests := []struct {
+		name    string
+		mutate  func(*b2backupv1.ScheduledBackup)
+		wantErr string
+	}{
+		{"two databases under the default tag", func(sb *b2backupv1.ScheduledBackup) {
+			sb.Spec.Sources = []b2backupv1.BackupSource{
+				{Type: b2backupv1.SourceTypeCNPG, Database: "app"}, {Type: b2backupv1.SourceTypeCNPG, Database: "keycloak"},
+			}
+		}, "both tagged \"db\""},
+		{"two files sources under one tag", func(sb *b2backupv1.ScheduledBackup) {
+			sb.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: "data", MountPath: dataMount}}
+			sb.Spec.Sources = []b2backupv1.BackupSource{
+				{Type: b2backupv1.SourceTypeFiles, Paths: []string{"/data/a"}},
+				{Type: b2backupv1.SourceTypeFiles, Paths: []string{"/data/b"}},
+			}
+		}, "both tagged \"files\""},
+		{"retention beside a script", func(sb *b2backupv1.ScheduledBackup) {
+			sb.Spec.Sources = nil
+			sb.Spec.Script = "restic backup /data"
+		}, "not applied to spec.script"},
+		{"distinct tags", func(sb *b2backupv1.ScheduledBackup) {
+			sb.Spec.Sources = []b2backupv1.BackupSource{
+				{Type: b2backupv1.SourceTypeCNPG, Database: "app"},
+				{Type: b2backupv1.SourceTypeCNPG, Database: "keycloak", Tag: "db-keycloak"},
+			}
+		}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sb := testBackup(func(sb *b2backupv1.ScheduledBackup) {
+				sb.Spec.Retention = retention
+				tt.mutate(sb)
+			})
+			_, err := BuildJobTemplate(sb, testRepo(), testConfig())
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Errorf("BuildJobTemplate() = %v", err)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Errorf("BuildJobTemplate() = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }

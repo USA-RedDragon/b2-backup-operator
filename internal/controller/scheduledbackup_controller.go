@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"strconv"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -120,6 +122,20 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, nil
 	}
 
+	if other, tag, err := r.tagConflict(ctx, sb); err != nil {
+		return ctrl.Result{}, err
+	} else if other != "" {
+		r.setCondition(sb, metav1.Condition{
+			Type:   b2backupv1.ScheduledBackupConditionReady,
+			Status: metav1.ConditionFalse,
+			Reason: "TagConflict",
+			Message: fmt.Sprintf("ScheduledBackup %s also backs up into Repository %s under tag %q; the image groups "+
+				"forget by tags, so each would expire the other's snapshots. Give this one tags of its own",
+				other, repo.Name, tag),
+		})
+		return ctrl.Result{RequeueAfter: backupRequeueInterval}, r.suspendOwnCronJob(ctx, sb)
+	}
+
 	if err := r.reconcileCache(ctx, sb); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -210,6 +226,56 @@ func (r *ScheduledBackupReconciler) reconcile(
 	}
 
 	return ctrl.Result{RequeueAfter: backupRequeueInterval}, nil
+}
+
+// tagConflict finds an older ScheduledBackup writing into the same Repository
+// under one of this one's source tags.
+func (r *ScheduledBackupReconciler) tagConflict(
+	ctx context.Context, sb *b2backupv1.ScheduledBackup,
+) (string, string, error) {
+	tags := backup.SourceTags(sb.Spec.Sources)
+	if len(tags) == 0 {
+		return "", "", nil
+	}
+	var list b2backupv1.ScheduledBackupList
+	if err := r.List(ctx, &list, client.InNamespace(sb.Namespace)); err != nil {
+		return "", "", err
+	}
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Name == sb.Name || other.Spec.RepositoryRef.Name != sb.Spec.RepositoryRef.Name ||
+			!other.DeletionTimestamp.IsZero() || !olderBackup(other, sb) {
+			continue
+		}
+		for _, tag := range backup.SourceTags(other.Spec.Sources) {
+			if slices.Contains(tags, tag) {
+				return other.Name, tag, nil
+			}
+		}
+	}
+	return "", "", nil
+}
+
+func olderBackup(a, b *b2backupv1.ScheduledBackup) bool {
+	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return a.CreationTimestamp.Before(&b.CreationTimestamp)
+	}
+	return a.Name < b.Name
+}
+
+func (r *ScheduledBackupReconciler) suspendOwnCronJob(ctx context.Context, sb *b2backupv1.ScheduledBackup) error {
+	var cj batchv1.CronJob
+	err := r.Get(ctx, types.NamespacedName{Namespace: sb.Namespace, Name: backup.CronJobName(sb)}, &cj)
+	if apierrors.IsNotFound(err) || (err == nil && (!metav1.IsControlledBy(&cj, sb) ||
+		(cj.Spec.Suspend != nil && *cj.Spec.Suspend))) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	patch := client.MergeFrom(cj.DeepCopy())
+	cj.Spec.Suspend = ptr.To(true)
+	return r.Patch(ctx, &cj, patch)
 }
 
 func cronJobDrifted(current, desired *batchv1.CronJob) bool {

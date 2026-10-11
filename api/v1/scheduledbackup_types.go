@@ -306,7 +306,8 @@ type ScheduledBackupSpec struct {
 	// +optional
 	Script string `json:"script,omitempty"`
 
-	// Retention is how many snapshots to keep. Omit to never forget.
+	// Retention is how many snapshots to keep. Omit to never forget. Not valid
+	// with script, which forgets in the script itself.
 	// +optional
 	Retention *Retention `json:"retention,omitempty"`
 
@@ -482,6 +483,7 @@ type BackupRun struct {
 // +kubebuilder:printcolumn:name="Suspended",type="boolean",JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:validation:XValidation:rule="has(self.spec.sources) != has(self.spec.script)",message="exactly one of spec.sources or spec.script must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.script) || !has(self.spec.retention)",message="spec.retention is not applied to spec.script; forget in the script itself, with --tag"
 // +kubebuilder:validation:XValidation:rule="!has(self.spec.sources) || !self.spec.sources.exists(s, s.type == 'files') || has(self.spec.volumes) || has(self.spec.scratch)",message="a files source needs spec.volumes or spec.scratch; without them restic would back up the container's own filesystem"
 type ScheduledBackup struct {
 	metav1.TypeMeta `json:",inline"`
