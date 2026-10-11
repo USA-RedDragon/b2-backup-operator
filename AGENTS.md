@@ -160,13 +160,16 @@ one of these:
   DATABASE` statements left out, checks the `-- Dump completed` trailer, and only
   then moves every table with one multi-table `RENAME TABLE`, which MariaDB
   applies atomically, every live table out before any staged one in, since a
-  foreign key name must stay unique in the live database. MariaDB refuses to move views and tables with triggers
-  across databases, so those are refused up front. The dump is split into
+  foreign key name must stay unique in the live database. MariaDB refuses to
+  move views and tables with triggers across databases, so those are refused
+  up front. The dump is split into
   statements by `clientLexer`, a copy of the client's own rules (`add_line` in
   `client/mysql.cc`), and each statement is held back until `classify` has
-  checked it: a table named with a database, a server, replication or account
-  statement, or dynamic SQL would reach past the staging database. `<db>__b2bk_old` is the
-  rollback copy: never drop it unless it is empty or `--drop-old` was given.
+  checked it. `qualifiedNames` watches the whole of every statement, since a
+  name qualified with a database anywhere outside CREATE TABLE, a server,
+  replication or account statement, or dynamic SQL would reach past the
+  staging database. `<db>__b2bk_old` is the rollback copy: never drop it
+  unless it is empty or `--drop-old` was given.
   Both are created with `mariadb.SchemaComment`, and a database by either name
   without it is never dropped (`ErrForeignSchema`).
   Verify changes with `make test-mariadb`, which runs a real server in Docker.

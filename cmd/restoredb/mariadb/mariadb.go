@@ -36,8 +36,11 @@ The dump is read a statement at a time, split the way the mariadb client splits
 it, and each statement is checked before the client sees it. USE and CREATE
 DATABASE statements from a --databases dump are left out, so the dump always
 lands in the database given; a dump of more than one database is refused. So is
-a statement that names its table with a database, such as INSERT INTO
-` + "`other`.`t`" + `, which would write past the staging database; one that changes the
+any name qualified with a database, anywhere in a statement, such as INSERT
+INTO ` + "`other`.`t`" + ` or a multi-table UPDATE, which could write past the staging
+database or run code there (CREATE TABLE, where mariadb-dump writes such names
+for a foreign key to another database, is the exception unless it has a
+SELECT); one that changes the
 server, replication or accounts, such as SET GLOBAL, CHANGE MASTER or GRANT, or
 builds SQL at run time, such as PREPARE or EXECUTE, or writes a file on the
 server; and a client command other than the \- a mariadb-dump starts with.

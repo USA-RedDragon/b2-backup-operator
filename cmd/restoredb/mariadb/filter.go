@@ -42,6 +42,11 @@ type dumpFilter struct {
 	held      []byte
 	out       []byte
 	sawObject bool
+	names     qualifiedNames
+	// createTable is set once the statement is known to be a CREATE TABLE or
+	// CREATE SEQUENCE.
+	createTable bool
+	decided     bool
 }
 
 func (f *dumpFilter) keepTail(p []byte) {
@@ -103,6 +108,8 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 	if kind == byteText && !f.active {
 		f.active, f.mode = true, modeHold
 		f.head, f.held = f.head[:0], f.held[:0]
+		f.names.reset()
+		f.createTable, f.decided = false, false
 	}
 	if !f.active {
 		f.out = append(f.out, p...)
@@ -111,9 +118,16 @@ func (f *dumpFilter) span(p []byte, kind byteKind) error {
 	switch kind {
 	case byteText:
 		f.head = append(f.head, p[:min(len(p), max(0, headSize-len(f.head)))]...)
+		f.names.text(p, f.lex.inString)
 	case byteGap:
 		if len(f.head) < headSize {
 			f.head = append(f.head, ' ')
+		}
+		f.names.byte(' ', 0)
+	}
+	if f.decided && f.mode == modePass {
+		if err := f.checkNames(); err != nil {
+			return err
 		}
 	}
 	switch f.mode {
@@ -140,6 +154,10 @@ func (f *dumpFilter) decide(complete bool) error {
 	held := f.held
 	f.held = f.held[:0]
 	kind, arg := classify(string(f.head), complete)
+	f.createTable, f.decided = createsTable(string(f.head)), true
+	if err := f.checkNames(); err != nil && kind != stmtRefused && kind != stmtServer {
+		return err
+	}
 	switch kind {
 	case stmtRefused:
 		return fmt.Errorf("%w: the dump has %s", ErrUnsupportedObjects, arg)
@@ -163,6 +181,23 @@ func (f *dumpFilter) decide(complete bool) error {
 	}
 	f.out = append(f.out, held...)
 	f.mode = modePass
+	return nil
+}
+
+// checkNames refuses a statement that names something in another database:
+// it could write past the staging database or run code there. CREATE TABLE
+// is the exception, since mariadb-dump writes names qualified with a database
+// in a foreign key to another database and in a sequence default, and creating
+// a table runs nothing, unless it fills the table with a SELECT.
+func (f *dumpFilter) checkNames() error {
+	switch {
+	case f.createTable && f.names.sawSelect:
+		return fmt.Errorf("%w: a CREATE TABLE that fills the table with a SELECT: %.200s",
+			ErrUnsupportedStatement, f.head)
+	case !f.createTable && f.names.qualifier != "":
+		return fmt.Errorf("%w: it names something in %s: %.200s", ErrOtherDatabase,
+			QuoteIdent(f.names.qualifier), f.head)
+	}
 	return nil
 }
 
