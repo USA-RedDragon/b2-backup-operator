@@ -96,6 +96,44 @@ func ResticRepositoryRemains(ctx context.Context, api API, bucketID, path string
 	return false, nil
 }
 
+// FirstOutsideLayout returns the name of a file version under path, hidden ones
+// and unfinished large files included, that is not part of ResticLayout, or ""
+// when there is none. It lists one version at a time and skips past each layout
+// entry it meets, so it makes at most len(ResticLayout)+1 calls. B2 file names
+// hold no character below a space, so name+" " is the first name after name.
+func FirstOutsideLayout(ctx context.Context, api API, bucketID, path string) (string, error) {
+	base := ""
+	if path != "" {
+		base = path + "/"
+	}
+	start := base
+	for range len(ResticLayout) + 1 {
+		page, err := api.ListFileVersions(ctx, ListFilesRequest{
+			BucketID: bucketID, Prefix: base, StartFileName: start, MaxFileCount: 1,
+		})
+		if err != nil {
+			return "", err
+		}
+		if len(page.Files) == 0 {
+			return "", nil
+		}
+		name := page.Files[0].FileName
+		next := ""
+		for _, entry := range ResticLayout {
+			if dir, ok := strings.CutSuffix(entry, "/"); ok && strings.HasPrefix(name, base+entry) {
+				next = base + dir + "0"
+			} else if !ok && name == base+entry {
+				next = name + " "
+			}
+		}
+		if next == "" {
+			return name, nil
+		}
+		start = next
+	}
+	return "", fmt.Errorf("%w: listing past restic's layout under %q", ErrNoProgress, base)
+}
+
 func matcher(prefix string, exact bool) func(string) bool {
 	if exact {
 		return func(name string) bool { return name == prefix }

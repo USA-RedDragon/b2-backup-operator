@@ -78,6 +78,7 @@ const (
 
 	reasonRetainedPassword = "SecretHoldsRetainedPassword"
 	reasonAccountMismatch  = "AccountMismatch"
+	reasonOtherFiles       = "OtherFilesInBucket"
 
 	// SecretFinalizer keeps a credentials Secret holding the only copy of a
 	// restic password from being deleted with its namespace: under
@@ -492,6 +493,7 @@ func (r *RepositoryReconciler) reconcileLifecycle(
 	}
 
 	days, explicit := int(repo.DaysFromHidingToDeleting()), repo.ExplicitDaysFromHidingToDeleting()
+	checkedLayout := false
 	for attempt := 0; ; attempt++ {
 		if attempt == maxLifecycleUpdates {
 			return fmt.Errorf("bucket %s still does not hold the lifecycle rule for %q after %d updates",
@@ -501,6 +503,17 @@ func (r *RepositoryReconciler) reconcileLifecycle(
 		if outcome == b2.RuleCovered || outcome == b2.RuleUnchanged {
 			r.setLifecycleCondition(repo, bucket, prefix, outcome, decider)
 			return nil
+		}
+		if prefix == "" && !checkedLayout {
+			other, err := b2.FirstOutsideLayout(ctx, api, bucket.BucketID, "")
+			if err != nil {
+				return fmt.Errorf("checking bucket %s for files outside restic's layout: %w", bucket.BucketName, err)
+			}
+			if other != "" {
+				r.refuseBucketWideRule(repo, bucket, other)
+				return nil
+			}
+			checkedLayout = true
 		}
 
 		updated, err := api.UpdateLifecycleRules(ctx, bucket, rules)
@@ -525,6 +538,21 @@ func (r *RepositoryReconciler) reconcileLifecycle(
 		r.setLifecycleCondition(repo, bucket, prefix, outcome, decider)
 		return nil
 	}
+}
+
+// refuseBucketWideRule reports why no rule for the whole bucket was written: a
+// rule with an empty prefix would delete the hidden versions of every file in
+// the bucket, not only restic's.
+func (r *RepositoryReconciler) refuseBucketWideRule(repo *b2backupv1.Repository, bucket *b2.Bucket, other string) {
+	msg := fmt.Sprintf("bucket %s holds %q, which is not part of restic's repository layout, so no lifecycle "+
+		"rule for the whole bucket was added: it would delete the hidden versions of such files too. Add a "+
+		"rule yourself, move the other files out, or set spec.lifecycle.manage to false",
+		bucket.BucketName, other)
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, reasonOtherFiles, "Lifecycle", "%s", msg)
+	r.setCondition(repo, metav1.Condition{
+		Type: b2backupv1.RepositoryConditionLifecycleRule, Status: metav1.ConditionFalse,
+		Reason: reasonOtherFiles, Message: msg,
+	})
 }
 
 func (r *RepositoryReconciler) setLifecycleCondition(
