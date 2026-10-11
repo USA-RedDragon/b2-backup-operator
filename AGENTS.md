@@ -41,25 +41,49 @@ one of these:
 - **The restic password is generated once and never rotated.** It is the
   encryption key for every snapshot. The controller refuses to invent one for a
   repository that has been recorded, initialized, or reports any usage.
-- **Adoption never generates a password.** A path holding a restic `config`, or
-  any file version at all, gets its password from `passwordSecretRef` or not at
-  all. Prefix mode never creates a bucket, and a recorded bucket that vanished or
-  changed ID is never recreated.
+- **Adoption never generates a password.** A path holding a restic `config` gets
+  its password from `passwordSecretRef` or not at all. Prefix mode never creates
+  a bucket, and a recorded bucket that vanished or changed ID is never recreated.
+- **A path with files but no `config` is foreign.** Before the Repository has
+  provisioned anything, such a path (or a Bucket mode bucket with files but no
+  root `config`) stops it at `Ready=False` reason `ForeignData`: no key, Secret,
+  lifecycle rule, init Job or recorded location. It may be the parent of other
+  repositories in a shared bucket.
 - **restic only talks to B2 over S3.** restic 0.19.1's native `b2:` backend
   (blazer v0.7.2) retries a refused upload URL forever and hangs backups while
   they hold locks. The native API in `internal/b2` is for management calls only.
-- **Nothing outside a Repository's own path is touched.** Deletion lists by the
-  path with a trailing `/`, the lifecycle rule is merged into the bucket's other
-  rules rather than replacing them, and stale-key cleanup matches a key name that
-  embeds the Repository's UID.
+- **Nothing outside a Repository's own restic repository is touched.**
+  `b2.DeleteResticRepository` deletes only `<path>/config` and `keys/`,
+  `data/`, `index/`, `snapshots/` and `locks/` under it; a Bucket mode bucket
+  is deleted only when it is then empty. Key deletion matches a key name that
+  embeds the Repository's UID, never an ID from status.
+- **Status is not trusted to scope deletion.** `deletionScope` requires
+  `status.bucketName == spec.bucket`, `status.path == EffectivePath()` and a
+  non-empty Prefix path, and `deleteRemote` re-reads the bucket and checks its
+  ID. Otherwise nothing is deleted and the finalizer stays; `force-finalize`
+  only ever deletes less. Status is written by the operator alone: `b2bk reinit`
+  goes through the `reinit-at` annotation and the `b2bk-operator` role has no
+  status write access.
+- **The lifecycle rule never shortens anyone's window.** A rule on the path or a
+  parent that sets `daysFromHidingToDeleting` covers the repository whatever its
+  value (`CoveredByExistingRule`); only an explicit
+  `spec.lifecycle.daysFromHidingToDeleting` adds a rule under one. B2 takes the
+  minimum of overlapping rules. `b2.LifecycleRule` keeps unknown fields in
+  `Extra` and writes them back, so a read-modify-write never drops another
+  tool's settings.
 - **`deletionPolicy` defaults to Retain**, and the credentials Secret only gets
-  an ownerReference under `Delete`.
+  an ownerReference under `Delete`. Every finalize path that leaves data behind
+  takes the ownerReference off first. Under Retain, a Secret holding the only
+  copy of the password (generated, or a seed that no longer matches) carries the
+  `protect-password` finalizer, so a namespace deletion cannot take it.
 - **The operator only writes to Secrets it created**, identified by the
   `app.kubernetes.io/managed-by` label.
 - **The B2 credentials are resolved lazily**, so a Retain deletion works without them.
 - **The per-repository key's secret is shown once.** It is written into the
-  Secret straight away and its ID recorded in status in the same pass; a key
-  that could not be saved is deleted again.
+  Secret straight away and its ID and `keyRotationTime` recorded in status in
+  the same pass; a key that could not be saved is deleted again. Superseded keys
+  are deleted only once no Job that reads the Secret and started before the
+  rotation is running, or after 24 hours.
 - **Status is written with a merge patch**, never a full update: the informer
   cache lags behind the controller's own writes.
 - **The init Job is deleted a pass after success is recorded**, not in the same
@@ -71,11 +95,20 @@ one of these:
   plus the five keys of the Repository's Secret;
   `RESTIC_GROUP_BY` and `RESTIC_REST_*` stay usable because the image's restic
   wrapper -- not the operator -- reads them.
+- **Files sources are rendered with absolute paths.** restic stores the tree
+  under the path as given: `restic backup /data` stores `/data/...`, while
+  `cd /data; restic backup .` stores the contents at the root. `b2bk restore`
+  restores `<snapshot>:<path>` for each recorded path, which only works for the
+  absolute form, so never render a relative path.
+- **`forget` is scoped by tag and host.** The image groups by tags, and restic
+  ORs repeated `--tag` flags, so a ScheduledBackup's retention only reaches its
+  own snapshots. `b2bk prune` builds the same flags in `pruneArgs`.
 - **The backup image's `restic` is a wrapper** ahead of the real binary on PATH.
   It supplies `--group-by` from `RESTIC_GROUP_BY` and the `--stdin-filename` a
   database dump lands under from `RESTIC_HOST`, neither of which is in the
-  rendered script. `b2bk restore --to-database` reads that filename back, so the
-  two have to agree. See the image contract in the README before changing
+  rendered script. `b2bk restore --to-database` reads the filename back from
+  the snapshot's recorded path, and `restoredb` tells the dump's format by its
+  first bytes. See the image contract in the README before changing
   `spec.image` handling or `internal/backup/script.go`.
 
 ## Generated files
@@ -125,17 +158,22 @@ class, `[.]`, instead.
 `resources/restic` directories in home-cluster-flux) and emits a Prefix mode
 Repository that adopts the existing repository plus a ScheduledBackup,
 converting a hand-jittered cron expression into the equivalent shorthand so the
-operator can jitter it instead. The repository URL is only in the SOPS-encrypted
-`restic-envs`, so it comes from `--repository` or `--from-secret`.
+operator can jitter it instead. Every claim becomes an entry in
+`spec.volumes`, an `emptyDir` becomes `spec.scratch`, and the container's
+`workingDir` is kept. The Repository never gets a `lifecycle` block. The
+repository URL is only in the SOPS-encrypted `restic-envs`, so it comes from
+`--repository` or `--from-secret`.
 
-`b2bk parity` then compares the generated script, schedule, time zone, mounted
-claim and database Secret against the original. Migrating must not silently
+`b2bk parity` then compares the generated script, schedule, time zone, mounts,
+working directory, snapshot host, extra environment, database Secret and, given
+the URL, the Repository's location against the original. Migrating must not silently
 change what gets backed up or how often, so any change to
 `internal/backup/script.go` or `schedule.go` has to keep parity meaningful. It
-normalizes away only the quoting around `--exclude` patterns and the
+normalizes away only the quoting around `--exclude` patterns, the
 `--retry-lock` and `--secret-mount` flags -- the pattern is `ignoredFlags` in
-`internal/cli/develop.go` -- and reports a `backup-cnpg.sh` to `dumpdb cnpg`
-switch as its own difference, since the dump format and file name change. It
+`internal/cli/develop.go` -- and the forget scoping `normalizeRendered` notes as
+`FORGET SCOPED`, and reports a `backup-cnpg.sh` to `dumpdb cnpg` switch as its
+own difference, since the dump format and file name change. It
 compares the schedule by **cadence**,
 expanding both expressions over 364 days and comparing how often they fire.
 364 days is exactly 52 weeks, so every weekday fires the same number of times;

@@ -6,11 +6,11 @@ A Kubernetes operator that backs up apps with [restic](https://restic.net) into 
 
 ## What it does
 
-- **Provisions or adopts** a restic repository in B2, either in a bucket of its own or under a path in a shared bucket, and records the bucket and path in status, so the app-to-repository mapping is visible without decrypting anything.
+- **Provisions or adopts** a restic repository in B2, either in a bucket of its own or under a path in a shared bucket, and records the bucket and path in status, so the app-to-repository mapping is visible without decrypting anything. It refuses a path that holds files but no restic repository, and never touches anything outside restic's own files.
 - **Gives every repository its own B2 application key**, restricted to its bucket and path, and replaces the key if it is lost or revoked.
 - **Generates the restic password exactly once**, writes it with the key and a synthesized `RESTIC_REPOSITORY` into a Secret, and never rotates it.
 - **Initializes the repository** with a one-shot Job that probes before initializing, so a genuine failure is not mistaken for success.
-- **Renders a CronJob** from a declarative backup spec: sources, retention, database credential wiring, pod affinity and cache volume are all derived.
+- **Renders a CronJob** from a declarative backup spec: sources, retention, database credential wiring, the claims and scratch space to mount, pod affinity and cache volume are all derived.
 - **Ships `b2bk`**, a CLI and kubectl plugin that runs backups on demand, explains why one is not running, and browses and restores snapshots. See [docs/b2bk.md](docs/b2bk.md).
 
 ## Installing
@@ -127,34 +127,53 @@ The operator writes a Secret named `<name>-credentials`, or `spec.secretName`, w
 
 It only ever writes to Secrets it created, which it marks with `app.kubernetes.io/managed-by: b2-backup-operator`.
 
+Under `deletionPolicy: Retain`, when the password exists nowhere else, the Secret carries the finalizer `b2backup.mcswain.dev/protect-password`. That is the case when the operator generated the password, and when `passwordSecretRef` names a Secret that now holds a different password, as it does after `b2bk rotate-password`. Deleting the namespace then deletes the Repository but leaves the Secret `Terminating`, with a `PasswordNotArchived` warning on the Repository, and the namespace waits on it. Archive the password, then remove the finalizer:
+
+```sh
+kubectl -n myapp-prod get secret restic-credentials -o jsonpath='{.data.RESTIC_PASSWORD}' | base64 -d
+kubectl -n myapp-prod patch secret restic-credentials --type=json \
+  -p '[{"op":"remove","path":"/metadata/finalizers"}]'
+```
+
+A seeded password is taken to be kept off-cluster, which is what seeding is for, so the finalizer is not added, and it is dropped once the seed holds the password again. A namespace deletion removes the seed Secret too; the copy that counts is the one in Git or SOPS. Under `Delete` the Secret is owned by the Repository and has no finalizer.
+
 restic always talks to B2 through the S3-compatible API and never through its native `b2:` backend. restic 0.19.1 pins kurin/blazer v0.7.2, whose upload path retries a B2 upload URL that refuses connections forever, which has hung backups for hours while they held their locks. The region has to be set: without it the S3 client asks B2 for the bucket location first, and on a denied answer it signs for `us-east-1`.
 
 #### The application key
 
 Each Repository gets its own application key, named `b2bk-<namespace>-<name>-<first 12 hex digits of the UID>`, restricted to its bucket, and to its path with a trailing `/` when it has one. Its capabilities are `listBuckets`, `listFiles`, `readFiles` and `writeFiles`. It has no `deleteFiles`: restic's S3 backend never names a version when it deletes, so on B2 every restic delete only hides the file, which needs `writeFiles` alone. A key without `deleteFiles` cannot destroy a file version, so whatever a leaked key hides stays recoverable with the account key until the lifecycle rule below deletes it.
 
-The key's secret half is shown only once, when the key is created, and the operator writes it into the Secret at once and records the key ID in `status.applicationKeyID`. If the Secret is lost, or the key no longer exists in B2, or its restrictions no longer match, the operator creates a new key and writes it. On a later pass, one interval on, it deletes every other key carrying this Repository's name, so a backup that started with the old key can finish. The name ends in the Repository's UID, so this never touches a key that another Repository, or another cluster sharing the account, relies on. The same rule means a Repository that is deleted under `Retain` and created again gets a new key and leaves the old one in B2; delete it by hand once nothing uses the old Secret.
+The key's secret half is shown only once, when the key is created, and the operator writes it into the Secret at once and records the key ID in `status.applicationKeyID` and the time in `status.keyRotationTime`. If the Secret is lost, or the key no longer exists in B2, or its restrictions no longer match, the operator creates a new key and writes it. It then deletes every other key carrying this Repository's name, but only once no Job in the namespace that reads the credentials Secret and started before the rotation is still running: scheduled and triggered backups, `b2bk` restores and shells, and the init Job alike. A pod reads the Secret when it starts, so such a Job may still hold the old key. After 24 hours the old keys are deleted regardless, with a `StaleKeyDeadline` warning naming the Jobs still running. The name ends in the Repository's UID, so this never touches a key that another Repository, or another cluster sharing the account, relies on. The same rule means a Repository that is deleted under `Retain` and created again gets a new key and leaves the old one in B2; delete it by hand once nothing uses the old Secret.
 
 #### The restic password
 
 `passwordSecretRef` seeds the restic password from a Secret you keep, such as a SOPS-encrypted one in Git. The operator reads it and never writes to it, so it stays the off-cluster copy of the key that decrypts the backups.
 
-Without it, the operator generates a password once, and only for a path that holds nothing. Before the repository is initialized it checks for `<path>/config` and for any file version under the path, hidden ones included. If a config exists the repository is adopted (`status.adopted`); if anything at all exists, or this Repository has written credentials before, no password is ever generated and the Repository goes `Ready=False` with reason `PasswordUnavailable` until `passwordSecretRef` is set. Set it whenever the path may already hold snapshots.
+Without it, the operator generates a password once, and only for a path that holds nothing. Before the repository is initialized it checks for `<path>/config` and for any file version under the path, hidden ones included. If a config exists the repository is adopted (`status.adopted`), and its password must come from `passwordSecretRef`: no password is ever generated for it, or for a path this Repository has written credentials for before, and the Repository goes `Ready=False` with reason `PasswordUnavailable` until `passwordSecretRef` is set. Set it whenever the path may already hold snapshots.
+
+A path that holds any file version but no `config` is not a restic repository the operator can adopt. Perhaps it is the parent of other repositories, or another tool's files. The Repository goes `Ready=False` with reason `ForeignData` and the operator does nothing else there: no key, no Secret, no lifecycle rule, no init Job, and no location recorded in status. The same goes for a Bucket mode Repository whose bucket already holds files but no `config` at its root. Point `spec.path` somewhere else, or empty the path.
 
 #### Old file versions
 
-Because restic's deletes only hide files, a bucket keeps every pack restic has ever pruned until something deletes the hidden versions. By default the operator keeps a bucket lifecycle rule that deletes hidden files under the repository's path one day after they are hidden: scoped to `<path>/` in Prefix mode, and to the whole bucket in Bucket mode without a path.
+Because restic's deletes only hide files, a bucket keeps every pack restic has ever pruned until something deletes the hidden versions. The operator relies on a bucket lifecycle rule for that, and is careful never to shorten a window someone else set.
 
-The rule is merged into the bucket's existing rules. Rules for every other prefix are left exactly as they are, and a rule on a parent prefix that already deletes hidden files at least as soon covers the repository, so no rule is added. The result is in the `LifecycleRule` condition. A rule that hides live files under the path after some days (`daysFromUploadingToHiding`) would eventually hide data that snapshots still need, so it turns the condition `False` with reason `HidesLiveFiles` and `Ready` `False` with reason `LifecycleHidesData`.
+B2 applies every lifecycle rule whose `fileNamePrefix` matches a file, taking the smallest non-null value of each setting. So a rule for a parent prefix already governs a repository below it, and a more specific rule can only shorten the window, never lengthen it. With that in mind:
+
+- **A rule on the repository's path or any parent of it that sets `daysFromHidingToDeleting` covers the repository**, whatever its value. The operator adds no rule, and the `LifecycleRule` condition is `True` with reason `CoveredByExistingRule`, naming the rule and its days. A shared bucket with a rule for `k8s/` of 30 days keeps every repository under `k8s/` at 30 days.
+- **Only a path no rule covers gets a rule**, for exactly `<path>/` in Prefix mode or the whole bucket in Bucket mode without a path, deleting hidden files after 30 days. The condition reason is then `Managed`.
+- **`spec.lifecycle.daysFromHidingToDeleting` opts in to a rule of the repository's own**, for exactly its path, even under a parent rule. Because B2 takes the minimum, a value shorter than the parent's shortens the window for this repository; a longer one has no effect, and the condition says so.
+- A rule for exactly the path that sets nothing but `daysFromHidingToDeleting`, such as one an older release of the operator added, is removed when a parent rule covers the path and no value is set explicitly. Removing it can only lengthen the window. A rule carrying any other setting is someone else's and is left alone.
+
+Every other rule in the bucket, and every field of it, is written back exactly as read, including fields this operator does not know about. A rule that hides live files under the path after some days (`daysFromUploadingToHiding`) would eventually hide data that snapshots still need, so it turns the condition `False` with reason `HidesLiveFiles` and `Ready` `False` with reason `LifecycleHidesData`.
 
 ```yaml
 spec:
   lifecycle:
-    daysFromHidingToDeleting: 7   # keep hidden versions a week; default 1
+    daysFromHidingToDeleting: 7   # a rule of this repository's own; unset, a covering rule or 30 days
     manage: false                 # or leave the bucket's rules alone entirely
 ```
 
-A longer `daysFromHidingToDeleting` is the B2 form of append-only: B2 has no restic-server-style append-only mode, and a key without `deleteFiles` does not make one, because restic's lock removal, `forget` and `prune` all succeed by hiding. What the setting buys is a window in which anything a compromised client hid can be restored. For a hard guarantee use B2 Object Lock, which this operator does not manage.
+A longer window is the B2 form of append-only: B2 has no restic-server-style append-only mode, and a key without `deleteFiles` does not make one, because restic's lock removal, `forget` and `prune` all succeed by hiding. What the window buys is time in which anything a compromised client hid can be restored. For a hard guarantee use B2 Object Lock, which this operator does not manage.
 
 #### Usage
 
@@ -162,9 +181,15 @@ A longer `daysFromHidingToDeleting` is the B2 form of append-only: B2 has no res
 
 #### Deletion
 
-`deletionPolicy` defaults to `Retain`: deleting the resource leaves the data, the application key and the credentials Secret in place.
+`deletionPolicy` defaults to `Retain`: deleting the resource leaves the data, the application key and the credentials Secret in place, and takes the Repository's ownership off the Secret first, so garbage collection cannot take the only password.
 
-Under `Delete`, deleting the Repository deletes its application key, then every file version and unfinished large file under its path, in batches, and in Prefix mode its lifecycle rule. In Bucket mode it then deletes the bucket, unless the bucket holds files outside the repository's path, in which case it leaves the bucket and emits `BucketRetained`. Nothing outside the path is ever touched, and if another Repository has recorded an overlapping path in the same bucket, only the application key is deleted and the data is left with a `DataRetained` warning. The finalizer is released only once that is done. Annotate the Repository with `b2backup.mcswain.dev/force-finalize=true` to release it anyway; the operator emits a `RepositoryOrphaned` warning naming what it left behind, and takes its ownership off the credentials Secret first, so garbage collection does not delete the only password for the data left behind.
+Under `Delete`, deleting the Repository deletes its application key, then the restic repository at its path, in batches, and in Prefix mode the lifecycle rule it added. Only restic's own layout is deleted: `<path>/config` and everything under `<path>/keys/`, `data/`, `index/`, `snapshots/` and `locks/`, hidden versions and unfinished large files included. Any other file under the path is left, with an `OtherFilesRetained` warning. In Bucket mode the bucket is deleted only if it is then completely empty; otherwise it is left with `BucketRetained`.
+
+Status is not trusted to say what to delete. Before deleting anything the operator checks that `status.bucketName` is `spec.bucket`, that `status.path` is the path the spec resolves to and is not empty in Prefix mode, and that the bucket's ID in B2 is still `status.bucketID`. If any of that does not hold, it deletes nothing, keeps the finalizer, and reports `Ready=False` with reason `DeletionScopeMismatch`. If another Repository has recorded an overlapping path in the same bucket, only the application key is deleted and the data is left with a `DataRetained` warning.
+
+The finalizer is released only once all of that is done. Annotate the Repository with `b2backup.mcswain.dev/force-finalize=true` to release it anyway: the operator emits a `RepositoryOrphaned` warning naming what it left behind and deletes nothing more. It never widens what it deletes to get the finalizer off.
+
+`spec.deletionPolicy` can be changed at any time by anyone who can patch the Repository, including the `b2bk-operator` role, which patches Repositories for `b2bk suspend` and `b2bk reinit`. RBAC cannot restrict which fields a patch changes, and a validation rule that froze the policy would also stop an administrator. Bind `b2bk-operator` only to people trusted with the data, which it already gives them through the credentials Secret.
 
 #### Conflicts
 
@@ -185,13 +210,20 @@ spec:
   schedule: "@hourly"          # jittered; a cron expression is used verbatim
   sources:
     - {type: cnpg, tag: db}
-    - {type: files, tag: files, path: app, exclude: ["**/temp*"]}
+    - {type: files, tag: files, paths: [app], exclude: ["**/temp*"]}
   retention: {hourly: 168, daily: 90, monthly: 24, yearly: 10}
   database: {engine: cnpg, secretName: postgresql-app}
-  volume: {existingClaim: myapp-prod-storage}
+  volumes:
+    - {existingClaim: myapp-prod-storage, mountPath: /data}
 ```
 
-`spec.script` replaces the generated body wholesale for anything the source types do not cover; it still gets the standard preamble, logging and cache cleanup.
+`spec.volumes` lists the existing claims to mount, each at its own `mountPath` (default `/<existingClaim>`), optionally read-only. `spec.scratch` adds one empty directory, `{mountPath, sizeLimit}`, for a script to stage files in. The container's working directory is `spec.workingDir`, or the first volume's mount path, or the scratch space, or `/`.
+
+A files source backs up `paths` in one snapshot, each absolute or relative to the working directory, and each on one of the volumes or the scratch space. The operator always renders them absolute, as `restic backup --tag=files /data/app`, so restic records `/data/app` and stores the files under it. `b2bk restore` relies on that to put them back where they were. Several paths in one source make one snapshot of all of them, as `restic backup /data /blobs` does.
+
+After the sources, the operator runs `restic forget --prune` with `spec.retention`, scoped with `--host="$RESTIC_HOST"` and one `--tag` per source tag. restic ORs repeated `--tag` flags, and the image groups by tags, so this backup's retention applies to its own snapshots only, and two ScheduledBackups writing into one repository with different retention do not expire each other's snapshots.
+
+`spec.script` replaces the generated body wholesale for anything the source types do not cover; it still gets the standard preamble, logging and cache cleanup. It forgets nothing on its own unless it says so, and should scope its own `forget` with `--tag`.
 
 ### Pod security
 
@@ -233,7 +265,7 @@ Every snapshot records a host, and it defaults to the namespace, injected from t
 
 It is more than restic's `--host`. The image's wrapper also derives the dump's `--stdin-filename` from it, so `resticHost` names the database dump *inside* a snapshot as well. That is why it is a field rather than a `RESTIC_HOST` entry in `spec.env`, and why it is validated as a host name.
 
-Set it when a namespace is renamed and the snapshots should stay in one series rather than splitting into two hosts at the rename. `b2bk` reads the same field: `b2bk snapshots` defaults its `--host` filter to it, and `b2bk restore --to-database` looks for the dump under that name, so a pinned `resticHost` needs no extra flags.
+Set it when a namespace is renamed and the snapshots should stay in one series rather than splitting into two hosts at the rename. `b2bk` reads the same field: `b2bk snapshots` defaults its `--host` filter to it, and `b2bk restore` picks the latest snapshot taken under it, so a pinned `resticHost` needs no extra flags.
 
 ### Where the backup pod runs
 
@@ -242,15 +274,35 @@ The operator derives a pod affinity when the spec implies one. The rules, in ord
 | Spec | Affinity |
 | --- | --- |
 | `spec.affinity` set | Used verbatim. `{}` is a valid value and means "no affinity at all" |
-| `spec.volume` | **Required**: same node as pods labelled `app.kubernetes.io/name: <namespace>`, other than the operator's own backup pods |
-| `spec.database`, no volume | **Preferred** (weight 100): same node as the database pod |
+| `spec.volumes` | **Required**: same node as pods labelled `app.kubernetes.io/name: <namespace>`, other than the operator's own backup pods. One rule, however many claims |
+| `spec.database`, no volumes | **Preferred** (weight 100): same node as the database pod |
 | Neither | None |
 
-The **volume** case stays a hard requirement on purpose. An RWO claim can only be mounted on the node already holding it, so a preference there would let the backup pod be scheduled somewhere the claim cannot follow, and it would sit Pending. The selector is the sharp edge: it matches on the *namespace* as the app name, which is what bjw-s app-template sets when the HelmRelease is named after its namespace. It does not look at `app.kubernetes.io/controller`, so it matches every controller in that release, and in a namespace running more than one app it can pin the backup beside the wrong one. Set `spec.affinity` explicitly there.
+The **volumes** case stays a hard requirement on purpose. An RWO claim can only be mounted on the node already holding it, so a preference there would let the backup pod be scheduled somewhere the claim cannot follow, and it would sit Pending. The selector is the sharp edge: it matches on the *namespace* as the app name, which is what bjw-s app-template sets when the HelmRelease is named after its namespace. It does not look at `app.kubernetes.io/controller`, so it matches every controller in that release, and in a namespace running more than one app it can pin the backup beside the wrong one. Set `spec.affinity` explicitly there.
 
 The **database** case is a preference. Co-location makes a dump faster, but it is not required for correctness, and as a hard rule it left backups Pending whenever the database happened to be on a full or cordoned node. Set `spec.database.requireSameNode: true` to get the hard form back.
 
 Which database pod is matched depends on the engine. mariadb selects `app.kubernetes.io/name: mariadb` plus `app.kubernetes.io/controller: mariadb`; cnpg selects `cnpg.io/instanceRole: primary` in the cluster named by `spec.database.cnpgCluster`, which defaults to `postgresql`. A cluster under any other name has to say so, or the affinity matches nothing. That is harmless now that it is a preference, but the affinity silently stops doing anything.
+
+## Migrating hand-written restic CronJobs
+
+`b2bk migrate` turns an app-template HelmRelease with a `restic` CronJob controller into a Repository that adopts the existing repository in place, plus a ScheduledBackup. `b2bk parity` then checks the result against the HelmRelease. Neither changes anything; see [docs/b2bk.md](docs/b2bk.md) for every flag.
+
+```sh
+b2bk migrate apps/myapp/resources/restic --from-secret ../secrets/myapp-restic.yaml > generated.yaml
+b2bk parity generated.yaml apps/myapp/resources/restic --from-secret ../secrets/myapp-restic.yaml
+```
+
+What to expect:
+
+- **The Repository** is in Prefix mode at the bucket and path of the old `RESTIC_REPOSITORY`, reads its password from `restic-envs`, keeps `deletionPolicy: Retain`, and has no `lifecycle` block. A bucket rule over the path, such as one for `k8s/`, covers it, and the operator adds nothing.
+- **Every claim** the restic container mounts becomes an entry in `spec.volumes`, with the same path and read-only flag, and an `emptyDir` becomes `spec.scratch`. The working directory is carried over when it is not the default.
+- **Each `restic backup`** of absolute paths on those mounts becomes a source, several paths staying one snapshot. Anything else, such as a script that copies a SQLite database into an `emptyDir` first, is kept verbatim as `spec.script`.
+- **A hand-jittered daily schedule** becomes `@daily`, which the operator jitters itself. `parity` reports the move as `RESCHEDULED`, with the old and new time of day in the schedule's time zone, and the first run after cutover may come up to a day later.
+- **`backup-cnpg.sh` becomes `dumpdb cnpg`.** Old snapshots hold plain SQL stored as `/<namespace>`; new ones hold pg_dump's custom format stored as `/<namespace>.dmp`. `b2bk restore --to-database` restores either, and `parity` reports the switch as `DUMP FORMAT CHANGES`.
+- **`forget` becomes scoped** to the backup's own tags and host. `parity` notes it as `FORGET SCOPED`: snapshots under tags the backup no longer takes are not expired by it any more.
+
+`parity` exits 0 only when everything else matches: the script after normalization, cadence, time zone, claims and scratch space, working directory, snapshot host, extra environment, database Secret and, given `--repository` or `--from-secret`, the repository's bucket and path.
 
 ## Configuration
 
@@ -297,7 +349,7 @@ It must provide `restic`, `ts` and `dumpdb` on PATH. `b2bk restore --to-database
 The part that is easy to miss: **`restic` in this image is a wrapper** sitting ahead of the real binary, and it injects two things that appear nowhere in the script the operator renders.
 
 - `--group-by=$RESTIC_GROUP_BY`. Without it restic groups a `forget` by `host,paths`, and every database source has the same empty path, so two database sources in one repository collapse into a single retention group and expire each other's snapshots.
-- `--stdin-filename` derived from `$RESTIC_HOST`. That is what names the dump inside a snapshot (`<host>.dmp` for cnpg, `<host>.sql` for mariadb), and `b2bk restore --to-database` reads it back by that name. Change how it is derived and restores stop finding their dump.
+- `--stdin-filename` derived from `$RESTIC_HOST`. That is what names the dump inside a snapshot (`<host>.dmp` for cnpg, `<host>.sql` for mariadb). `b2bk restore --to-database` reads the name back from the snapshot itself, so a dump stored under another name, such as the plain SQL `backup-cnpg.sh` wrote as `<host>`, still restores.
 
 So a custom image without the wrapper does not error. It changes retention grouping and restore paths, and you find out at the point you need the snapshot. If you pin `spec.image`, pin a tag of the same image rather than a different one.
 
