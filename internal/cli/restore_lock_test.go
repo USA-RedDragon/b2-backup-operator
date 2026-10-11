@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -563,5 +564,96 @@ func TestARestoreOfASourceWithExcludesNeverClearsAPartialRestore(t *testing.T) {
 	if _, partial := held(t, c, testBackupName); len(partial) != 1 {
 		t.Errorf("partial = %v; a restore that skips %s let go of a partial restore that may have written there",
 			partial, cacheDir)
+	}
+}
+
+func TestARestoreThroughAShadowingLayoutNeverClearsAnotherBackupsPartialRestore(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fx := currentBackup(t, func(sb *b2backupv1.ScheduledBackup) {
+		filesAtData(sb)
+		sb.Spec.Volumes = append(sb.Spec.Volumes, b2backupv1.VolumeSpec{ExistingClaim: mediaClaim, MountPath: mediaMount})
+	})
+	fx.sb.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: appDataPartial}
+	plain := newBackup(otherBackup, testRepoName)
+	plain.Spec.Volumes = []b2backupv1.VolumeSpec{{ExistingClaim: testClaimName, MountPath: dataDir}}
+	plain.Annotations = map[string]string{b2backupv1.AnnotationRestorePartial: appDataPartial}
+	c := newClient(t, fx.objects(plain)...)
+	f, _ := hookedFactory(t, c, &fakePod{}, true)
+	if err := restoreInPlace(ctx, f, c, fx.sb, &restoreOptions{snapshot: latest, yes: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, partial := held(t, c, otherBackup); !slices.Contains(partial, "pvc/app-data:/") {
+		t.Errorf("partial = %v; a restore with media mounted over /data/media let go of app-data, whose "+
+			"/media it never wrote", partial)
+	}
+}
+
+type recordingPod struct {
+	fakePod
+	t       *testing.T
+	c       client.Client
+	seen    []string
+	writeOn string
+}
+
+func (p *recordingPod) exec(ctx context.Context, argv []string, stdout io.Writer) error {
+	if strings.Contains(strings.Join(argv, " "), p.writeOn) {
+		var sb b2backupv1.ScheduledBackup
+		if err := p.c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: testBackupName}, &sb); err != nil {
+			p.t.Fatal(err)
+		}
+		p.seen = partialTargets(&sb)
+	}
+	return p.fakePod.exec(ctx, argv, stdout)
+}
+
+func TestARestoreRecordsWhatItWritesBeforeItWrites(t *testing.T) {
+	t.Parallel()
+	for _, target := range overwritingTargets() {
+		for _, narrow := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s narrowed %t", target.name, narrow), func(t *testing.T) {
+				t.Parallel()
+				if narrow && target.name != targetInPlace {
+					t.Skip("a database restore cannot be narrowed")
+				}
+				fx := currentBackup(t, target.mutate)
+				c := newClient(t, fx.objects()...)
+				pod := &recordingPod{t: t, c: c, writeOn: target.failOn}
+				f, _ := hookedFactory(t, c, pod, true)
+				var err error
+				if narrow {
+					err = restoreInPlace(context.Background(), f, c, fx.sb,
+						&restoreOptions{snapshot: latest, yes: true, path: appDir})
+				} else {
+					err = target.run(context.Background(), f, c, fx.sb)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(pod.seen) == 0 {
+					t.Error("the restore wrote before it recorded its target, so dying mid-write would leave nothing held")
+				}
+				if _, partial := held(t, c, testBackupName); len(partial) > 0 {
+					t.Errorf("partial = %v after a restore that succeeded", partial)
+				}
+			})
+		}
+	}
+}
+
+func TestRestoresFromARepositoryThatIsNotItsOwnAreRefused(t *testing.T) {
+	t.Parallel()
+	fx := currentBackup(t, filesAtData)
+	fx.repo.Status.Conditions = []metav1.Condition{{
+		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse, Reason: reasonRepositoryConflict,
+	}}
+	c := newClient(t, fx.objects()...)
+	f := factoryWithClient(t, c)
+	if err := restoreToDir(context.Background(), f, fx.sb, &restoreOptions{snapshot: latest, toDir: t.TempDir()}); !errors.Is(err, ErrRepositoryNotUsable) {
+		t.Errorf("--to: err = %v", err)
+	}
+	if err := restoreToNewPVC(context.Background(), f, c, fx.sb, &restoreOptions{snapshot: latest, toNewPVC: "copy", size: "1Gi"}); !errors.Is(err, ErrRepositoryNotUsable) {
+		t.Errorf("--to-new-pvc: err = %v", err)
 	}
 }

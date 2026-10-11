@@ -39,7 +39,9 @@ How a `DESTROYS` command is gated:
   the namespace, rather than trust a `Ready` written before a sibling changed.
   Otherwise they refuse and say to wait for the operator. `--to DIR` and
   `--to-new-pvc` write nothing live and are not held back, so a restore stays
-  possible while the operator is down.
+  possible while the operator is down; they too refuse a Repository whose
+  Secret or location may not be its own, which would restore another
+  repository's snapshots.
 - **A flag that names the risk.** `rotate-password` never prompts. It refuses
   unless `--i-have-somewhere-to-archive-the-new-password` is passed, because the
   danger is losing the new password afterwards, not running the command.
@@ -239,8 +241,10 @@ ScheduledBackup still has the spec the restore was planned from and the
 operator has rendered it, that every held CronJob is suspended, and that no
 backup started in the meantime, and stops without writing if not.
 
-A restore that fails after it started writing records what it was writing in
-`b2backup.mcswain.dev/restore-partial` on every held ScheduledBackup, as
+Just before its first write a restore records what it is about to write in
+`b2backup.mcswain.dev/restore-partial` on every held ScheduledBackup, and takes
+the entries out again only once it has written them all, so a restore that
+fails, or dies mid-write, leaves them there, as
 `pvc/<claim>:<path>` entries for each claim under the source's paths, nested
 mounts included, or a `db/<engine>/<secret>/<host>/<database>` entry. While any
 entry is recorded the hold stays: the next backup would save the partial
@@ -250,15 +254,19 @@ only when it restored the whole source: a snapshot holding exactly the source's
 paths, with no `--path`, `--include` or `--exclude`, of a source with no
 excludes of its own, since a failed restore may have written where an exclude
 keeps the next one from going. It never removes the entry
-of a claim mounted under them, which the source may exclude; restore that claim's
-own source, or check it and run `b2bk resume`. One narrowed by any of these, one of another target,
+of a claim mounted under them, which the source may exclude, nor that of a claim
+with another claim or the scratch space mounted under the restored path, whose
+part beneath it the restore never writes; restore that claim's own source, or
+check it and run `b2bk resume`. One narrowed by any of these, one of another target,
 and one that stops before writing remove nothing. `b2bk resume` removes the
 backup's entries, from it and from every other ScheduledBackup that carries
 them, once you have checked the data. If another ScheduledBackup comes to share
 the claims or database while the restore runs, the restore stops before
 writing. `b2bk status` and `b2bk doctor` show the hold. A restore
-killed before it lets go leaves the lock behind: once it is gone, remove it
-with `kubectl annotate scheduledbackup NAME b2backup.mcswain.dev/restore-lock-`.
+killed before it lets go leaves the lock behind: once it and its Job are gone
+(`kubectl get jobs -l b2backup.mcswain.dev/b2bk-purpose`), remove it with
+`kubectl annotate scheduledbackup NAME b2backup.mcswain.dev/restore-lock-`. What
+it was writing stays held until you check it and run `b2bk resume`.
 
 **Which snapshot.** Every target restores one source. A files target takes the
 backup's files source, or the one `--tag` names when there are several. The

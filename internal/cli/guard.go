@@ -123,3 +123,20 @@ func requireCurrentBackup(ctx context.Context, c client.Client, sb *b2backupv1.S
 	}
 	return requireCurrent(ctx, c, sb, repo)
 }
+
+// requireRepositoryOwnsItsSecret refuses a read from a Repository whose Secret
+// or location may be another's: it would restore that repository's snapshots.
+func requireRepositoryOwnsItsSecret(ctx context.Context, f *Factory, sb *b2backupv1.ScheduledBackup) error {
+	c, err := f.Client()
+	if err != nil {
+		return err
+	}
+	repo, err := RepositoryFor(ctx, c, sb)
+	if err != nil {
+		return err
+	}
+	if why := controller.RepositoryNotOwn(repo); why != "" {
+		return fmt.Errorf("%w: repository/%s %s", ErrRepositoryNotUsable, repo.Name, why)
+	}
+	return nil
+}

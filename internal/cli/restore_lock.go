@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -51,6 +52,10 @@ type restoreHold struct {
 	// full is true once the restore is known to write the whole of each target,
 	// so its success makes up for an earlier partial restore of it.
 	full bool
+
+	// added are the targets this restore recorded before its first write, on
+	// each held ScheduledBackup, that no earlier restore had recorded.
+	added map[types.NamespacedName][]string
 }
 
 func restoreLockID() string {
@@ -140,12 +145,28 @@ func claimTargets(sb *b2backupv1.ScheduledBackup, paths []string) []string {
 // on, leaving out claims mounted under them.
 func directClaimTargets(sb *b2backupv1.ScheduledBackup, paths []string) []string {
 	var targets []string
-	for _, v := range claimVolumes(sb, paths) {
-		if !v.nested {
-			targets = append(targets, "pvc/"+v.ExistingClaim+":"+v.rel)
+	for _, p := range paths {
+		if shadowed(sb, p) {
+			continue
+		}
+		for _, v := range claimVolumes(sb, []string{p}) {
+			if !v.nested {
+				targets = append(targets, "pvc/"+v.ExistingClaim+":"+v.rel)
+			}
 		}
 	}
 	return targets
+}
+
+// shadowed reports whether another claim or the scratch space is mounted under
+// p, so a restore of p never writes the part of p's own claim beneath it.
+func shadowed(sb *b2backupv1.ScheduledBackup, p string) bool {
+	for _, v := range sb.Spec.Volumes {
+		if m := v.EffectiveMountPath(); m != p && under(m, p) {
+			return true
+		}
+	}
+	return sb.Spec.Scratch != nil && under(path.Clean(sb.Spec.Scratch.MountPath), p)
 }
 
 // databaseHost is the host a database restore writes to when the spec names
@@ -249,9 +270,11 @@ func (h *restoreHold) take(ctx context.Context, key types.NamespacedName) error 
 		return err
 	}
 	if holder := latest.Annotations[b2backupv1.AnnotationRestoreLock]; holder != "" {
-		return fmt.Errorf("%w: scheduledbackup/%s is held by %s; if that restore is gone, release it with "+
-			"kubectl annotate -n %s scheduledbackup/%s %s-", ErrRestoreRunning, key.Name, holder,
-			key.Namespace, key.Name, b2backupv1.AnnotationRestoreLock)
+		return fmt.Errorf("%w: scheduledbackup/%s is held by %s; if that restore and its Job are gone "+
+			"(kubectl get jobs -n %s -l %s), release it with kubectl annotate -n %s scheduledbackup/%s %s-; "+
+			"what it was writing stays held until you check it and run b2bk resume %s",
+			ErrRestoreRunning, key.Name, holder, key.Namespace, runner.LabelPurpose, key.Namespace, key.Name,
+			b2backupv1.AnnotationRestoreLock, key.Name)
 	}
 	patch := client.MergeFromWithOptions(latest.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if latest.Annotations == nil {
@@ -298,11 +321,14 @@ func (h *restoreHold) release(outcome restoreOutcome) ([]string, error) {
 			patch := client.MergeFromWithOptions(latest.DeepCopy(), client.MergeFromWithOptimisticLock{})
 			delete(latest.Annotations, b2backupv1.AnnotationRestoreLock)
 			targets := partialTargets(&latest)
-			switch {
-			case outcome == outcomePartial:
+			switch outcome {
+			case outcomePartial:
 				targets = append(targets, h.targets...)
-			case outcome == outcomeComplete && h.full:
-				targets = slices.DeleteFunc(targets, func(t string) bool { return slices.Contains(h.clears, t) })
+			default:
+				added := h.added[key]
+				targets = slices.DeleteFunc(targets, func(t string) bool {
+					return slices.Contains(added, t) || (outcome == outcomeComplete && h.full && slices.Contains(h.clears, t))
+				})
 			}
 			setPartialTargets(&latest, targets)
 			if err := h.c.Patch(ctx, &latest, patch); err != nil {
@@ -392,6 +418,43 @@ func (h *restoreHold) readyToWrite(ctx context.Context, ownJob string) error {
 		}
 		if err := refuseActive(ctx, h.c, &sb, ownJob); err != nil {
 			return err
+		}
+	}
+	return h.recordTargets(ctx)
+}
+
+// recordTargets adds the restore's targets to AnnotationRestorePartial before
+// its first write, so a restore that dies mid-write, or whose lock is removed
+// by hand, still leaves its targets held.
+func (h *restoreHold) recordTargets(ctx context.Context) error {
+	h.added = map[types.NamespacedName][]string{}
+	for _, key := range h.keys {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var latest b2backupv1.ScheduledBackup
+			if err := h.c.Get(ctx, key, &latest); err != nil {
+				return err
+			}
+			if holder := latest.Annotations[b2backupv1.AnnotationRestoreLock]; holder != h.id {
+				return fmt.Errorf("%w: scheduledbackup/%s is now held by %q", ErrRestoreRunning, key.Name, holder)
+			}
+			existing := partialTargets(&latest)
+			var added []string
+			for _, t := range h.targets {
+				if !slices.Contains(existing, t) {
+					added = append(added, t)
+				}
+			}
+			patch := client.MergeFromWithOptions(latest.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			setPartialTargets(&latest, append(existing, added...))
+			if err := h.c.Patch(ctx, &latest, patch); err != nil {
+				return err
+			}
+			h.added[key] = added
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("recording what the restore writes on scheduledbackup/%s; nothing was written: %w",
+				key.Name, err)
 		}
 	}
 	return nil
