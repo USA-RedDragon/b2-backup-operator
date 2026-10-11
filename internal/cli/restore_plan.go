@@ -236,47 +236,92 @@ var globMeta = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`)
 func literalPattern(p string) string { return globMeta.Replace(p) }
 
 // sourceExcludes rewrites the source's backup excludes for a restore rooted at
-// snapPath. A pattern without a leading slash matches anywhere and is kept. An
-// absolute one is matched segment by segment against snapPath and the rest of it
-// kept relative to snapPath, or dropped when it cannot match under snapPath at
-// all. One that cannot be rebased that way, with ** before or at snapPath's
-// depth or matching snapPath itself, is returned in unrebased.
+// snapPath, keeping a leading ! that re-includes. restic matches a pattern
+// without a leading slash against the end of a path, so it is kept, and where
+// its first segments can match the last segments of snapPath, the rest is added
+// anchored at the restore root, since the restore no longer sees those
+// segments. An absolute pattern is matched segment by segment against snapPath
+// and the rest kept relative to it, or dropped when it cannot match under
+// snapPath. One that cannot be carried over, with ** where snapPath's segments
+// are, or matching snapPath itself, is returned in unrebased.
 func sourceExcludes(exclude []string, snapPath string) (rebased, unrebased []string) {
 	root := strings.Split(strings.Trim(snapPath, "/"), "/")
 	if snapPath == "/" {
 		root = nil
 	}
-	for _, p := range exclude {
-		if !strings.HasPrefix(p, "/") {
-			rebased = append(rebased, p)
+	for _, raw := range exclude {
+		pattern, negate := strings.CutPrefix(raw, "!")
+		bang := ""
+		if negate {
+			bang = "!"
+		}
+		var out []string
+		var ok bool
+		if strings.HasPrefix(pattern, "/") {
+			out, ok = rebaseAbsolute(pattern, root)
+		} else {
+			out, ok = rebaseRelative(pattern, root)
+		}
+		if !ok {
+			unrebased = append(unrebased, raw)
 			continue
 		}
-		segs := strings.Split(strings.Trim(p, "/"), "/")
-		outside, ok := false, true
-		for i, dir := range root {
-			if i >= len(segs) || strings.Contains(segs[i], "**") {
-				ok = false
-				break
-			}
-			matched, err := path.Match(segs[i], dir)
-			if err != nil {
-				ok = false
-				break
-			}
-			if !matched {
-				outside = true
-				break
-			}
-		}
-		switch {
-		case outside:
-		case !ok || len(segs) == len(root):
-			unrebased = append(unrebased, p)
-		default:
-			rebased = append(rebased, "/"+strings.Join(segs[len(root):], "/"))
+		for _, p := range out {
+			rebased = append(rebased, bang+p)
 		}
 	}
 	return rebased, unrebased
+}
+
+func rebaseAbsolute(pattern string, root []string) ([]string, bool) {
+	segs := strings.Split(strings.Trim(pattern, "/"), "/")
+	for i, dir := range root {
+		if i >= len(segs) || strings.Contains(segs[i], "**") {
+			return nil, false
+		}
+		matched, err := path.Match(segs[i], dir)
+		if err != nil {
+			return nil, false
+		}
+		if !matched {
+			return nil, true
+		}
+	}
+	if len(segs) == len(root) {
+		return nil, false
+	}
+	return []string{"/" + strings.Join(segs[len(root):], "/")}, true
+}
+
+func rebaseRelative(pattern string, root []string) ([]string, bool) {
+	segs := strings.Split(strings.Trim(pattern, "/"), "/")
+	out := []string{pattern}
+	if len(segs) == 1 {
+		return out, true
+	}
+	if segs[0] == "**" {
+		return out, true
+	}
+	for j := 1; j < len(segs); j++ {
+		if j > len(root) {
+			break
+		}
+		matched := true
+		for k := 0; k < j && matched; k++ {
+			if strings.Contains(segs[k], "**") {
+				return nil, false
+			}
+			m, err := path.Match(segs[k], root[len(root)-j+k])
+			if err != nil {
+				return nil, false
+			}
+			matched = m
+		}
+		if matched {
+			out = append(out, "/"+strings.Join(segs[j:], "/"))
+		}
+	}
+	return out, true
 }
 
 // restoreArgs builds restic restore for one step. restic refuses includes and
@@ -546,6 +591,10 @@ func (o *restoreOptions) databaseSource(sb *b2backupv1.ScheduledBackup) (restore
 	}
 	if slices.Contains(backup.SourceTags(sb.Spec.Sources), o.tag) {
 		return restoreSource{}, fmt.Errorf("%w: the source tagged %s is not a database source", ErrNoDatabase, o.tag)
+	}
+	if src.database == "" {
+		return restoreSource{}, fmt.Errorf("%w: a script's dump does not record which database it holds, and "+
+			"the credentials Secret may name another; pass --database", ErrNoDatabase)
 	}
 	return src, nil
 }

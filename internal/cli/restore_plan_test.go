@@ -28,6 +28,11 @@ const (
 	snapSub     = "1234567812345678"
 )
 
+const (
+	schedulerDB = "schedulerdb"
+	tmpAnywhere = "**/tmp*"
+)
+
 var day = time.Date(2026, 10, 10, 6, 0, 0, 0, time.UTC)
 
 func snapshotsFixture() []resticSnapshot {
@@ -403,7 +408,7 @@ func TestDatabaseRestoreReadsTheDumpTheSnapshotHolds(t *testing.T) {
 	if _, err := (&restoreOptions{}).databaseSource(script); !errors.Is(err, ErrNoDatabase) {
 		t.Errorf("err = %v, want --tag asked for on a script backup", err)
 	}
-	if src, err := (&restoreOptions{tag: appDir}).databaseSource(script); err != nil || src.tag != appDir {
+	if src, err := (&restoreOptions{tag: appDir, database: appDir}).databaseSource(script); err != nil || src.tag != appDir {
 		t.Errorf("source = %+v, %v", src, err)
 	}
 }
@@ -521,7 +526,7 @@ func TestDatabaseRestoreRefusesWhatIsNotOneDump(t *testing.T) {
 	}{
 		{"dumps of two databases under one tag", []resticSnapshot{
 			{ID: "a1", Time: day, Paths: []string{"/astro-processing.sql"}, Hostname: testNS, Tags: []string{"db", "astro-processing"}},
-			{ID: "s1", Time: day.Add(time.Minute), Paths: []string{"/schedulerdb.sql"}, Hostname: testNS, Tags: []string{"db", "schedulerdb"}},
+			{ID: "s1", Time: day.Add(time.Minute), Paths: []string{"/schedulerdb.sql"}, Hostname: testNS, Tags: []string{"db", schedulerDB}},
 		}, []string{"/astro-processing.sql", "/schedulerdb.sql"}, "holds dumps of"},
 		{"a files snapshot under the dump's tag", []resticSnapshot{
 			{ID: "d1", Time: day, Paths: []string{"/" + testNS + ".dmp"}, Hostname: testNS, Tags: []string{"db"}},
@@ -585,7 +590,7 @@ func TestVolumeRestoreArguments(t *testing.T) {
 	t.Parallel()
 	snap := resticSnapshot{ID: snapFiles, Paths: []string{dataDir}}
 	src := restoreSource{tag: filesTag, paths: []string{dataDir},
-		exclude: []string{cacheDir, "**/tmp*", "/data/logs", "/elsewhere", "/*/thumbs", "/d?ta/x/*.tmp"}}
+		exclude: []string{cacheDir, tmpAnywhere, "/data/logs", "/elsewhere", "/*/thumbs", "/d?ta/x/*.tmp"}}
 	tests := []struct {
 		name string
 		o    restoreOptions
@@ -655,6 +660,36 @@ func TestRestoreArgumentsRestic(t *testing.T) {
 	}
 }
 
+func TestSourceExcludesFollowTheRestoreRoot(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		exclude  string
+		root     string
+		want     []string
+		unrebase bool
+	}{
+		{"a name anywhere", cacheDir, dataDir, []string{cacheDir}, false},
+		{"a relative path crossing the root", "data/cache", dataDir, []string{"data/cache", "/cache"}, false},
+		{"a relative path inside", "app/cache", dataDir, []string{"app/cache"}, false},
+		{"a relative path crossing a deeper root", "data/app/*.tmp", "/srv/data", []string{"data/app/*.tmp", "/app/*.tmp"}, false},
+		{"leading **", tmpAnywhere, dataDir, []string{tmpAnywhere}, false},
+		{"** after the crossing", "data/**/cache", dataDir, []string{"data/**/cache", "/**/cache"}, false},
+		{"** where the root is", "**x/cache", dataDir, nil, true},
+		{"a re-include", "!/data/cache/keep", dataDir, []string{"!/cache/keep"}, false},
+		{"a relative re-include", "!data/cache/keep", dataDir, []string{"!data/cache/keep", "!/cache/keep"}, false},
+		{"an absolute glob", "/*/thumbs", dataDir, []string{"/thumbs"}, false},
+		{"outside", "/srv/x", dataDir, nil, false},
+	}
+	for _, tt := range tests {
+		got, unrebased := sourceExcludes([]string{tt.exclude}, tt.root)
+		if !slices.Equal(got, tt.want) || (len(unrebased) > 0) != tt.unrebase {
+			t.Errorf("%s: sourceExcludes(%q, %s) = %q, unrebased %q; want %q, unrebased %t",
+				tt.name, tt.exclude, tt.root, got, unrebased, tt.want, tt.unrebase)
+		}
+	}
+}
+
 func TestExcludesThatCannotBeRebasedStopDelete(t *testing.T) {
 	t.Parallel()
 	snap := resticSnapshot{ID: snapFiles, Paths: []string{dataDir}}
@@ -706,5 +741,25 @@ func TestASingleFileSourceRestoresFromItsDirectory(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(dest, "data", "app.db")); err != nil || string(got) != "sqlite" {
 		t.Errorf("downloaded %q, %v", got, err)
+	}
+}
+
+func TestAScriptDumpNeedsItsDatabaseNamed(t *testing.T) {
+	t.Parallel()
+	sb := newBackup(testBackupName, testRepoName)
+	withDatabase(sb)
+	sb.Spec.Sources = nil
+	sb.Spec.Script = "restic backup --tag=db --tag=schedulerdb --stdin-filename=schedulerdb.sql --stdin-from-command -- " +
+		"backup-cnpg.sh --dbname=schedulerdb"
+	if _, err := (&restoreOptions{}).databaseSource(sb); !errors.Is(err, ErrNoDatabase) {
+		t.Errorf("err = %v, want --tag asked for", err)
+	}
+	if _, err := (&restoreOptions{tag: schedulerDB}).databaseSource(sb); !errors.Is(err, ErrNoDatabase) ||
+		!strings.Contains(err.Error(), "--database") {
+		t.Errorf("err = %v, want --database asked for", err)
+	}
+	src, err := (&restoreOptions{tag: schedulerDB, database: schedulerDB}).databaseSource(sb)
+	if err != nil || src.tag != schedulerDB || src.database != schedulerDB {
+		t.Errorf("source = %+v, %v", src, err)
 	}
 }
