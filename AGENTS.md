@@ -149,10 +149,14 @@ one of these:
 - **A MariaDB restore never touches the live database until the swap.**
   mariadb-dump output cannot run in a transaction, so `restoredb mariadb`
   restores into `<db>__b2bk_restore` with the dump's `USE` and `CREATE
-  DATABASE` lines left out, checks the `-- Dump completed` trailer, and only
+  DATABASE` statements left out, checks the `-- Dump completed` trailer, and only
   then moves every table with one multi-table `RENAME TABLE`, which MariaDB
   applies atomically. MariaDB refuses to move views and tables with triggers
-  across databases, so those are refused up front. `<db>__b2bk_old` is the
+  across databases, so those are refused up front. The dump is split into
+  statements by `clientLexer`, a copy of the client's own rules (`add_line` in
+  `client/mysql.cc`), and each statement is held back until `classify` has
+  checked it: a table named with a database, a server, replication or account
+  statement, or dynamic SQL would reach past the staging database. `<db>__b2bk_old` is the
   rollback copy: never drop it unless it is empty or `--drop-old` was given.
   Verify changes with `make test-mariadb`, which runs a real server in Docker.
 - **The backup image's `restic` is a wrapper** ahead of the real binary on PATH.

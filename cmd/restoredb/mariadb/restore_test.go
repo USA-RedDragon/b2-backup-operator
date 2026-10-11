@@ -230,11 +230,15 @@ func TestRestoreDryRunNeverSwaps(t *testing.T) {
 	}
 }
 
-func TestFilterRefusesADatabaseLineLongerThanItsBuffer(t *testing.T) {
+// A statement longer than the reader's buffer is read whole before it is
+// classified.
+func TestFilterLeavesOutADatabaseStatementLongerThanItsBuffer(t *testing.T) {
 	t.Parallel()
 	f := &dumpFilter{}
-	err := f.copy(io.Discard, bufio.NewReaderSize(strings.NewReader("USE `"+strings.Repeat("x", 40)+"`;\n"), 16))
-	if !errors.Is(err, ErrUnsupportedStatement) {
-		t.Errorf("err = %v", err)
+	var out strings.Builder
+	name := strings.Repeat("x", 40)
+	err := f.copy(&out, bufio.NewReaderSize(strings.NewReader("USE `"+name+"`;\n"+goodDump), 16))
+	if err != nil || f.database != name || out.String() != "\n"+goodDump {
+		t.Errorf("database %q, passed %q, err %v", f.database, out.String(), err)
 	}
 }

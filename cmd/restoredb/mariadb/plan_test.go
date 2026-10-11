@@ -149,41 +149,96 @@ func TestDumpComplete(t *testing.T) {
 
 func TestClassify(t *testing.T) {
 	t.Parallel()
+	const (
+		createFK = "CREATE TABLE `t` (\n  `id` int,\n" +
+			"  CONSTRAINT `fk` FOREIGN KEY (`id`) REFERENCES `other`.`p` (`id`)\n)"
+		otherT = "`other`.`t`"
+		oT     = "`o`.`t`"
+	)
 	tests := []struct {
-		line string
-		kind lineKind
+		stmt string
+		kind stmtKind
 		arg  string
 	}{
-		{"USE `app`;\n", lineDatabase, testLive},
-		{"use `My``Db`;", lineDatabase, "My`Db"},
-		{"CREATE DATABASE /*!32312 IF NOT EXISTS*/ `app` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;\n",
-			lineDatabase, testLive},
-		{"CREATE DATABASE `app`;", lineDatabase, testLive},
-		{"CREATE SCHEMA IF NOT EXISTS `app`;", lineDatabase, testLive},
-		{"/*!40000 DROP DATABASE IF EXISTS `app`*/;\n", lineDatabase, testLive},
-		{"DROP SCHEMA `app`;", lineDatabase, testLive},
-		{"USE app;", lineUnsupported, "USE app;"},
-		{"ALTER DATABASE `app` CHARACTER SET latin1 ;", lineUnsupported, "ALTER DATABASE `app` CHARACTER SET latin1 ;"},
-		{"/*!50003 ALTER DATABASE `app` CHARACTER SET latin1 */;", lineUnsupported,
-			"/*!50003 ALTER DATABASE `app` CHARACTER SET latin1 */;"},
-		{"CREATE OR REPLACE DATABASE `app`;", lineUnsupported, "CREATE OR REPLACE DATABASE `app`;"},
-		{"DELIMITER ;;\n", lineRefused, "triggers, stored routines or events"},
-		{"/*!50001 CREATE ALGORITHM=UNDEFINED */\n", lineRefused, "views"},
-		{"/*!50001 CREATE TABLE `v` (\n", lineRefused, "views"},
-		{"CREATE TABLE `t` (\n", lineObject, ""},
-		{"DROP TABLE IF EXISTS `t`;\n", lineObject, ""},
-		{"INSERT INTO `t` VALUES (1);\n", lineObject, ""},
-		{"/*!40101 SET NAMES utf8mb4 */;\n", linePass, ""},
-		{"/*M!999999\\- enable the sandbox mode */ \n", linePass, ""},
-		{"-- Current Database: `app`\n", linePass, ""},
-		{"  `USE` int(11) DEFAULT NULL,\n", linePass, ""},
-		{"LOCK TABLES `t` WRITE;\n", linePass, ""},
+		{"USE `app`", stmtDatabase, testLive},
+		{"use `My``Db`", stmtDatabase, "My`Db"},
+		{"CREATE DATABASE /*!32312 IF NOT EXISTS*/ `app` /*!40100 DEFAULT CHARACTER SET utf8mb4 */",
+			stmtDatabase, testLive},
+		{"CREATE DATABASE `app`", stmtDatabase, testLive},
+		{"CREATE SCHEMA IF NOT EXISTS `app`", stmtDatabase, testLive},
+		{"/*!40000 DROP DATABASE IF EXISTS `app`*/", stmtDatabase, testLive},
+		{"DROP SCHEMA `app`", stmtDatabase, testLive},
+		{"USE app", stmtUnsupported, "USE app"},
+		{"ALTER DATABASE `app` CHARACTER SET latin1 ", stmtUnsupported, "ALTER DATABASE `app` CHARACTER SET latin1 "},
+		{"/*!50003 ALTER DATABASE `app` CHARACTER SET latin1 */", stmtUnsupported,
+			"/*!50003 ALTER DATABASE `app` CHARACTER SET latin1 */"},
+		{"CREATE OR REPLACE DATABASE `app`", stmtUnsupported, "CREATE OR REPLACE DATABASE `app`"},
+		{"DELIMITER ", stmtRefused, objectsTriggers},
+		{"  delimiter //\nCREATE TRIGGER x", stmtRefused, objectsTriggers},
+		{"/*!50001 CREATE ALGORITHM=UNDEFINED */", stmtRefused, objectsViews},
+		{"/*!50001 CREATE TABLE `v` (\n", stmtRefused, objectsViews},
+		{"CREATE DEFINER=`root`@`%` PROCEDURE `p`() SELECT 1", stmtRefused, objectsTriggers},
+		{"/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `x` BEFORE INSERT ON `t`",
+			stmtRefused, objectsTriggers},
+		{"CREATE OR REPLACE VIEW `v` AS SELECT 1", stmtRefused, objectsViews},
+		{"CREATE TABLE `t` (\n", stmtObject, ""},
+		{createFK, stmtObject, ""},
+		{"CREATE SEQUENCE `s` start with 1 minvalue 1 maxvalue 9223372036854775806 increment by 1 cache 1000 " +
+			"nocycle ENGINE=InnoDB", stmtObject, ""},
+		{"DROP TABLE IF EXISTS `t`", stmtObject, ""},
+		{"INSERT INTO `t` VALUES (1)", stmtObject, ""},
+		{"/*!40101 SET NAMES utf8mb4 */", stmtPass, ""},
+		{"/*M!999999 enable the sandbox mode */ \n/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */",
+			stmtPass, ""},
+		{"/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */", stmtPass, ""},
+		{"LOCK TABLES `t` WRITE", stmtPass, ""},
+		{"/*!40000 ALTER TABLE `t` DISABLE KEYS */", stmtPass, ""},
+		{"SELECT SETVAL(`s`, 1001, 0)", stmtPass, ""},
+		{"START TRANSACTION", stmtPass, ""},
+		{"INSERT INTO `other`.`t` VALUES (1)", stmtOtherDatabase, otherT},
+		{"insert ignore into other.t values (1)", stmtOtherDatabase, otherT},
+		{"REPLACE INTO `app`.`t` VALUES (1)", stmtOtherDatabase, "`app`.`t`"},
+		{"/*!40000 ALTER TABLE `other`.`t` DISABLE KEYS */", stmtOtherDatabase, otherT},
+		{"LOCK TABLES `t` WRITE, `o`.`u` READ", stmtOtherDatabase, "`o`.`u`"},
+		{"DROP TABLE IF EXISTS `t`, `o`.`u`", stmtOtherDatabase, "`o`.`u`"},
+		{"RENAME TABLE `t` TO `o`.`t`", stmtOtherDatabase, oT},
+		{"ALTER TABLE `t` RENAME TO `o`.`t`", stmtOtherDatabase, oT},
+		{"SELECT SETVAL(`o`.`s`, 5, 0)", stmtOtherDatabase, "`o`.`s`"},
+		{"TRUNCATE TABLE `o`.`t`", stmtOtherDatabase, oT},
+		{"DELETE FROM `o`.`t`", stmtOtherDatabase, oT},
+		{"UPDATE `o`.`t` SET `a` = 1", stmtOtherDatabase, oT},
+		{"CREATE INDEX `i` ON `o`.`t` (`a`)", stmtOtherDatabase, oT},
+		{"CREATE TABLE `o`.`t` (`a` int)", stmtOtherDatabase, oT},
+		{"CHANGE MASTER TO MASTER_LOG_FILE='x', MASTER_LOG_POS=4", stmtServer,
+			"CHANGE MASTER TO MASTER_LOG_FILE='x', MASTER_LOG_POS=4"},
+		{"SET GLOBAL gtid_slave_pos='0-1-2'", stmtServer, "SET GLOBAL gtid_slave_pos='0-1-2'"},
+		{"/*!40101 SET @@GLOBAL.x=1 */", stmtServer, "/*!40101 SET @@GLOBAL.x=1 */"},
+		{"SET @a = 1, global x = 2", stmtServer, "SET @a = 1, global x = 2"},
+		{"SET PASSWORD = PASSWORD('x')", stmtServer, "SET PASSWORD = PASSWORD('x')"},
+		{"SET STATEMENT max_statement_time=1 FOR DELETE FROM `o`.`t`", stmtServer,
+			"SET STATEMENT max_statement_time=1 FOR DELETE FROM `o`.`t`"},
+		{"START SLAVE", stmtServer, "START SLAVE"},
+		{"STOP ALL SLAVES", stmtServer, "STOP ALL SLAVES"},
+		{"GRANT ALL ON *.* TO `x`", stmtServer, "GRANT ALL ON *.* TO `x`"},
+		{"CREATE USER `x`", stmtServer, "CREATE USER `x`"},
+		{"EXECUTE IMMEDIATE 'DELETE FROM o.t'", stmtServer, "EXECUTE IMMEDIATE 'DELETE FROM o.t'"},
+		{"PREPARE s FROM 'DELETE FROM o.t'", stmtServer, "PREPARE s FROM 'DELETE FROM o.t'"},
+		{"CALL `o`.`p`()", stmtServer, "CALL `o`.`p`()"},
+		{"LOAD DATA INFILE 'x' INTO TABLE `t`", stmtServer, "LOAD DATA INFILE 'x' INTO TABLE `t`"},
+		{"SET SQL_MODE='ANSI_QUOTES'", stmtUnsupported,
+			"an sql_mode the restore cannot read the dump under: SET SQL_MODE='ANSI_QUOTES'"},
+		{"/*!40101 SET SQL_MODE='STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES' */", stmtUnsupported,
+			"an sql_mode the restore cannot read the dump under: " +
+				"/*!40101 SET SQL_MODE='STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES' */"},
 	}
 	for _, tt := range tests {
-		kind, arg := classify(tt.line)
+		kind, arg := classify(tt.stmt, true)
 		if kind != tt.kind || arg != tt.arg {
-			t.Errorf("classify(%q) = %d, %q, want %d, %q", tt.line, kind, arg, tt.kind, tt.arg)
+			t.Errorf("classify(%q) = %d, %q, want %d, %q", tt.stmt, kind, arg, tt.kind, tt.arg)
 		}
+	}
+	if kind, _ := classify("LOCK TABLES `t` WRITE, ", false); kind != stmtUnsupported {
+		t.Errorf("an unfinished list statement is %d", kind)
 	}
 }
 
@@ -208,16 +263,16 @@ func TestFilterLeavesOutDatabaseLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "CREATE TABLE `t` (\n  `id` int\n);\n" +
+	want := "\n\n\nCREATE TABLE `t` (\n  `id` int\n);\n" +
 		"INSERT INTO `t` VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9);\n" +
-		"-- Dump completed\n"
+		"\n-- Dump completed\n"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
 	if f.database != testLive {
 		t.Errorf("database = %q", f.database)
 	}
-	if !DumpComplete(f.tail) {
+	if !f.complete() {
 		t.Errorf("tail = %q", f.tail)
 	}
 }
@@ -247,7 +302,7 @@ func TestFilterRefusals(t *testing.T) {
 		{
 			name: "two databases",
 			dump: "USE `a`;\nCREATE TABLE `t` (i int);\nUSE `b`;\nCREATE TABLE `u` (i int);\n",
-			want: ErrMultipleDatabases, passed: createTable,
+			want: ErrMultipleDatabases, passed: "\n" + createTable,
 		},
 		{
 			name: "a database named after the first table",
@@ -273,6 +328,56 @@ func TestFilterRefusals(t *testing.T) {
 			name: "an unquoted USE",
 			dump: "USE app;\n",
 			want: ErrUnsupportedStatement,
+		},
+		{
+			name: "an indented DELIMITER",
+			dump: createTable + "  DELIMITER ;;\n",
+			want: ErrUnsupportedObjects, passed: createTable,
+		},
+		{
+			name: "a second statement on a line",
+			dump: createTable + "SELECT 1; INSERT INTO `other`.`t` VALUES (1);\n",
+			want: ErrOtherDatabase, passed: createTable,
+		},
+		{
+			name: "a statement split over lines",
+			dump: createTable + "INSERT INTO\n`other`\n.`t` VALUES (1);\n",
+			want: ErrOtherDatabase, passed: createTable,
+		},
+		{
+			name: "a comment between the words",
+			dump: createTable + "SET/* x */GLOBAL max_connections = 1;\n",
+			want: ErrServerStatement, passed: createTable,
+		},
+		{
+			name: "replication",
+			dump: createTable + "CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000001', MASTER_LOG_POS=4;\n",
+			want: ErrServerStatement, passed: createTable,
+		},
+		{
+			name: "an executable comment left open on an earlier line",
+			dump: createTable + "/*!40000\n/* */ GRANT ALL ON `mysql`.* TO 'z'@'%'; /* */\nSELECT 1;\n",
+			want: ErrServerStatement, passed: createTable,
+		},
+		{
+			name: "a table named past the part read before passing it on",
+			dump: createTable + "INSERT" + strings.Repeat(" ", 4200) + "INTO `other`.`t` VALUES (1);\n",
+			want: ErrUnsupportedStatement, passed: createTable,
+		},
+		{
+			name: "a table named after a long comment",
+			dump: createTable + "INSERT /*" + strings.Repeat("x", 70000) + "*/ INTO `other`.`t` VALUES (1);\n",
+			want: ErrUnsupportedStatement, passed: createTable,
+		},
+		{
+			name: "a file written by the server",
+			dump: createTable + "SELECT * FROM `t` INTO OUTFILE '/tmp/x';\n",
+			want: ErrServerStatement, passed: createTable,
+		},
+		{
+			name: "a client command",
+			dump: createTable + "\\u other\n",
+			want: ErrClientCommand, passed: createTable,
 		},
 	}
 	for _, tt := range tests {
