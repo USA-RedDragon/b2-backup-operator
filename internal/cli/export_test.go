@@ -60,3 +60,7 @@ var PrintRepositories = printRepositories
 
 // PrintScheduledBackups prints b2bk get backups.
 var PrintScheduledBackups = printScheduledBackups
+
+// RefuseActive is the check an overwriting restore makes for anything still
+// running against the backup's claims or database.
+var RefuseActive = refuseActive

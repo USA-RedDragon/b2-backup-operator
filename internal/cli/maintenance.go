@@ -286,8 +286,12 @@ func refuseRepositoryInUse(
 			inUse = inUse || owners[ref.UID]
 		}
 		if inUse {
-			return fmt.Errorf("%w: job/%s is running and may hold a live lock on repository/%s; wait for it, "+
-				"or unlock without --remove-all", ErrBackupRunning, job.Name, repo.Name)
+			work := &runningRestic{kind: kindJob, name: job.Name}
+			if job.Labels[labelManagedBy] == runner.ManagedByValue {
+				work.b2bk, work.purpose = true, job.Labels[runner.LabelPurpose]
+			}
+			return fmt.Errorf("%w: %s is running and may hold a live lock on repository/%s; wait for it, "+
+				"or unlock without --remove-all", work.lockSentinel(), work, repo.Name)
 		}
 	}
 	var pods corev1.PodList
@@ -307,10 +311,14 @@ func refuseRepositoryInUse(
 			}
 		}
 		if inUse {
-			return fmt.Errorf("%w: pod/%s is still running restic and may hold a live lock on repository/%s; wait "+
+			work := &runningRestic{kind: kindPod, name: pod.Name, terminating: pod.DeletionTimestamp != nil}
+			if pod.Labels[labelManagedBy] == runner.ManagedByValue {
+				work.b2bk, work.purpose = true, pod.Labels[runner.LabelPurpose]
+			}
+			return fmt.Errorf("%w: %s is still running restic and may hold a live lock on repository/%s; wait "+
 				"for it, or unlock without --remove-all. If it stays Terminating because its node is down, make sure "+
 				"the node is really off, then kubectl delete pod -n %s %s --force --grace-period=0",
-				ErrBackupRunning, pod.Name, repo.Name, pod.Namespace, pod.Name)
+				work.lockSentinel(), work, repo.Name, pod.Namespace, pod.Name)
 		}
 	}
 	return nil

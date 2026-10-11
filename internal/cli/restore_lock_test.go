@@ -150,9 +150,9 @@ func TestOverwritingRestoresRefuseWhileABackupOrRestoreRuns(t *testing.T) {
 				APIVersion: batchAPIVersion, Kind: cronJobKind, Name: fx.cj.Name, UID: fx.cj.UID, Controller: ptr.To(true),
 			}}}
 		}, ErrBackupRunning},
-		{"another b2bk restore", func(fx *currentFixture) client.Object { return b2bkJob(fx.sb, purposeRestore) }, ErrBackupRunning},
-		{"another b2bk database restore", func(fx *currentFixture) client.Object { return b2bkJob(fx.sb, purposeRestoreDB) }, ErrBackupRunning},
-		{"a b2bk Job from before purposes were recorded", func(fx *currentFixture) client.Object { return b2bkJob(fx.sb, "") }, ErrBackupRunning},
+		{"another b2bk restore", func(fx *currentFixture) client.Object { return b2bkJob(fx.sb, purposeRestore) }, ErrRestoreRunning},
+		{"another b2bk database restore", func(fx *currentFixture) client.Object { return b2bkJob(fx.sb, purposeRestoreDB) }, ErrRestoreRunning},
+		{"a b2bk Job from before purposes were recorded", func(fx *currentFixture) client.Object { return b2bkJob(fx.sb, "") }, ErrRestoreRunning},
 		{"another restore holding the lock", func(fx *currentFixture) client.Object {
 			fx.sb.Annotations = map[string]string{b2backupv1.AnnotationRestoreLock: "b2bk pid 1 on laptop"}
 			fx.sb.Spec.Suspend = true
@@ -789,7 +789,7 @@ func TestUnlockRemoveAllSeesAnOlderB2bkPodByItsJobName(t *testing.T) {
 	cmd := newUnlockCommand(factoryWithClient(t, newClient(t, fx.objects(legacy)...)))
 	cmd.SetArgs([]string{subjectBackup, flagRemoveAll, flagYes})
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
-	if err := cmd.Execute(); !errors.Is(err, ErrBackupRunning) {
+	if err := cmd.Execute(); !errors.Is(err, ErrResticRunning) {
 		t.Errorf("err = %v, want --remove-all refused while an older b2bk pod still runs restic", err)
 	}
 }

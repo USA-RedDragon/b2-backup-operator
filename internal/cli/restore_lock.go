@@ -29,6 +29,10 @@ import (
 // ScheduledBackup, or one that shares its claims or database.
 var ErrRestoreRunning = errors.New("another restore is running")
 
+// ErrResticRunning means a b2bk Job other than a restore may still be running
+// restic against the repository.
+var ErrResticRunning = errors.New("a b2bk command is running restic")
+
 // restoreHold is what one overwriting restore holds: the ScheduledBackup it
 // restores, and every other one in the namespace that backs up the same claims
 // or database, each carrying AnnotationRestoreLock. While it is set the
@@ -451,39 +455,101 @@ func (h *restoreHold) recordTargets(ctx context.Context) error {
 }
 
 func refuseActive(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, ownJob string) error {
-	job, err := activeBackup(ctx, c, sb, ownJob)
-	if err != nil || job == "" {
+	work, err := activeBackup(ctx, c, sb, ownJob)
+	if err != nil || work == nil {
 		return err
 	}
-	if pod, ok := strings.CutPrefix(job, "pod/"); ok {
-		return fmt.Errorf("%w: pod/%s of scheduledbackup/%s is still running restic, though its Job is gone; "+
-			"wait for it to stop (kubectl get pod -n %s %s -o wide). If it stays Terminating because its node is "+
-			"down, make sure the node is really off, then kubectl delete pod -n %s %s --force --grace-period=0",
-			ErrBackupRunning, pod, sb.Name, sb.Namespace, pod, sb.Namespace, pod)
+	switch {
+	case work.kind == kindPod:
+		return fmt.Errorf("%w: %s is still running restic for scheduledbackup/%s after its Job ended or was "+
+			"deleted; wait for it to stop (kubectl get pod -n %s %s -o wide). If it stays Terminating because "+
+			"its node is down, make sure the node is really off, then kubectl delete pod -n %s %s --force "+
+			"--grace-period=0", work.sentinel(), work, sb.Name, sb.Namespace, work.name, sb.Namespace, work.name)
+	case work.b2bk:
+		return fmt.Errorf("%w: %s is running for scheduledbackup/%s and writes to the same claims or database; "+
+			"wait for it to finish (kubectl get job -n %s %s)", work.sentinel(), work, sb.Name, sb.Namespace, work.name)
+	default:
+		return fmt.Errorf("%w: %s is running for scheduledbackup/%s; wait for it with b2bk wait %s, "+
+			"or stop it with b2bk cancel %s", work.sentinel(), work, sb.Name, sb.Name, sb.Name)
 	}
-	return fmt.Errorf("%w: job/%s is running for scheduledbackup/%s; wait for it with b2bk wait %s, "+
-		"or stop it with b2bk cancel %s", ErrBackupRunning, job, sb.Name, sb.Name, sb.Name)
 }
 
 // writingPurposes are the b2bk Jobs that write to a backup's claims or database.
 var writingPurposes = []string{purposeRestore, purposeRestoreDB}
 
+const (
+	kindJob = "job"
+	kindPod = "pod"
+)
+
+// runningRestic is a Job or pod that may still be running restic: a backup the
+// operator started, or a one-off Job b2bk started, with what for.
+type runningRestic struct {
+	kind        string
+	name        string
+	b2bk        bool
+	purpose     string
+	terminating bool
+}
+
+func (w *runningRestic) String() string {
+	what := "a backup"
+	if w.b2bk {
+		switch w.purpose {
+		case purposeRestore:
+			what = "a b2bk files restore"
+		case purposeRestoreDB:
+			what = "a b2bk database restore"
+		case "":
+			what = "a b2bk Job from before b2bk recorded what its Jobs are for"
+		default:
+			what = "a b2bk " + w.purpose
+		}
+	}
+	if w.kind == kindPod {
+		what = "a pod of " + what
+		if w.terminating {
+			what += ", Terminating"
+		}
+	}
+	return fmt.Sprintf("%s/%s (%s)", w.kind, w.name, what)
+}
+
+// sentinel is the error a restore refused because of w wraps. Only restores
+// count here, and a b2bk Job of unknown purpose is taken as one.
+func (w *runningRestic) sentinel() error {
+	if w.b2bk {
+		return ErrRestoreRunning
+	}
+	return ErrBackupRunning
+}
+
+// lockSentinel is the error an unlock refused because of w wraps.
+func (w *runningRestic) lockSentinel() error {
+	if w.b2bk {
+		return ErrResticRunning
+	}
+	return ErrBackupRunning
+}
+
 // activeBackup returns a Job of this ScheduledBackup that has not finished,
 // other than ownJob: a backup the CronJob started, a triggered one, or a b2bk
 // Job restoring into its claims or database. A b2bk Job from before Jobs
 // recorded their purpose counts as a restore.
-func activeBackup(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, ownJob string) (string, error) {
+func activeBackup(
+	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, ownJob string,
+) (*runningRestic, error) {
 	owners := []types.UID{sb.UID}
 	var cj batchv1.CronJob
 	switch err := c.Get(ctx, types.NamespacedName{Namespace: sb.Namespace, Name: backup.CronJobName(sb)}, &cj); {
 	case err == nil:
 		owners = append(owners, cj.UID)
 	case !apierrors.IsNotFound(err):
-		return "", err
+		return nil, err
 	}
 	var jobs batchv1.JobList
 	if err := c.List(ctx, &jobs, client.InNamespace(sb.Namespace)); err != nil {
-		return "", err
+		return nil, err
 	}
 	for i := range jobs.Items {
 		job := &jobs.Items[i]
@@ -491,13 +557,13 @@ func activeBackup(ctx context.Context, c client.Client, sb *b2backupv1.Scheduled
 			continue
 		}
 		if owner := metav1.GetControllerOf(job); owner != nil && slices.Contains(owners, owner.UID) {
-			return job.Name, nil
+			return &runningRestic{kind: kindJob, name: job.Name}, nil
 		}
 		if job.Labels[labelManagedBy] != runner.ManagedByValue || !ownedBy(job, sb.UID) {
 			continue
 		}
 		if purpose, ok := job.Labels[runner.LabelPurpose]; !ok || slices.Contains(writingPurposes, purpose) {
-			return job.Name, nil
+			return &runningRestic{kind: kindJob, name: job.Name, b2bk: true, purpose: purpose}, nil
 		}
 	}
 	return activePod(ctx, c, sb, ownJob)
@@ -507,10 +573,12 @@ func activeBackup(ctx context.Context, c client.Client, sb *b2backupv1.Scheduled
 // that is still running, other than ownJob's: deleting a Job, as b2bk cancel
 // and a finished restore do, removes it at once while its pod's restic runs on
 // through the pod's grace period.
-func activePod(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, ownJob string) (string, error) {
+func activePod(
+	ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBackup, ownJob string,
+) (*runningRestic, error) {
 	var pods corev1.PodList
 	if err := c.List(ctx, &pods, client.InNamespace(sb.Namespace)); err != nil {
-		return "", err
+		return nil, err
 	}
 	for i := range pods.Items {
 		pod := &pods.Items[i]
@@ -518,21 +586,23 @@ func activePod(ctx context.Context, c client.Client, sb *b2backupv1.ScheduledBac
 			podJob(pod) == ownJob {
 			continue
 		}
+		found := &runningRestic{kind: kindPod, name: pod.Name, terminating: pod.DeletionTimestamp != nil}
 		switch pod.Labels[labelManagedBy] {
 		case operatorManagedBy:
 			if pod.Labels["app.kubernetes.io/name"] == sb.Name {
-				return "pod/" + pod.Name, nil
+				return found, nil
 			}
 		case runner.ManagedByValue:
 			mine := pod.Labels[runner.LabelScheduledBackup] == sb.Name ||
 				(pod.Labels[runner.LabelScheduledBackup] == "" && strings.HasPrefix(podJob(pod), sb.Name+"-b2bk-"))
 			purpose, labelled := pod.Labels[runner.LabelPurpose]
 			if mine && (!labelled || slices.Contains(writingPurposes, purpose)) {
-				return "pod/" + pod.Name, nil
+				found.b2bk, found.purpose = true, purpose
+				return found, nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func podJob(pod *corev1.Pod) string {
