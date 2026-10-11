@@ -263,7 +263,9 @@ restore leaves the database as it was. psql would commit whatever it had read if
 the download stopped partway, so `restoredb` holds back the end of a plain dump
 until it has seen pg_dump's `dump complete` trailer at the very end, with the
 same key on its `\unrestrict` line as on the `\restrict` line at its head, and
-stops psql before it can commit a dump that ends without it. A mariadb restore runs
+stops psql before it can commit a dump that ends without it. A plain dump from a
+pg_dump older than 17.6 has no `\restrict` line, so only the trailer is checked;
+every dump `backup-cnpg.sh` took has one, since it always passed `--restrict-key`. A mariadb restore runs
 statement by statement with no such guard, so a failed one can leave the
 database partly restored.
 
