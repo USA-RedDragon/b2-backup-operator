@@ -363,9 +363,11 @@ func effectiveCacheDir(env map[string]string, script, image string) string {
 
 var cacheDirFlag = regexp.MustCompile(`--cache-dir[= ](\S+)`)
 
-// scriptNames reports whether the script names dir or a path under it, which
-// makes a volume mounted there data rather than restic's cache.
+// scriptNames reports whether the script names dir or a path under it, other
+// than as --cache-dir, which makes a volume mounted there data rather than
+// restic's cache.
 func scriptNames(script, dir string) bool {
+	script = cacheDirFlag.ReplaceAllString(script, "")
 	for _, word := range strings.FieldsFunc(script, func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '\n' || r == '"' || r == '\'' || r == '='
 	}) {

@@ -1337,3 +1337,15 @@ func TestParityTakesTheImagesZoneForAMissingTZ(t *testing.T) {
 		t.Errorf("the image sets no TZ, so the original ran in UTC as the generated backup does:\n%s", parityOut)
 	}
 }
+
+func TestMigrateDoesNotTakeACacheDirFlagForData(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(homeClusterRelease, "restic backup --tag=mirror /mirror", "restic backup --tag=mirror --cache-dir=/cache /mirror", 1)
+	out, err := migrate(t, body+"      restic-cache:\n        type: emptyDir\n        globalMounts:\n          - path: /cache\n")
+	if err != nil {
+		t.Fatalf("migrate: %v\n%s", err, out)
+	}
+	if _, sb := migrated(t, out); sb.Spec.Scratch != nil {
+		t.Errorf("scratch = %+v; the emptyDir --cache-dir names is restic's cache", sb.Spec.Scratch)
+	}
+}
