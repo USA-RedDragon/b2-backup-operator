@@ -46,7 +46,7 @@ func TestOverwritingRestoreNamesWhatIsStillRunning(t *testing.T) {
 			DeletionTimestamp: ptr.To(metav1.Now()), Finalizers: []string{"test/hold"},
 			Labels: map[string]string{
 				managedByKey: runner.ManagedByValue, runner.LabelScheduledBackup: pvcBackup,
-				purposeLabel: "restore", batchv1.JobNameLabel: restoreJob,
+				purposeLabel: cmdRestore, batchv1.JobNameLabel: restoreJob,
 			},
 			Status: corev1.PodStatus{Phase: corev1.PodRunning},
 		}, wantErr: cli.ErrRestoreRunning,

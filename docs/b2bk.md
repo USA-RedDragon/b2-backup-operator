@@ -320,6 +320,14 @@ and `/blobs` restores each into its own claim. A path that is a single file,
 such as `/data/app.db`, is restored from its directory with an include for the
 file, since restic cannot use a file as the subfolder.
 
+**SELinux labels.** Every `restic restore` passes
+`--exclude-xattr=security.selinux`. On an SELinux node each new file gets a
+`security.selinux` label, and restic 0.19.1 removes every xattr the snapshot
+does not hold, which SELinux refuses: the restore fails with `xattr.LRemove ...
+permission denied`. The label is left as the node set it, and a label stored in
+the snapshot is not restored. `--to` writes through `restic dump` and sets no
+xattrs.
+
 **What `--delete` leaves alone.** The source's own `exclude` patterns are passed
 to `restic restore` as excludes, rewritten relative to the restored path, so
 `--delete` never removes what the backup deliberately left out, such as a cache.

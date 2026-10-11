@@ -79,3 +79,11 @@ var IsOperatorImage = isOperatorImage
 
 // IsUpstreamImage reports whether an image is the one the operator's is forked from.
 var IsUpstreamImage = isUpstreamImage
+
+// RestoreArgs builds the restic restore of the whole of snapPath, or of sub
+// under it, into target.
+func RestoreArgs(snapPath, sub, target string, include []string, del, dryRun bool) ([]string, error) {
+	o := &restoreOptions{include: include, delete: del, dryRun: dryRun}
+	return o.restoreArgs(resticSnapshot{ID: "snap", Paths: []string{snapPath}},
+		restoreStep{snapPath: snapPath, sub: sub}, restoreSource{paths: []string{snapPath}}, target)
+}

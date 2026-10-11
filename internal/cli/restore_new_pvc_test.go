@@ -127,7 +127,7 @@ func fakeRestic(failRestore bool) cli.RestoreExec {
 		case len(argv) > 1 && argv[1] == "ls":
 			_, err := fmt.Fprintf(stdout, "{\"type\":\"dir\",\"path\":%q}\n", pvcMount)
 			return err
-		case len(argv) > 1 && argv[1] == "restore" && failRestore:
+		case len(argv) > 1 && argv[1] == cmdRestore && failRestore:
 			return errResticRestore
 		}
 		return nil

@@ -328,6 +328,11 @@ func rebaseRelative(pattern string, root []string) ([]string, bool) {
 	return out, true
 }
 
+// excludeSELinuxLabel keeps restic from removing the security.selinux label an
+// SELinux node gives every new file: restic 0.19.1 removes each xattr the
+// snapshot does not hold, and SELinux refuses that.
+const excludeSELinuxLabel = "--exclude-xattr=security.selinux"
+
 // restoreArgs builds restic restore for one step. restic refuses includes and
 // excludes together, so the source's excludes, which keep --delete off what the
 // backup never saved, are passed only when nothing is included; with an include,
@@ -335,7 +340,7 @@ func rebaseRelative(pattern string, root []string) ([]string, bool) {
 func (o *restoreOptions) restoreArgs(
 	snap resticSnapshot, step restoreStep, src restoreSource, target string,
 ) ([]string, error) {
-	argv := []string{"restore", snap.ID + ":" + step.snapPath, "--target=" + target}
+	argv := []string{"restore", snap.ID + ":" + step.snapPath, "--target=" + target, excludeSELinuxLabel}
 	var includes []string
 	if step.sub != "" {
 		includes = append(includes, literalPattern(step.sub))

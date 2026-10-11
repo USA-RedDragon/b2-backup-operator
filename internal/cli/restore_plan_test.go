@@ -269,7 +269,7 @@ func TestVolumeRestoresPutFilesBackWhereTheyWere(t *testing.T) {
 			sb:     filesBackupAt(),
 			o:      restoreOptions{snapshot: latest, delete: true},
 			target: inPlaceTarget,
-			want:   []string{"restic restore " + snapFiles + ":/data --target=/data --delete"},
+			want:   []string{"restic restore " + snapFiles + ":/data --target=/data --exclude-xattr=security.selinux --delete"},
 		},
 		{
 			name:   "in place, both claims of a multi-path source",
@@ -277,8 +277,8 @@ func TestVolumeRestoresPutFilesBackWhereTheyWere(t *testing.T) {
 			o:      restoreOptions{snapshot: latest},
 			target: inPlaceTarget,
 			want: []string{
-				"restic restore " + snapMulti + ":/blobs --target=/blobs",
-				"restic restore " + snapMulti + ":/data --target=/data",
+				"restic restore " + snapMulti + ":/blobs --target=/blobs --exclude-xattr=security.selinux",
+				"restic restore " + snapMulti + ":/data --target=/data --exclude-xattr=security.selinux",
 			},
 		},
 		{
@@ -286,7 +286,7 @@ func TestVolumeRestoresPutFilesBackWhereTheyWere(t *testing.T) {
 			sb:     filesBackupAt(),
 			o:      restoreOptions{snapshot: latest, path: "app/config.php"},
 			target: inPlaceTarget,
-			want:   []string{"restic restore " + snapFiles + ":/data --target=/data --include=/app/config.php"},
+			want:   []string{"restic restore " + snapFiles + ":/data --target=/data --exclude-xattr=security.selinux --include=/app/config.php"},
 		},
 		{
 			name: "a new claim laid out like the source",
@@ -295,7 +295,7 @@ func TestVolumeRestoresPutFilesBackWhereTheyWere(t *testing.T) {
 			target: func(sb *b2backupv1.ScheduledBackup) volumeTarget {
 				return newClaimTarget(sb, &sb.Spec.Volumes[0], restoreMountPath)
 			},
-			want: []string{"restic restore " + snapSub + ":/data/app --target=/restore/app"},
+			want: []string{"restic restore " + snapSub + ":/data/app --target=/restore/app --exclude-xattr=security.selinux"},
 		},
 		{
 			name:    "never a dump over files",
@@ -617,7 +617,7 @@ func TestVolumeRestoreArguments(t *testing.T) {
 			[]string{"/elsewhere", "--exclude=/data", "--exclude=/\n"}},
 		{"a path is matched literally, and the excludes left out", restoreOptions{path: "Movie [1080p]*.mkv"},
 			restoreStep{snapPath: dataDir, sub: "/Movie [1080p]*.mkv"},
-			[]string{`--include=/Movie \[1080p]\*.mkv`}, []string{"--exclude"}},
+			[]string{`--include=/Movie \[1080p]\*.mkv`}, []string{"--exclude="}},
 		{"a dry run lists every deletion", restoreOptions{delete: true, dryRun: true},
 			restoreStep{snapPath: dataDir}, []string{"--dry-run", "--verbose=2"}, []string{"--verbose "}},
 	}
@@ -737,7 +737,7 @@ func TestASingleFileSourceRestoresFromItsDirectory(t *testing.T) {
 	if err := o.restoreVolumes(context.Background(), pod, src, inPlaceTarget(sb), io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if want := "restic restore " + snapOlder + ":/data --target=/data --include=/app.db"; pod.commands[2] != want {
+	if want := "restic restore " + snapOlder + ":/data --target=/data --exclude-xattr=security.selinux --include=/app.db"; pod.commands[2] != want {
 		t.Errorf("in place ran %q, want %q", pod.commands[2], want)
 	}
 
