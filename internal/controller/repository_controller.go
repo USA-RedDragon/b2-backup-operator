@@ -936,29 +936,32 @@ func (r *RepositoryReconciler) deleteStaleKeys(
 	}
 	stale = slices.DeleteFunc(stale, func(k b2.Key) bool { return slices.Contains(inUse, k.ApplicationKeyID) })
 
-	if rotated := repo.Status.KeyRotationTime; rotated != nil {
-		if wait := staleKeyGrace - r.now().Sub(rotated.Time); wait > 0 {
-			return wait, nil
+	rotated := repo.Status.KeyRotationTime
+	if rotated == nil {
+		repo.Status.KeyRotationTime = &metav1.Time{Time: r.now()}
+		return staleKeyGrace, nil
+	}
+	if wait := staleKeyGrace - r.now().Sub(rotated.Time); wait > 0 {
+		return wait, nil
+	}
+	staleIDs := make([]string, 0, len(stale))
+	for _, k := range stale {
+		staleIDs = append(staleIDs, k.ApplicationKeyID)
+	}
+	holders, err := r.jobsStartedBefore(ctx, repo, rotated.Time, staleIDs)
+	if err != nil {
+		return 0, err
+	}
+	if len(holders) > 0 {
+		if r.now().Sub(rotated.Time) < staleKeyDeadline {
+			log.FromContext(ctx).Info("Deferred deleting superseded application keys",
+				"jobs", holders, "rotated", rotated.Time)
+			return staleKeyRecheck, nil
 		}
-		staleIDs := make([]string, 0, len(stale))
-		for _, k := range stale {
-			staleIDs = append(staleIDs, k.ApplicationKeyID)
-		}
-		holders, err := r.jobsStartedBefore(ctx, repo, rotated.Time, staleIDs)
-		if err != nil {
-			return 0, err
-		}
-		if len(holders) > 0 {
-			if r.now().Sub(rotated.Time) < staleKeyDeadline {
-				log.FromContext(ctx).Info("Deferred deleting superseded application keys",
-					"jobs", holders, "rotated", rotated.Time)
-				return staleKeyRecheck, nil
-			}
-			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "StaleKeyDeadline", "Delete",
-				"Deleting superseded application keys %d hours after rotation although Jobs %s, "+
-					"which started before it, are still running and may fail",
-				int(staleKeyDeadline.Hours()), strings.Join(holders, ", "))
-		}
+		r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "StaleKeyDeadline", "Delete",
+			"Deleting superseded application keys %d hours after rotation although Jobs %s, "+
+				"which started before it, are still running and may fail",
+			int(staleKeyDeadline.Hours()), strings.Join(holders, ", "))
 	}
 
 	for _, k := range stale {
