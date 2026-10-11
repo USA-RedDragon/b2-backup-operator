@@ -363,6 +363,10 @@ func BuildJobTemplate(
 					Containers:    []corev1.Container{container},
 					Volumes:       volumes,
 					Affinity:      buildAffinity(sb),
+					NodeSelector:  sb.Spec.NodeSelector,
+					Tolerations:   sb.Spec.Tolerations,
+
+					PriorityClassName: sb.Spec.PriorityClassName,
 
 					AutomountServiceAccountToken: ptr.To(false),
 					SecurityContext:              podSecurityContext(sb),

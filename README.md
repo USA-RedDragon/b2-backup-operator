@@ -294,6 +294,8 @@ The **database** case is a preference. Co-location makes a dump faster, but it i
 
 Which database pod is matched depends on the engine. mariadb selects `app.kubernetes.io/name: mariadb` plus `app.kubernetes.io/controller: mariadb`; cnpg selects `cnpg.io/instanceRole: primary` in the cluster named by `spec.database.cnpgCluster`, which defaults to `postgresql`. A cluster under any other name has to say so, or the affinity matches nothing. That is harmless now that it is a preference, but the affinity silently stops doing anything.
 
+`spec.nodeSelector`, `spec.tolerations` and `spec.priorityClassName` go onto the backup pod as given, beside whatever affinity applies, and onto the one-off Jobs `b2bk` starts from it.
+
 ## Migrating hand-written restic CronJobs
 
 `b2bk migrate` turns an app-template HelmRelease with a `restic` CronJob controller into a Repository that adopts the existing repository in place, plus a ScheduledBackup. `b2bk parity` then checks the result against the HelmRelease. Neither changes anything; see [docs/b2bk.md](docs/b2bk.md) for every flag.
