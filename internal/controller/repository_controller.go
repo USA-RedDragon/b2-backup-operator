@@ -90,6 +90,7 @@ const (
 
 	staleKeyDeadline = 24 * time.Hour
 	staleKeyRecheck  = 5 * time.Minute
+	staleKeyGrace    = 10 * time.Minute
 )
 
 // SecretKeys are the keys the operator writes to every credentials Secret.
@@ -872,7 +873,9 @@ func (r *RepositoryReconciler) recordKey(ctx context.Context, repo *b2backupv1.R
 // deleteStaleKeys deletes every other key carrying this Repository's name, once
 // no Job that started before the current key was written is still running: a
 // pod reads the Secret when it starts, so such a Job may still be using the old
-// key. After staleKeyDeadline it deletes them regardless.
+// key. A pod started just after the rotation may still have read the old key
+// from the kubelet's cache, so nothing is deleted within staleKeyGrace of it.
+// After staleKeyDeadline it deletes them regardless.
 func (r *RepositoryReconciler) deleteStaleKeys(
 	ctx context.Context, repo *b2backupv1.Repository, api b2.API, keys []b2.Key,
 ) (time.Duration, error) {
@@ -896,6 +899,9 @@ func (r *RepositoryReconciler) deleteStaleKeys(
 	stale = slices.DeleteFunc(stale, func(k b2.Key) bool { return slices.Contains(inUse, k.ApplicationKeyID) })
 
 	if rotated := repo.Status.KeyRotationTime; rotated != nil {
+		if wait := staleKeyGrace - r.now().Sub(rotated.Time); wait > 0 {
+			return wait, nil
+		}
 		holders, err := r.jobsStartedBefore(ctx, repo, rotated.Time)
 		if err != nil {
 			return 0, err

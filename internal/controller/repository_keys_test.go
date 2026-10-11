@@ -150,3 +150,35 @@ func TestReadsSecretSeesEveryWayAPodReadsIt(t *testing.T) {
 		}
 	}
 }
+
+func TestSupersededKeysOutliveTheRotationByAGracePeriod(t *testing.T) {
+	t.Parallel()
+	f := newFakeB2(t)
+	f.AddBucket(sharedBucket)
+	now := time.Now().Truncate(time.Second)
+	r, c := newHarness(t, f, prefixRepo(usePasswordSeed), seedSecretFixture())
+	r.Now = func() time.Time { return now }
+	reconcileN(t, r, 1)
+	succeedInitJob(t, c)
+	oldKey := getRepo(t, c).Status.ApplicationKeyID
+	loseSecret(t, c)
+	reconcileN(t, r, 1)
+	held := func() bool {
+		return slices.ContainsFunc(ownKeys(f), func(k b2.Key) bool { return k.ApplicationKeyID == oldKey })
+	}
+
+	now = now.Add(time.Minute)
+	res := reconcileOnce(t, r)
+	if !held() {
+		t.Fatal("a pod started just after the rotation may still have read the old key, and it was deleted")
+	}
+	if res.RequeueAfter == 0 || res.RequeueAfter > staleKeyGrace {
+		t.Errorf("requeue after %v, want at most %v", res.RequeueAfter, staleKeyGrace)
+	}
+
+	now = now.Add(staleKeyGrace)
+	reconcileOnce(t, r)
+	if held() {
+		t.Error("the superseded key outlived the grace period with nothing holding it")
+	}
+}
