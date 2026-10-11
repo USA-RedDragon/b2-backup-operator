@@ -196,6 +196,11 @@ spec:
           status:
             description: RepositoryStatus is the observed state of a Repository.
             properties:
+              accountID:
+                description: |-
+                  AccountID is the B2 account holding the bucket. Deletion treats a bucket
+                  it cannot find as gone only when the credentials belong to this account.
+                type: string
               adopted:
                 description: Adopted reports whether a restic repository already existed
                   at the path.

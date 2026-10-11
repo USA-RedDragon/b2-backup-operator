@@ -15,7 +15,7 @@ import (
 	"github.com/USA-RedDragon/b2-backup-operator/internal/b2"
 )
 
-// AccountID is the account every bucket and key belongs to.
+// AccountID is the account a new Server's buckets and keys belong to.
 const AccountID = "fakeaccount"
 
 // UnrecognizedOperation is logged and returned for any call the fake does not implement.
@@ -42,6 +42,8 @@ type Server struct {
 	S3APIURL string
 	Logf     func(format string, args ...any)
 
+	account string
+
 	mu       sync.Mutex
 	next     int
 	keys     map[string]*keyRecord
@@ -62,17 +64,23 @@ type version struct {
 	file     b2.File
 }
 
-// New returns a fake account with one master key.
+// New returns a fake account, AccountID, with one master key.
 func New(masterKeyID, masterKey string) *Server {
+	return NewAccount(AccountID, masterKeyID, masterKey)
+}
+
+// NewAccount returns a fake account with the given ID and one master key.
+func NewAccount(accountID, masterKeyID, masterKey string) *Server {
 	s := &Server{
 		S3APIURL: "https://s3.us-east-005.backblazeb2.com",
+		account:  accountID,
 		keys:     map[string]*keyRecord{},
 		buckets:  map[string]*b2.Bucket{},
 		tokens:   map[string]string{},
 		failures: map[string][]Failure{},
 	}
 	s.keys[masterKeyID] = &keyRecord{
-		AccountID: AccountID, ApplicationKeyID: masterKeyID, KeyName: "master",
+		AccountID: s.account, ApplicationKeyID: masterKeyID, KeyName: "master",
 		Capabilities: []string{
 			"listBuckets", "writeBuckets", "deleteBuckets", "listKeys", "writeKeys", "deleteKeys",
 			"listFiles", "readFiles", "writeFiles", "deleteFiles",
@@ -95,7 +103,7 @@ func (s *Server) addBucket(name string, rules []b2.LifecycleRule) *b2.Bucket {
 		rules = []b2.LifecycleRule{}
 	}
 	bucket := &b2.Bucket{
-		AccountID: AccountID, BucketID: fmt.Sprintf("bucket%04d", s.next), BucketName: name,
+		AccountID: s.account, BucketID: fmt.Sprintf("bucket%04d", s.next), BucketName: name,
 		BucketType: b2.BucketTypePrivate, LifecycleRules: rules, Revision: 1,
 	}
 	s.buckets[bucket.BucketID] = bucket
@@ -113,7 +121,7 @@ func (s *Server) addKey(name, bucketID, namePrefix string, caps []string) *keyRe
 	s.next++
 	id := fmt.Sprintf("key%04d", s.next)
 	rec := &keyRecord{
-		AccountID: AccountID, ApplicationKeyID: id, KeyName: name, Capabilities: caps,
+		AccountID: s.account, ApplicationKeyID: id, KeyName: name, Capabilities: caps,
 		BucketID: bucketID, NamePrefix: namePrefix,
 		secret: "secret-" + id,
 	}
@@ -347,7 +355,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		namePrefix = key.NamePrefix
 	}
 	writeJSON(w, map[string]any{
-		"accountId":          AccountID,
+		"accountId":          s.account,
 		"authorizationToken": token,
 		"apiInfo": map[string]any{
 			"storageApi": map[string]any{

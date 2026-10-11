@@ -60,10 +60,12 @@ one of these:
 - **Status is not trusted to scope deletion.** `deletionScope` requires
   `status.bucketName == spec.bucket`, `status.path == EffectivePath()` and a
   non-empty Prefix path, and `deleteRemote` re-reads the bucket and checks its
-  ID. Otherwise nothing is deleted and the finalizer stays; `force-finalize`
-  only ever deletes less. Status is written by the operator alone: `b2bk reinit`
-  goes through the `reinit-at` annotation and the `b2bk-operator` role has no
-  status write access.
+  ID. A bucket it cannot find is taken as gone only when the credentials
+  belong to `status.accountID` (`AccountMismatch` otherwise, including when
+  none is recorded). Otherwise nothing is deleted and the finalizer stays;
+  `force-finalize` only ever deletes less. Status is written by the operator
+  alone: `b2bk reinit` goes through the `reinit-at` annotation and the
+  `b2bk-operator` role has no status write access.
 - **The lifecycle rule never shortens anyone's window.** A rule on the path or a
   parent that sets `daysFromHidingToDeleting` covers the repository whatever its
   value (`CoveredByExistingRule`); only an explicit

@@ -77,6 +77,7 @@ const (
 	reasonManaged  = "Managed"
 
 	reasonRetainedPassword = "SecretHoldsRetainedPassword"
+	reasonAccountMismatch  = "AccountMismatch"
 
 	// SecretFinalizer keeps a credentials Secret holding the only copy of a
 	// restic password from being deleted with its namespace: under
@@ -253,6 +254,9 @@ func (r *RepositoryReconciler) reconcile(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := accountMismatch(repo, auth.AccountID); err != nil {
+		return ctrl.Result{}, withReason(reasonAccountMismatch, err)
+	}
 
 	path := repo.EffectivePath()
 	if repo.Status.BucketID != "" && repo.Status.Path != path {
@@ -304,6 +308,7 @@ func (r *RepositoryReconciler) reconcile(
 				"Found an existing restic repository at %s/%s; adopting it", bucket.BucketName, displayPath(path))
 		}
 	}
+	repo.Status.AccountID = auth.AccountID
 	repo.Status.BucketName = bucket.BucketName
 	repo.Status.BucketID = bucket.BucketID
 	repo.Status.Path = path
@@ -1376,7 +1381,7 @@ func (r *RepositoryReconciler) finalize(ctx context.Context, repo *b2backupv1.Re
 	return ctrl.Result{}, r.Patch(ctx, repo, patch)
 }
 
-type scopeError struct{ msg string }
+type scopeError struct{ reason, msg string }
 
 func (e *scopeError) Error() string { return e.msg }
 
@@ -1387,13 +1392,13 @@ func (e *scopeError) Error() string { return e.msg }
 func deletionScope(repo *b2backupv1.Repository) error {
 	switch {
 	case repo.Status.BucketName != repo.Spec.Bucket:
-		return &scopeError{fmt.Sprintf("status.bucketName %q is not spec.bucket %q",
+		return &scopeError{msg: fmt.Sprintf("status.bucketName %q is not spec.bucket %q",
 			repo.Status.BucketName, repo.Spec.Bucket)}
 	case repo.Status.Path != repo.EffectivePath():
-		return &scopeError{fmt.Sprintf("status.path %q is not the path the spec resolves to, %q",
+		return &scopeError{msg: fmt.Sprintf("status.path %q is not the path the spec resolves to, %q",
 			repo.Status.Path, repo.EffectivePath())}
 	case repo.Spec.Mode == b2backupv1.StorageModePrefix && repo.Status.Path == "":
-		return &scopeError{"a Prefix mode repository has an empty path, which would be the whole shared bucket"}
+		return &scopeError{msg: "a Prefix mode repository has an empty path, which would be the whole shared bucket"}
 	}
 	return nil
 }
@@ -1404,10 +1409,14 @@ func (r *RepositoryReconciler) refuseDeletion(
 	msg := fmt.Sprintf("refusing to delete any B2 data: %s. Nothing was deleted and the finalizer is kept; "+
 		"annotate %s=true to release the Repository and leave the data in place", err.Error(),
 		b2backupv1.AnnotationForceFinalize)
+	reason := reasonScope
+	if scope, ok := errors.AsType[*scopeError](err); ok && scope.reason != "" {
+		reason = scope.reason
+	}
 	r.setCondition(repo, metav1.Condition{
-		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse, Reason: reasonScope, Message: msg,
+		Type: b2backupv1.RepositoryConditionReady, Status: metav1.ConditionFalse, Reason: reason, Message: msg,
 	})
-	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, reasonScope, "Delete", "%s", msg)
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, reason, "Delete", "%s", msg)
 	statusBase := repo.DeepCopy()
 	statusBase.Status.Conditions = nil
 	if err := r.patchStatus(ctx, repo, statusBase); err != nil {
@@ -1503,21 +1512,22 @@ func (r *RepositoryReconciler) releaseSecret(ctx context.Context, repo *b2backup
 	return nil
 }
 
+// deleteRemote deletes the Repository's application key and restic repository.
+// A bucket the credentials cannot find counts as gone only when they belong to
+// the account recorded in status.accountID: a bucket in another account is
+// invisible, not deleted.
 func (r *RepositoryReconciler) deleteRemote(
 	ctx context.Context, repo *b2backupv1.Repository, api b2.API,
 ) (bool, error) {
-	keys, err := api.ListKeys(ctx)
+	auth, err := api.Authorize(ctx)
 	if err != nil {
-		return false, fmt.Errorf("listing application keys: %w", err)
+		return false, fmt.Errorf("authorizing with B2: %w", err)
 	}
-	name := keyName(repo)
-	for _, k := range keys {
-		if k.KeyName != name {
-			continue
-		}
-		if err := api.DeleteKey(ctx, k.ApplicationKeyID); err != nil && !errors.Is(err, b2.ErrNotFound) {
-			return false, fmt.Errorf("deleting application key %s: %w", k.ApplicationKeyID, err)
-		}
+	if err := accountMismatch(repo, auth.AccountID); err != nil {
+		return false, err
+	}
+	if err := deleteOwnKeys(ctx, repo, api); err != nil {
+		return false, err
 	}
 
 	if other, err := r.sharedWith(ctx, repo); err != nil {
@@ -1531,6 +1541,11 @@ func (r *RepositoryReconciler) deleteRemote(
 
 	bucket, err := api.FindBucket(ctx, repo.Spec.Bucket)
 	if errors.Is(err, b2.ErrNotFound) {
+		if repo.Status.AccountID == "" {
+			return false, &scopeError{reason: reasonAccountMismatch, msg: fmt.Sprintf(
+				"bucket %s is not in account %s, and no status.accountID records which account holds it, "+
+					"so it cannot be confirmed gone", repo.Spec.Bucket, auth.AccountID)}
+		}
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 			"Bucket %s is already gone", repo.Spec.Bucket)
 		return true, nil
@@ -1539,7 +1554,7 @@ func (r *RepositoryReconciler) deleteRemote(
 		return false, fmt.Errorf("looking up bucket %s: %w", repo.Spec.Bucket, err)
 	}
 	if bucket.BucketID != repo.Status.BucketID {
-		return false, &scopeError{fmt.Sprintf("bucket %s has ID %s but status.bucketID is %s",
+		return false, &scopeError{msg: fmt.Sprintf("bucket %s has ID %s but status.bucketID is %s",
 			repo.Spec.Bucket, bucket.BucketID, repo.Status.BucketID)}
 	}
 
@@ -1602,6 +1617,34 @@ func (r *RepositoryReconciler) deleteRemote(
 		"Deleted application key %s and the restic repository at %s/%s",
 		repo.Status.ApplicationKeyID, bucket.BucketName, displayPath(path))
 	return true, nil
+}
+
+// accountMismatch refuses credentials for another B2 account than the one
+// status.accountID records.
+func accountMismatch(repo *b2backupv1.Repository, accountID string) error {
+	if recorded := repo.Status.AccountID; recorded != "" && recorded != accountID {
+		return &scopeError{reason: reasonAccountMismatch, msg: fmt.Sprintf(
+			"the B2 credentials belong to account %s, but bucket %s is in account %s, as status.accountID "+
+				"records; point the credentials back at that account", accountID, repo.Spec.Bucket, recorded)}
+	}
+	return nil
+}
+
+func deleteOwnKeys(ctx context.Context, repo *b2backupv1.Repository, api b2.API) error {
+	keys, err := api.ListKeys(ctx)
+	if err != nil {
+		return fmt.Errorf("listing application keys: %w", err)
+	}
+	name := keyName(repo)
+	for _, k := range keys {
+		if k.KeyName != name {
+			continue
+		}
+		if err := api.DeleteKey(ctx, k.ApplicationKeyID); err != nil && !errors.Is(err, b2.ErrNotFound) {
+			return fmt.Errorf("deleting application key %s: %w", k.ApplicationKeyID, err)
+		}
+	}
+	return nil
 }
 
 func (r *RepositoryReconciler) apiFor(ctx context.Context, repo *b2backupv1.Repository) (b2.API, error) {
