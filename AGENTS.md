@@ -2,8 +2,8 @@
 
 A Kubernetes operator that provisions or adopts restic repositories in
 Backblaze B2 and renders the CronJobs that back up into them. Read the README
-first: it explains what the two resources are for and why the defaults are what
-they are.
+first, then docs/operator.md: together they explain what the two resources are
+for and why the defaults are what they are. docs/b2bk.md covers the CLI.
 
 ## Layout
 
@@ -23,6 +23,8 @@ config/crd/bases/              Generated CRDs (DO NOT EDIT)
 config/rbac/role.yaml          Generated RBAC (DO NOT EDIT)
 config/rbac/b2bk_user_role.yaml Roles for people running the CLI
 config/samples/                Example CRs, checked by make test-crd
+docs/                          Operator, b2bk, migration and development docs
+docs/demo/                     VHS tapes and the GIFs the README shows
 Dockerfile                     Manager image
 PROJECT                        Kubebuilder metadata (DO NOT EDIT)
 ```
@@ -171,7 +173,7 @@ one of these:
   database dump lands under from `RESTIC_HOST`, neither of which is in the
   rendered script. `b2bk restore --to-database` reads the filename back from
   the snapshot's recorded path, and `restoredb` tells the dump's format by its
-  first bytes. See the image contract in the README before changing
+  first bytes. See the image contract in docs/operator.md before changing
   `spec.image` handling or `internal/backup/script.go`.
 
 ## Generated files

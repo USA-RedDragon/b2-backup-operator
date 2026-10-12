@@ -446,7 +446,7 @@ func migrateImage(img hrImage, m *migration) error {
 	}
 	m.backup.Spec.Image = image
 	m.notes = append(m.notes, fmt.Sprintf("image: %s is kept as spec.image. It must meet the backup image\n"+
-		"contract in the README: restic behind the wrapper that reads RESTIC_GROUP_BY and\n"+
+		"contract in docs/operator.md: restic behind the wrapper that reads RESTIC_GROUP_BY and\n"+
 		"RESTIC_HOST, ts and dumpdb.", image))
 	return nil
 }
