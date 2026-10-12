@@ -745,7 +745,9 @@ then ignored; do not read a successful run as having honored them.
 ### `unlock NAME` — `writes`
 
 **The usual 3am fix.** A backup killed mid-run leaves a lock, and every later run
-fails waiting on it. Removes only what restic considers stale.
+fails waiting on it. Removes only what restic considers stale. Backup runs do
+the same before they lock the repository, so this is needed only for a lock
+younger than 30 minutes.
 
 | Flag | |
 | --- | --- |

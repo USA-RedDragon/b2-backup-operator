@@ -2,6 +2,7 @@ package backup
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -50,12 +51,14 @@ func TestRender(t *testing.T) {
 			want: `set -o pipefail
 {
 set -euo pipefail
+restic unlock || true
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 @summary db
 restic backup --retry-lock=5m0s --tag=files /data/app \
   --exclude='**/temp*' \
   --exclude='app/export-logs'
 @summary files
+restic unlock || true
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=db --tag=files --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -77,6 +80,7 @@ restic cache --cleanup
 			want: `set -o pipefail
 {
 set -euo pipefail
+restic unlock || true
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb --secret-mount=/var/run/secrets/b2backup/database -- --single-transaction '--where=id > 5' '--ignore-table=app.*' '--comment=it'\''s fine'
 @summary db
 restic cache --cleanup
@@ -95,11 +99,13 @@ restic cache --cleanup
 			want: `set -o pipefail
 {
 set -euo pipefail
+restic unlock || true
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb --secret-mount=/var/run/secrets/b2backup/database -- --skip-ssl
 @summary db
 restic backup --retry-lock=5m0s --tag=files /data \
   --exclude='dumps'
 @summary files
+restic unlock || true
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=db --tag=files --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -117,10 +123,12 @@ restic cache --cleanup
 			want: `set -o pipefail
 {
 set -euo pipefail
+restic unlock || true
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 @summary db
 restic backup --retry-lock=5m0s --tag=db-external --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database --database=reporting
 @summary db-external
+restic unlock || true
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=db --tag=db-external --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -135,8 +143,10 @@ restic cache --cleanup
 			want: `set -o pipefail
 {
 set -euo pipefail
+restic unlock || true
 restic backup --retry-lock=5m0s --tag=files /data
 @summary files
+restic unlock || true
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=files --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -151,8 +161,10 @@ restic cache --cleanup
 			want: `set -o pipefail
 {
 set -euo pipefail
+restic unlock || true
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 @summary db
+restic unlock || true
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=db --keep-hourly=28 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -173,10 +185,12 @@ restic cache --cleanup
 			want: `set -o pipefail
 {
 set -euo pipefail
+restic unlock || true
 restic backup --retry-lock=5m0s --tag=files /data /blobs
 @summary files
 restic backup --retry-lock=5m0s --tag=server /data/server
 @summary server
+restic unlock || true
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=files --tag=server --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -190,6 +204,7 @@ restic cache --cleanup
 			want: `set -o pipefail
 {
 set -euo pipefail
+restic unlock || true
 restic backup --retry-lock=5m0s --tag=custom /data
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -203,6 +218,7 @@ restic cache --cleanup
 			want: `set -o pipefail
 {
 set -euo pipefail
+restic unlock || true
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
 @summary db
 restic cache --cleanup
@@ -355,4 +371,33 @@ func TestPathWithSpaceIsQuoted(t *testing.T) {
 func withSpec(spec b2backupv1.ScheduledBackupSpec) *b2backupv1.ScheduledBackup {
 	spec.Volumes = append(spec.Volumes, b2backupv1.VolumeSpec{ExistingClaim: dataClaim})
 	return &b2backupv1.ScheduledBackup{Spec: spec}
+}
+
+func TestRenderRemovesStaleLocksBeforeLocking(t *testing.T) {
+	for name, spec := range map[string]b2backupv1.ScheduledBackupSpec{
+		"sources": {
+			Sources:   []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}, {Type: b2backupv1.SourceTypeFiles}},
+			Retention: hourlyRetention(),
+		},
+		"script": {Script: "restic backup --tag=custom /data\nrestic forget --prune --keep-last=3"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Render(&b2backupv1.ScheduledBackup{Spec: spec})
+			if err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			lines := strings.Split(got, "\n")
+			first := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "restic ") })
+			if first < 0 || lines[first] != UnlockLine {
+				t.Errorf("the first restic command is not %q:\n%s", UnlockLine, got)
+			}
+			if spec.Script != "" {
+				return
+			}
+			forget := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "restic forget ") })
+			if forget < 1 || lines[forget-1] != UnlockLine {
+				t.Errorf("forget does not follow %q:\n%s", UnlockLine, got)
+			}
+		})
+	}
 }

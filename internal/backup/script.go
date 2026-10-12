@@ -27,6 +27,8 @@ func Render(sb *b2backupv1.ScheduledBackup) (string, error) {
 	var b strings.Builder
 	b.WriteString(preamble)
 	b.WriteString("\n")
+	b.WriteString(UnlockLine)
+	b.WriteString("\n")
 
 	if spec.Script != "" {
 		b.WriteString(strings.TrimRight(spec.Script, "\n"))
@@ -48,6 +50,8 @@ func Render(sb *b2backupv1.ScheduledBackup) (string, error) {
 	}
 
 	if forget := renderForget(spec.Retention, SourceTags(spec.Sources), retryLockFlag(spec)); forget != "" {
+		b.WriteString(UnlockLine)
+		b.WriteString("\n")
 		b.WriteString(forget)
 		b.WriteString("\n")
 	}
@@ -56,6 +60,16 @@ func Render(sb *b2backupv1.ScheduledBackup) (string, error) {
 	b.WriteString("\n")
 	return b.String(), nil
 }
+
+// UnlockLine removes the locks restic considers stale: older than 30 minutes,
+// or held by a process that no longer runs on this host. A live restic
+// refreshes its lock every 5 minutes, so this never removes one in use. A
+// restic that died without unlocking leaves its lock behind, and restic
+// refuses an exclusive lock, which forget --prune takes, while any other lock
+// exists, stale or not. Backups run it first, since a leaked exclusive lock
+// stops restic backup too, and again before forget. A failed unlock does not
+// fail the run: it only means a stale lock may still be in the way.
+const UnlockLine = "restic unlock || true"
 
 func retryLockFlag(spec *b2backupv1.ScheduledBackupSpec) string {
 	if spec.RetryLock == nil || spec.RetryLock.Duration <= 0 {

@@ -450,11 +450,12 @@ var groupByFlag = regexp.MustCompile(` --group-by[= ](\S+)`)
 // both the operator's and the one hand-written scripts carried, and what the
 // operator adds to each line, so two scripts compare equal when they run the
 // same commands. It drops the lines that record each snapshot's summary, which
-// read the repository and change nothing in it.
+// read the repository and change nothing in it, and restic unlock, which
+// removes only stale locks.
 func normalizeScript(s string) (string, []string) {
 	var lines, dumps []string
 	for _, line := range joinContinuations(scriptBody(s)) {
-		if backup.IsSummaryLine(line) {
+		if backup.IsSummaryLine(line) || strings.TrimSpace(line) == backup.UnlockLine {
 			continue
 		}
 		line = ignoredFlags.ReplaceAllString(line, "")
