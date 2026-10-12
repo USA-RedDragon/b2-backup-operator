@@ -109,15 +109,16 @@ func runsOf(m *Model, r *row) []run {
 		if runs[i].result != b2backupv1.BackupRunFailed {
 			continue
 		}
+		j, ok := jobs[runs[i].job]
 		if line := m.lastLines[runs[i].job]; line != "" {
 			runs[i].reason = line
-		} else if j, ok := jobs[runs[i].job]; ok {
+		} else if ok {
 			runs[i].reason = jobExit(&r.jobs[j], r.pods[runs[i].job])
-			if runs[i].end.IsZero() {
-				for _, c := range r.jobs[j].Status.Conditions {
-					if c.Type == "Failed" {
-						runs[i].end = c.LastTransitionTime.Time
-					}
+		}
+		if ok && runs[i].end.IsZero() {
+			for _, c := range r.jobs[j].Status.Conditions {
+				if c.Type == "Failed" {
+					runs[i].end = c.LastTransitionTime.Time
 				}
 			}
 		}

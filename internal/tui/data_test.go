@@ -10,7 +10,12 @@ import (
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+
+	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 )
 
 func TestNextRunIsInTheBackupsTimeZone(t *testing.T) {
@@ -302,5 +307,31 @@ func TestBuildTreeCountsFilesBelowEachFolder(t *testing.T) {
 	kids := tr.children["/data"]
 	if kids[0].Type != nodeDir || kids[len(kids)-1].Path != "/data/rsa_key.pub.pem" {
 		t.Errorf("folders do not come first: %+v", kids)
+	}
+}
+
+func TestFailedRunWithALogReasonEndsWhenItsJobFailed(t *testing.T) {
+	t.Parallel()
+	start := time.Now().Add(-time.Hour)
+	failedAt := start.Add(3 * time.Second)
+	r := &row{
+		sb: &b2backupv1.ScheduledBackup{Status: b2backupv1.ScheduledBackupStatus{History: []b2backupv1.BackupRun{{
+			JobName: "j", Result: b2backupv1.BackupRunFailed, StartTime: &metav1.Time{Time: start},
+		}}}},
+		jobs: []batchv1.Job{{Name: "j", Status: batchv1.JobStatus{Failed: 1, Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: metav1.Time{Time: failedAt},
+		}}}}},
+	}
+	m := &Model{lastLines: map[string]string{"j": "Fatal: all source directories/files do not exist"}}
+
+	runs := runsOf(m, r)
+	if len(runs) != 1 {
+		t.Fatalf("runs = %+v", runs)
+	}
+	if got := runs[0].duration(time.Now()); got != 3*time.Second {
+		t.Errorf("duration = %v, want the 3s until the Job failed", got)
+	}
+	if runs[0].reason != m.lastLines["j"] {
+		t.Errorf("reason = %q, want the log line", runs[0].reason)
 	}
 }
