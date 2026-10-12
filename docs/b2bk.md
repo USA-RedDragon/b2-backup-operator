@@ -580,6 +580,20 @@ meta-command but the `\restrict` and `\unrestrict` lines pg_dump writes, since
 psql runs those itself and one such as `\connect` would carry on outside the
 transaction. A plain dump taken with `--create` has a `\connect` and is refused.
 
+CNPG creates an app's extensions as the superuser, so the app user that owns the
+database and restores it cannot drop, create or comment on them, and the dump's
+`DROP EXTENSION`, `CREATE EXTENSION` and `COMMENT ON EXTENSION` would fail the
+restore. When the restoring user is not a superuser, `restoredb` first asks the
+database which extensions it has and who owns them. It skips those statements, or
+the matching `pg_restore` list entries, for each extension the database has and
+the user does not own, and leaves that extension as it is. It prints each
+skipped statement or entry. An extension that the dump needs, that the database
+does not have, and that the user cannot create stops the restore before anything
+changes; the error names it, and a superuser must run `CREATE EXTENSION` for it
+first. A restore into a new, empty database therefore needs the untrusted
+extensions, such as `earthdistance`, `vector` and `vchord`, created before it. A
+dry run does not connect to the database, so it does not make these checks.
+
 A mariadb restore is all or nothing too, although a mariadb-dump cannot run in
 one transaction: its `DROP TABLE` and `CREATE TABLE` commit on their own. So
 `restoredb` streams the dump into a staging database, `<db>__b2bk_restore`,
