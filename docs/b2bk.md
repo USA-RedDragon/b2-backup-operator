@@ -16,6 +16,8 @@ through as the container wrote them; b2bk adds nothing to them. The dashboard
 follows `NO_COLOR` too; see [Settings](#settings). `shell` passes your
 `NO_COLOR` into the pod's shell, so tools you run there see it as well.
 
+![b2bk get, status, backup --follow, snapshots, doctor and restore --to-new-pvc against a demo cluster](demo/cli.gif)
+
 ## What a command does to your data
 
 Every command below is marked. It is the first thing to check at 3am.
@@ -140,6 +142,8 @@ timeout when the image is large or the node is cold; the timeout message names
 the flag.
 
 ## The dashboard
+
+![The b2bk dashboard: backups in mixed states, run history, a running backup's progress, snapshots and their files, a restore into a new claim, doctor and the help overlay](demo/tui.gif)
 
 `b2bk` with no command opens a full-screen dashboard when stdin and stdout are
 both a terminal. Piped, redirected, or with `TERM=dumb`, it prints help as

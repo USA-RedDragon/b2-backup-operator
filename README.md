@@ -410,6 +410,8 @@ make lint                      # golangci-lint with the logcheck plugin
 make build-installer IMG=...   # render dist/install.yaml
 ```
 
+The recordings in [docs/demo](docs/demo) are [VHS](https://github.com/charmbracelet/vhs) tapes. `make demo` records them again against a throwaway Kind cluster, `b2bk-demo`, through its own kubeconfig in `bin/`: it runs the operator, the B2 API stub from the e2e tests and an S3 server, seeds a few apps with backups, and renders `docs/demo/*.gif`. The Makefile fetches VHS and ttyd into `bin/`; Docker, ffmpeg and Chrome or Chromium must be installed. `make demo-clean` deletes the cluster and its images.
+
 Most of the validation lives in CEL rules on the CRDs, which no Go test can reach: a rule that fails to compile makes every CRD install fail, and one that never fires is invisible. `make test-crd` runs them against a real API server.
 
 Pushes to `main` publish `beta` images. A `v*` tag publishes the manager image to `ghcr.io/usa-reddragon/b2-backup-operator`, the rendered manifests to `ghcr.io/usa-reddragon/b2-backup-operator-manifests`, and the `b2bk` archives and checksums to the GitHub release.
@@ -422,7 +424,11 @@ Pushes to `main` publish `beta` images. A `v*` tag publishes the manager image t
 b2bk doctor -n myapp-prod        # or: kubectl b2bk doctor -n myapp-prod
 ```
 
+![b2bk in a terminal: get -A lists every repository and backup, status names the backup it picked, backup --follow streams a run, then snapshots, doctor on a failing backup, and a restore into a new claim](docs/demo/cli.gif)
+
 Run `b2bk` alone in a terminal for a full-screen dashboard of every backup in the namespace, or every namespace with `-A`: status as the operator writes it, logs with restic's progress, snapshots and their files, a restore wizard with the same guards as `b2bk restore`, and `doctor`. See [The dashboard](docs/b2bk.md#the-dashboard). The dashboard follows [`NO_COLOR`](https://no-color.org) and keeps every status readable without color; the other commands never print color.
+
+![The b2bk dashboard: five backups in mixed states, one backup's run history, a running backup's log with its progress bar, database and file snapshots with the file pane, a restore into a new claim with its dry run, doctor on a failing backup, and the help overlay](docs/demo/tui.gif)
 
 A command that cannot destroy data, such as `status`, `logs`, `snapshots` or `backup`, acts on the namespace's only ScheduledBackup when it is given no name. One that can, such as `restore`, `prune` or `unlock`, always needs the name.
 
