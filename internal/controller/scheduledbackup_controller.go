@@ -181,6 +181,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 	hash := desired.Annotations[backup.AnnotationSpecHash]
 
 	var cronJobUID types.UID
+	var cronActive []corev1.ObjectReference
 
 	var current batchv1.CronJob
 	err = r.Get(ctx, types.NamespacedName{Namespace: desired.Namespace, Name: desired.Name}, &current)
@@ -228,7 +229,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 		}
 		sb.Status.LastScheduleTime = current.Status.LastScheduleTime
 		sb.Status.LastSuccessfulTime = laterTime(sb.Status.LastSuccessfulTime, current.Status.LastSuccessfulTime)
-		sb.Status.Active = int32(len(current.Status.Active))
+		cronActive = current.Status.Active
 		cronJobUID = current.UID
 	}
 	synced = true
@@ -242,6 +243,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 	sb.Status.History = mergeHistory(sb.Status.History, runs)
+	sb.Status.Active = activeRuns(cronActive, runs)
 	sb.Status.LastSuccessfulTime = laterTime(sb.Status.LastSuccessfulTime, lastSucceeded(sb.Status.History))
 
 	if err := r.reconcileTrigger(ctx, sb, &repo, runs, hold); err != nil {

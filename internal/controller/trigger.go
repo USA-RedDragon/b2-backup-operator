@@ -159,6 +159,21 @@ func runFromJob(job *batchv1.Job) observedRun {
 	return observedRun{run: run}
 }
 
+// activeRuns counts the runs in flight: the Jobs the CronJob lists as active
+// and the ones observed running, triggered runs included, each once.
+func activeRuns(cronActive []corev1.ObjectReference, runs []observedRun) int32 {
+	names := map[string]bool{}
+	for _, ref := range cronActive {
+		names[ref.Name] = true
+	}
+	for _, o := range runs {
+		if o.active {
+			names[o.run.JobName] = true
+		}
+	}
+	return int32(len(names))
+}
+
 func withResult(run b2backupv1.BackupRun, result b2backupv1.BackupRunResult) b2backupv1.BackupRun {
 	run.Result = result
 	return run

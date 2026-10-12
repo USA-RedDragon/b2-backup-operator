@@ -284,3 +284,23 @@ func TestARestoreThroughAnotherBackupHoldsEveryBackupOfItsTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestActiveCountsATriggeredRun(t *testing.T) {
+	r, c := backupHarness(t, initializedRepo(), triggeredBackup(triggerAt, nil))
+	reconcileBackup(t, r)
+
+	jobs := manualJobs(t, c)
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 manual Job, got %d", len(jobs))
+	}
+	jobs[0].Status.Active = 1
+	jobs[0].Status.StartTime = ptr.To(metav1.Now())
+	if err := c.Status().Update(context.Background(), &jobs[0]); err != nil {
+		t.Fatal(err)
+	}
+	reconcileBackup(t, r)
+
+	if got := loadBackup(t, c).Status.Active; got != 1 {
+		t.Errorf("active = %d, want 1 for the triggered run in flight", got)
+	}
+}
