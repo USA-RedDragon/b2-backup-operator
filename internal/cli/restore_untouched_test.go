@@ -137,8 +137,9 @@ func TestADatabaseRestoreThatRestoredbStoppedBeforeWritingIsNotHeld(t *testing.T
 // whatever restic did.
 func TestRestoreDatabaseCommandExitsWithRestoredbsStatus(t *testing.T) {
 	t.Parallel()
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh")
+	shell := pipefailShell()
+	if shell == nil {
+		t.Skip("neither busybox nor bash is installed")
 	}
 	bin := t.TempDir()
 	scripts := map[string]string{
@@ -169,7 +170,7 @@ func TestRestoreDatabaseCommandExitsWithRestoredbsStatus(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			cmd := exec.Command(argv[0], argv[1:]...)
+			cmd := exec.Command(shell[0], append(shell[1:], argv[1:]...)...)
 			cmd.Env = append([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")}, tt.env...)
 			err := cmd.Run()
 			got := 0
@@ -183,4 +184,16 @@ func TestRestoreDatabaseCommandExitsWithRestoredbsStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+// pipefailShell is a shell with set -o pipefail: busybox sh, as in the backup
+// image, else bash. dash, the sh of Debian and Ubuntu, does not have it.
+func pipefailShell() []string {
+	if _, err := exec.LookPath("busybox"); err == nil {
+		return []string{"busybox", "sh"}
+	}
+	if _, err := exec.LookPath("bash"); err == nil {
+		return []string{"bash"}
+	}
+	return nil
 }
