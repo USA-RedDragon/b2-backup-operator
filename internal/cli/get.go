@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 )
 
 func newGetCommand(f *Factory) *cobra.Command {
@@ -281,24 +282,4 @@ func writeNamespace(w *printer, allNamespaces bool, ns string) {
 	}
 }
 
-// lastSuccess is when the backup last succeeded: status.lastSuccessfulTime or
-// the newest succeeded run in its history, whichever is later, since an older
-// operator took lastSuccessfulTime from the CronJob alone and left out
-// triggered runs.
-func lastSuccess(sb *b2backupv1.ScheduledBackup) *metav1.Time {
-	latest := sb.Status.LastSuccessfulTime
-	for i := range sb.Status.History {
-		run := &sb.Status.History[i]
-		if run.Result != b2backupv1.BackupRunSucceeded {
-			continue
-		}
-		at := run.CompletionTime
-		if at == nil {
-			at = run.StartTime
-		}
-		if at != nil && (latest == nil || at.After(latest.Time)) {
-			latest = at
-		}
-	}
-	return latest
-}
+func lastSuccess(sb *b2backupv1.ScheduledBackup) *metav1.Time { return backup.LastSuccess(sb) }
