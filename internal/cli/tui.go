@@ -229,9 +229,7 @@ func (b *tuiBackend) Operator(ctx context.Context) tui.OperatorInfo {
 	info := tui.OperatorInfo{Found: true, Ready: d.Status.AvailableReplicas > 0}
 	for _, ctr := range d.Spec.Template.Spec.Containers {
 		if ctr.Name == "manager" {
-			if i := strings.LastIndex(ctr.Image, ":"); i >= 0 && !strings.Contains(ctr.Image[i:], "/") {
-				info.Version = strings.SplitN(ctr.Image[i+1:], "@", 2)[0]
-			}
+			info.Version = imageTag(ctr.Image)
 		}
 	}
 	return info
@@ -730,4 +728,13 @@ func (b *tuiBackend) Restore(ctx context.Context, req tui.RestoreRequest, w io.W
 		o.toDatabase = true
 	}
 	return runRestore(ctx, f, c, sb, o)
+}
+
+func imageTag(image string) string {
+	image, _, _ = strings.Cut(image, "@")
+	i := strings.LastIndex(image, ":")
+	if i < 0 || strings.Contains(image[i:], "/") {
+		return ""
+	}
+	return image[i+1:]
 }
