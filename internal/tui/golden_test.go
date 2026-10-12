@@ -182,7 +182,7 @@ func TestGoldenRestoreTarget(t *testing.T) {
 	p.press("G", "k", "s")
 	p.waitFor("5 snapshots")
 	p.press("r")
-	p.waitFor("Where should it go?", "Over the live volume", "Needs a db snapshot")
+	p.waitFor("Where should it go?", "Over the live volume", "unavailable: needs a db snapshot")
 	p.golden()
 }
 

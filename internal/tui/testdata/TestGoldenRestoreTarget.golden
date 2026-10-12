@@ -8,10 +8,10 @@
         name  [ vaultwarden-restore-1011  ]   size  [ 1Gi   ]   class  longhorn-nvme (from data)
     ○ Download to this computer   Stream files into a local folder.  folder [ ./vaultwarden-5d1e09ab  ]
     ○ Over the live volume        Replace /data in place. Suspends the schedule while it runs.
-    ○ Into the database           Needs a db snapshot; switch the tag to db with tab in snapshots
+    - Into the database           unavailable: needs a db snapshot; switch the tag to db with tab in
+                                  snapshots
 
   Options   [ ] only path  [ /data        ]   [ ] remove files not in the snapshot   [x] dry run first
-
 
 
 

@@ -125,7 +125,7 @@ func TestUnavailableTargetsAreSkipped(t *testing.T) {
 	if w.target != TargetDownload {
 		t.Errorf("down moved onto an unavailable target: %v", w.target)
 	}
-	if !strings.Contains(screenText(m), "The operator has not rendered") {
+	if !strings.Contains(screenText(m), "- Over the live volume        unavailable: the operator has not rendered") {
 		t.Errorf("the reason is not shown:\n%s", screenText(m))
 	}
 }

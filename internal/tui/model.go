@@ -310,9 +310,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.tick()
 	case doneMsg:
 		if msg.err != nil {
-			m.setFlash(msg.err.Error(), styleFail)
+			m.setFlash(symFail+" "+msg.err.Error(), styleFail)
 		} else if msg.text != "" {
-			m.setFlash(msg.text, styleOK)
+			m.setFlash(symSucceeded+" "+msg.text, styleOK)
 		}
 		return m, nil
 	case lastLineMsg:

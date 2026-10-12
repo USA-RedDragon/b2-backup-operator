@@ -362,8 +362,8 @@ func (w *restoreScreen) targetLines(r *row, t Target, width int) []string {
 		cursor = styleAccent.Render(symCursor)
 	}
 	if why != "" {
-		reason := wrapped(sentence(why), width-34, "", styleDim)
-		out := []string{styleDim.Render(fmt.Sprintf("    %s %s ", symUnchecked, fit(name, 27))) + reason[0]}
+		reason := wrapped("unavailable: "+why, width-34, "", styleDim)
+		out := []string{styleDim.Render(fmt.Sprintf("    %s %s ", symUnavailable, fit(name, 27))) + reason[0]}
 		if len(reason) > 1 {
 			out = append(out, fit("", 34)+trunc(reason[1], width-34))
 		}
@@ -886,12 +886,4 @@ func dryRunItem(verb, rest string) string {
 	p, size, _ := strings.Cut(rest, " with size ")
 	change := map[string]string{"restored": "written", "updated": "modified", "deleted": "removed"}[verb]
 	return fit(p, 36) + " " + fmt.Sprintf("%9s", size) + "  " + change
-}
-
-// sentence starts an error message with a capital, as a line of its own.
-func sentence(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }
