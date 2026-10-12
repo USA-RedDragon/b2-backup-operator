@@ -26,8 +26,17 @@ func main() {
 		f.PutFile(bucket.BucketID, file, 155)
 	}
 
+	var api http.Handler = f
+	if dir := os.Getenv("MIRROR_DIR"); dir != "" {
+		m := newMirror(dir, f)
+		api = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			m.sync()
+			f.ServeHTTP(w, r)
+		})
+	}
+
 	mux := http.NewServeMux()
-	mux.Handle("/b2api/", f)
+	mux.Handle("/b2api/", api)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
