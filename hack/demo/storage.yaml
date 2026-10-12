@@ -31,7 +31,7 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: buckets
-          image: docker.io/rclone/rclone:1.75.1@sha256:45401ad7410db1d67ffdb58e19059ad20b0d8e0285a60e38bbec55cc1019c7a5
+          image: docker.io/rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5
           command: ["mkdir", "-p", "/data/demo-backups"]
           volumeMounts:
             - {name: data, mountPath: /data}
@@ -58,7 +58,7 @@ spec:
             - {name: data, mountPath: /data, readOnly: true}
           securityContext: *restricted
         - name: s3
-          image: docker.io/rclone/rclone:1.75.1@sha256:45401ad7410db1d67ffdb58e19059ad20b0d8e0285a60e38bbec55cc1019c7a5
+          image: docker.io/rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5
           args: ["serve", "s3", "--addr=:9000", "--bwlimit=2M", "--config=", "/data"]
           env:
             - {name: HOME, value: /tmp}
