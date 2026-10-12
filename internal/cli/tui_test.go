@@ -66,6 +66,8 @@ func TestBareB2bkOpensTheTUIOnATerminal(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv(tui.EnvAllNamespaces, "")
 	t.Setenv(tui.EnvMouse, "")
+	t.Setenv(tui.EnvNoColor, "")
+	t.Setenv(tui.EnvCLIColor, "")
 	tests := []struct {
 		name string
 		args []string
@@ -82,6 +84,7 @@ func TestBareB2bkOpensTheTUIOnATerminal(t *testing.T) {
 		{"flags over the env", []string{"--mouse=false", "-A"},
 			map[string]string{tui.EnvMouse: "true", tui.EnvAllNamespaces: "false"}, "",
 			tui.Options{AllNamespaces: true}},
+		{"NO_COLOR", nil, map[string]string{tui.EnvNoColor: "yes"}, "", tui.Options{Mouse: true, NoColor: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

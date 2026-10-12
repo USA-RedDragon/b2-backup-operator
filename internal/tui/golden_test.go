@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,12 @@ type program struct {
 
 func runProgram(t *testing.T, b *fakeBackend, opts Options, width, height int) *program {
 	t.Helper()
+	return runProgramIn(t, b, opts, nil, width, height)
+}
+
+// runProgramIn is runProgram with the color profile Run would pick in environ.
+func runProgramIn(t *testing.T, b *fakeBackend, opts Options, environ []string, width, height int) *program {
+	t.Helper()
 	m := New(t.Context(), b, opts)
 	m.now = func() time.Time { return testNow }
 	t.Cleanup(m.Close)
@@ -31,7 +38,7 @@ func runProgram(t *testing.T, b *fakeBackend, opts Options, width, height int) *
 		return msg
 	}
 	p.tm = teatest.NewTestModel(t, m, teatest.WithInitialTermSize(width, height),
-		teatest.WithProgramOptions(tea.WithFilter(record)))
+		teatest.WithProgramOptions(programOptions(opts, io.Discard, environ, record)...))
 	return p
 }
 

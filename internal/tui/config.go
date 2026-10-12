@@ -17,12 +17,22 @@ const (
 	EnvMouse         = "B2BK_MOUSE"
 )
 
+// Environment variables that turn color off.
+const (
+	EnvNoColor       = "NO_COLOR"
+	EnvCLIColor      = "CLICOLOR"
+	EnvCLIColorForce = "CLICOLOR_FORCE"
+)
+
 // Options are the TUI's settings.
 type Options struct {
 	// AllNamespaces starts on every namespace instead of the current one.
 	AllNamespaces bool
 	// Mouse captures the mouse for clicks and the wheel.
 	Mouse bool
+	// NoColor draws without color, keeping bold, underline and reverse video.
+	// Only the environment sets it; see NoColor.
+	NoColor bool
 }
 
 // DefaultOptions are the settings with no flag, variable or file.
@@ -94,7 +104,20 @@ func LoadOptions(flags Flags, getenv func(string) string) (Options, error) {
 
 	set(&opts.AllNamespaces, flags.AllNamespaces)
 	set(&opts.Mouse, flags.Mouse)
+	opts.NoColor = NoColor(getenv)
 	return opts, nil
+}
+
+// NoColor reports whether the environment asks for no color: NO_COLOR set to
+// anything but the empty string (https://no-color.org), or CLICOLOR=0 without
+// CLICOLOR_FORCE (https://bixense.com/clicolors). NO_COLOR wins over
+// CLICOLOR_FORCE.
+func NoColor(getenv func(string) string) bool {
+	if getenv(EnvNoColor) != "" {
+		return true
+	}
+	force := getenv(EnvCLIColorForce)
+	return getenv(EnvCLIColor) == "0" && (force == "" || force == "0")
 }
 
 func set(into *bool, v *bool) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -212,7 +213,9 @@ func Run(ctx context.Context, b Backend, opts Options, in io.Reader, out io.Writ
 	m := New(ctx, b, opts)
 	defer m.Close()
 
-	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithInput(in), tea.WithOutput(out))
+	popts := append(programOptions(opts, out, os.Environ(), nil),
+		tea.WithContext(ctx), tea.WithInput(in), tea.WithOutput(out))
+	p := tea.NewProgram(m, popts...)
 	_, err := p.Run()
 	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
 		return context.Canceled
@@ -224,4 +227,45 @@ func Run(ctx context.Context, b Backend, opts Options, in io.Reader, out io.Writ
 		return fmt.Errorf("running the TUI: %w", err)
 	}
 	return nil
+}
+
+// programOptions fixes the color profile the program draws with, and passes
+// every message through filter when it is not nil.
+func programOptions(opts Options, out io.Writer, environ []string, filter func(tea.Model, tea.Msg) tea.Msg) []tea.ProgramOption {
+	profile := programProfile(opts, out, environ)
+	keep := func(m tea.Model, msg tea.Msg) tea.Msg {
+		msg = keepProfile(profile, msg)
+		if filter != nil && msg != nil {
+			msg = filter(m, msg)
+		}
+		return msg
+	}
+	return []tea.ProgramOption{tea.WithColorProfile(profile), tea.WithFilter(keep)}
+}
+
+// programProfile is the color profile the terminal supports, with no color
+// at all under NoColor. colorprofile alone honors only a NO_COLOR that parses
+// as true, where https://no-color.org means any value but the empty string.
+func programProfile(opts Options, out io.Writer, environ []string) colorprofile.Profile {
+	profile := colorprofile.Detect(out, environ)
+	if opts.NoColor {
+		profile = min(profile, colorprofile.ASCII)
+	}
+	return profile
+}
+
+// keepProfile stops a terminal's answer to a capability query from raising
+// the color profile above max, which Bubble Tea otherwise does on RGB or Tc.
+func keepProfile(maxProfile colorprofile.Profile, msg tea.Msg) tea.Msg {
+	switch msg := msg.(type) {
+	case tea.CapabilityMsg:
+		if (msg.Content == "RGB" || msg.Content == "Tc") && maxProfile < colorprofile.TrueColor {
+			return nil
+		}
+	case tea.ColorProfileMsg:
+		if msg.Profile > maxProfile {
+			return tea.ColorProfileMsg{Profile: maxProfile}
+		}
+	}
+	return msg
 }

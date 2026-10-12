@@ -1,0 +1,30 @@
+ [1;7m b2bk [m  › gitea › restic › logs   job/restic-manual-x8k2qp   [m◐ running 2m14s[m     following · [mf to stop[m 
+[m────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+  files /data  [m███████████████████████████▍[m[m░░░░░░░░░░░░░░░░░[m   61%   1.182 GiB / 1.937 GiB   ETA 1m20s
+[m────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+  [m18:48:02[m + restic backup --retry-lock=5m0s --tag=files /data
+  [m18:48:03[m using parent snapshot 5d1e09ab
+  [m18:48:03[m open repository
+  [m18:48:05[m lock repository
+  [m18:48:06[m load index files
+  [m18:48:09[m start scan on [/data]
+  [m18:48:09[m start backup on [/data]
+  [m18:48:41[m scan finished in 32.118s: 41822 files, 1.937 GiB
+  [m18:49:20[m warning: /data/gitea/indexers/issues.bleve/store: file changed during read, retrying
+  [m18:49:21[m [mcolored by the app[m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[m────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+ [1mf[m follow  [1m/[m search  [1mw[m wrap  [1mg/G[m top/end  [1m[ ][m older/newer run  [1mx[m cancel run  [1mesc[m back

@@ -1,0 +1,30 @@
+ [1;7m b2bk [m  context [1madmin@home[m  namespace [1mall[m                     operator v0.1.4 [m● ready[m   B2 us-east-005 
+[m────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+  6 backups   [m● 3 healthy[m   [m◐ 1 running[m   [m⏸ 1 suspended[m   [m✖ 1 failing[m                 [1m/[m filter   [1m?[m help 
+[m────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+
+  [1mKEYS ON THIS SCREEN[m                               [1mEVERYWHERE[m
+  [1m↑↓[m        move                                    [1m?[m         show every key for this screen
+  [1m⏎[m         open                                    [1mm[m         mouse off, so the terminal selects text
+  [mb         backup now *[m                            [1mesc[m       back one screen
+  [1ml[m         logs                                    [1mq[m         quit, also ctrl+c; removes its pods
+  [1ms[m         snapshots                               
+  [1md[m         doctor                                  [1mUNAVAILABLE *[m
+  [mp         pause *[m                                 [mb p: RBAC does not let you patch scheduledbackups[m
+  [1mr[m         restore                                 [min every namespace[m
+  [1mA[m         all ns                                  
+  [1mq[m         quit                                    
+  [1mc[m         integrity check, optionally reading data
+  [1mx[m         cancel the running backup               
+  [1mS[m         problems first, or by namespace         
+  [1m/[m         filter by namespace or name             
+  [1mPgUp PgDn[m page                                    
+
+[m  any key closes this[m
+
+
+
+[m────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+ [1mgitea/restic[m  backup started 18:48:02 by hand   [mrunning 2m14s[m
+[m────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+ [1m↑↓[m move  [1m⏎[m open  [1ml[m logs  [1ms[m snapshots  [1md[m doctor  [1mr[m restore  [1mA[m all ns  [1mq[m quit
