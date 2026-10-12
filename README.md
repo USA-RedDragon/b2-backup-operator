@@ -422,7 +422,7 @@ Pushes to `main` publish `beta` images. A `v*` tag publishes the manager image t
 b2bk doctor -n myapp-prod        # or: kubectl b2bk doctor -n myapp-prod
 ```
 
-Run `b2bk` alone in a terminal for a full-screen dashboard of every backup in the namespace, or every namespace with `-A`: status as the operator writes it, logs with restic's progress, snapshots and their files, a restore wizard with the same guards as `b2bk restore`, and `doctor`. See [The dashboard](docs/b2bk.md#the-dashboard).
+Run `b2bk` alone in a terminal for a full-screen dashboard of every backup in the namespace, or every namespace with `-A`: status as the operator writes it, logs with restic's progress, snapshots and their files, a restore wizard with the same guards as `b2bk restore`, and `doctor`. See [The dashboard](docs/b2bk.md#the-dashboard). The dashboard follows [`NO_COLOR`](https://no-color.org) and keeps every status readable without color; the other commands never print color.
 
 A command that cannot destroy data, such as `status`, `logs`, `snapshots` or `backup`, acts on the namespace's only ScheduledBackup when it is given no name. One that can, such as `restore`, `prune` or `unlock`, always needs the name.
 

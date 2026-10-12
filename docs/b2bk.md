@@ -9,6 +9,12 @@ kubectl b2bk <command>    # installed as a kubectl plugin
 b2bk <command>            # standalone
 ```
 
+The commands print plain text: no color and no other escape sequences, with or
+without `NO_COLOR`. Status is in words and the symbols `✔`, `!` and `✖`. `logs`
+and the restic output of `check`, `exec` and the other pod commands are passed
+through as the container wrote them; b2bk adds nothing to them. The dashboard
+follows `NO_COLOR` too; see [Settings](#settings).
+
 ## What a command does to your data
 
 Every command below is marked. It is the first thing to check at 3am.
@@ -150,9 +156,15 @@ has.
 | --- | --- | --- | --- | --- |
 | Start on every namespace | `-A`, `--all-namespaces` | `B2BK_ALL_NAMESPACES` | `tui.allNamespaces` | `false`: the namespace from the kubeconfig or `-n` |
 | Capture the mouse | `--mouse` | `B2BK_MOUSE` | `tui.mouse` | `true` |
+| Draw without color | | `NO_COLOR`, `CLICOLOR` | | color, as much as the terminal supports |
 
 A flag wins over the environment, the environment over the config file, and
-the config file over the default. The config file is
+the config file over the default. Color has no flag or config key: it follows
+the [`NO_COLOR`](https://no-color.org) convention. `NO_COLOR` set to any value
+but the empty string, `0` and `false` included, turns color off, and wins over
+`CLICOLOR_FORCE`. `CLICOLOR=0` turns it off too, unless `CLICOLOR_FORCE` is set
+to something other than `0`. Without color the dashboard still uses bold,
+underline and reverse video. The config file is
 `$XDG_CONFIG_HOME/b2bk/config.yaml`, else `~/.config/b2bk/config.yaml`. An
 unknown key in it, or an environment value that is not `true` or `false`, is
 an error, so a typo does not go unnoticed.
@@ -189,7 +201,12 @@ tui:
   backup you start with `b` is followed from the start, and its progress also
   shows on the dashboard.
 - **Colors.** The 16 colors of the terminal, so the dashboard follows your
-  theme. `NO_COLOR` turns color off. Below 60 columns by 12 lines it asks for a
+  theme. Color never carries meaning alone, so nothing is lost under
+  `NO_COLOR`: the selected row has `›` and is bold, a focused field is
+  underlined with a `█` cursor, the current tag is in brackets, every status
+  is a symbol and a word (`● ok`, `◐ running`, `⏸ suspended`, `✖ failed`),
+  the progress bar is `█` on `░`, a key you may not use is marked `*` in `?`,
+  and the result of an action starts with `✔` or `✖`. Below 60 columns by 12 lines it asks for a
   larger terminal; narrower terminals drop columns and shorten text with `…`.
 
 ### The restic pod
@@ -215,8 +232,8 @@ any other b2bk pod.
 a confirmation.
 
 - **Targets.** A new claim, a download to this computer, over the live volume,
-  or into the database, safest first. A target the backup cannot use is shown
-  dimmed with the reason: the error `restore` would give, a missing RBAC rule,
+  or into the database, safest first. A target the backup cannot use is
+  marked `-` instead of `○`, dimmed, and says `unavailable:` with the reason: the error `restore` would give, a missing RBAC rule,
   or a database restore offered on a files snapshot.
 - **Options.** Only a path (the folder or file selected in the file pane, when
   the wizard starts there), remove files that are not in the snapshot
