@@ -166,6 +166,15 @@ one of these:
   operator suspend their CronJobs and skip triggers whatever `spec.suspend`
   says. Only a complete restore of the same target, or `b2bk resume`, clears a
   partial entry.
+- **restic must never die holding a lock.** restic 0.19 refuses an exclusive
+  lock while any other lock exists, stale or not, so one leaked lock fails
+  every later `forget --prune`. restic removes its lock on SIGTERM, but not
+  when SIGPIPE (writing to a pipe nobody reads) or SIGKILL ends it. So
+  `restoreDatabaseCommand` sends restic SIGTERM and drains its output when
+  restoredb fails, the idle pod's PID 1 sends every restic SIGTERM and waits
+  before exiting, and backup scripts run `restic unlock` (stale locks only)
+  first and before `forget`. busybox `pgrep -x` compares argv[0], which the
+  wrapper sets to `/usr/bin/restic`, so match `(^|/)restic$` instead.
 - **`restoredb` lives in the backup image, not here.** It is developed in
   [USA-RedDragon/dockers](https://github.com/USA-RedDragon/dockers/tree/main/images/restic)
   with its Docker tests. b2bk relies on two of its guarantees: a plain-SQL
