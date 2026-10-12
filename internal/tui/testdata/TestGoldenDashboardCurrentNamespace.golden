@@ -1,0 +1,30 @@
+  b2bk   context admin@home  namespace vaultwarden             operator v0.1.4 ● ready   B2 us-east-005 
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1 backup   ● 1 healthy   ◐ 0 running   ⏸ 0 suspended   ✖ 0 failing                  / filter   ? help 
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  BACKUP  SOURCES          LAST SUCCESS  NEXT RUN         STATUS  
+› restic  files /data, db  14h ago       03:05  in 8h15m  ● ok    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move  ⏎ open  b backup now  l logs  s snapshots  d doctor  p pause  r restore  A all ns  q quit

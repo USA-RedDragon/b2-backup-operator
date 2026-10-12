@@ -1,0 +1,20 @@
+  b2bk   context admin@home  namespace all  operator v0.1.4 ● ready   B…
+────────────────────────────────────────────────────────────────────────
+  6 backups   ● 3 healthy   ◐ 1 running   ⏸ 1 suspen… / filter   ? help 
+────────────────────────────────────────────────────────────────────────
+  NAMESPACE    BACKUP  NEXT RUN          STATUS             
+› apprise      restic  01:36  in 6h46m   ● ok               
+  gitea        restic  07:28  in 12h38m  ◐ running  2m14s   
+  kosync       restic  09:15  in 14h25m  ● ok               
+  minecraft    restic  15:07  in 20h17m  ✖ failed   exit 3  
+  vaultwarden  restic  03:05  in 8h15m   ● ok               
+  wx           restic  —                 ⏸ suspended        
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────
+ gitea/restic  backup started 18:48:02 by hand   running 2m14s
+────────────────────────────────────────────────────────────────────────
+ ↑↓ move  ⏎ open  b backup now  l logs  s snapshots  d doctor  p pause …

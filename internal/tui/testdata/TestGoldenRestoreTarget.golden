@@ -1,0 +1,30 @@
+  b2bk   › vaultwarden › restic › restore                   step 2 of 3 · snapshot ✔ · target · confirm 
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Snapshot  5d1e09ab  10-11 03:50  files /data  48.2 MiB
+
+  Where should it go?
+
+  › ◉ A new claim                 Restore into a new PVC next to the app. Nothing live is touched.
+        name  [ vaultwarden-restore-1011  ]   size  [ 1Gi   ]   class  longhorn-nvme (from data)
+    ○ Download to this computer   Stream files into a local folder.  folder [ ./vaultwarden-5d1e09ab  ]
+    ○ Over the live volume        Replace /data in place. Suspends the schedule while it runs.
+    ○ Into the database           Needs a db snapshot; switch the tag to db with tab in snapshots
+
+  Options   [ ] only path  [ /data        ]   [ ] remove files not in the snapshot   [x] dry run first
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ choose  space toggle  tab next field  ⏎ continue  esc back

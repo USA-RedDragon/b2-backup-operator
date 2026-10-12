@@ -1,0 +1,30 @@
+  b2bk   › vaultwarden › restic › restore                 step 3 of 3 · snapshot ✔ · target ✔ · confirm 
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  This overwrites the live volume data in vaultwarden.
+
+  Snapshot       5d1e09ab  10-11 03:50  /data
+  Target         claim data at /data  (pod vaultwarden-6c9d8f7b5-x2x4k is using it)
+  Dry run        3 files would change, 0 removed, 2 unchanged
+                   /data/db.sqlite3                       6.8 MiB  written
+                   /data/db.sqlite3-wal                   412 KiB  modified
+                   /data/icon_cache/github.png              3 KiB  written
+
+  While it runs  the restic schedule is held, then released if this restore succeeds.
+                 Scale the app down first if it writes during the restore.
+
+  Type restic to confirm:  [ rest█                ]
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⏎ restore  esc back

@@ -1,0 +1,30 @@
+  b2bk   › gitea › restic › logs   job/restic-manual-x8k2qp   ◐ running 2m14s     following · f to stop 
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  files /data  ███████████████████████████▍░░░░░░░░░░░░░░░░░   61%   1.182 GiB / 1.937 GiB   ETA 1m20s
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  18:48:02 + restic backup --retry-lock=5m0s --tag=files /data
+  18:48:03 using parent snapshot 5d1e09ab
+  18:48:03 open repository
+  18:48:05 lock repository
+  18:48:06 load index files
+  18:48:09 start scan on [/data]
+  18:48:09 start backup on [/data]
+  18:48:41 scan finished in 32.118s: 41822 files, 1.937 GiB
+  18:49:20 warning: /data/gitea/indexers/issues.bleve/store: file changed during read, retrying
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ f follow  / search  w wrap  g/G top/end  [ ] older/newer run  x cancel run  esc back

@@ -1,0 +1,30 @@
+  b2bk   › vaultwarden › restic › snapshots  pod restic-b2bk-browse-7qx2m ready   tag [files] db   tab …
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ID        TIME         SIZE      PATHS             │ /data  in 5d1e09ab
+› 5d1e09ab  10-11 03:50  48.2 MiB  /data             │ › attachments/            3 files
+  b81c440e  10-10 03:50  48.2 MiB  /data             │   icon_cache/              1 file
+  20f3a991  10-09 03:50  48.1 MiB  /data             │   sends/                   1 file
+  c71d0e52  10-08 03:50  48.1 MiB  /data             │   config.json       1.1 KiB  -rw------- 1000
+  3b47d1c0  2026-04-01   31.0 MiB  /data             │   db.sqlite3        6.8 MiB  -rw-r--r-- 1000
+                                                     │   rsa_key.pem       1.7 KiB  -rw------- 1000
+                                                     │   rsa_key.pub.pem     451 B  -rw-r--r-- 1000
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+                                                     │ 
+  5 snapshots · kept by daily 90, weekly 24, monthly 24, yearly 20
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ tag db:  1e77c0d4 10-11 03:50 /vaultwarden.dmp custom format   ·   a02f6d19 10-10 03:50 /vaultwarden p…
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⏎ browse  → into folder  ← up a folder  r restore this path  D download  c compare with previous  esc …

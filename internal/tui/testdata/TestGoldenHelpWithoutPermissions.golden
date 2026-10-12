@@ -1,0 +1,30 @@
+  b2bk   context admin@home  namespace all                     operator v0.1.4 ● ready   B2 us-east-005 
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  6 backups   ● 3 healthy   ◐ 1 running   ⏸ 1 suspended   ✖ 1 failing                 / filter   ? help 
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  KEYS ON THIS SCREEN                               EVERYWHERE
+  ↑↓        move                                    ?         show every key for this screen
+  ⏎         open                                    m         mouse off, so the terminal selects text
+  b         backup now *                            esc       back one screen
+  l         logs                                    q         quit, also ctrl+c; removes its pods
+  s         snapshots *                             
+  d         doctor                                  UNAVAILABLE *
+  p         pause *                                 b p: RBAC does not let you patch scheduledbackups
+  r         restore *                               in every namespace
+  A         all ns                                  s r c: RBAC does not let you create pods/exec in
+  q         quit                                    every namespace
+  c         integrity check, optionally reading dat…
+  x         cancel the running backup               NOT WATCHED
+  S         problems first, or by namespace         RBAC does not let you list pods in every
+  /         filter by namespace or name             namespace, so what depends on them is not shown
+  PgUp PgDn page                                    
+
+  any key closes this
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ gitea/restic  backup started 18:48:02 by hand   running 2m14s
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move  ⏎ open  l logs  d doctor  A all ns  q quit

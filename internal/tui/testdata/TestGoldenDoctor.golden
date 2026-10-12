@@ -1,0 +1,30 @@
+  b2bk   › minecraft › restic › doctor                                            1 failing · 1 warning 
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ›✖ the most recent run (3h ago) failed
+      Run: b2bk logs sb/restic
+      → l view log   b run again
+  ! cache PVC "restic-cache" is Pending, not Bound
+      A pending claim will block the backup pod from starting.
+  ✔ backup is ready
+  ✔ repository "restic" is ready and initialized
+  ✔ credentials Secret "restic-credentials" has all 5 keys, application key 0050…0011
+  ✔ CronJob "restic-backup" is owned by this ScheduledBackup
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⏎ act on selected  R re-run checks  esc back

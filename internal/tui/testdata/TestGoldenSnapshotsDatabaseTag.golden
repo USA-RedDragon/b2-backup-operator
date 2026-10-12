@@ -1,0 +1,30 @@
+  b2bk   › vaultwarden › restic › snapshots  pod restic-b2bk-browse-7qx2m ready   tag files [db]   tab …
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ID        TIME         SIZE      PATHS
+› 1e77c0d4  10-11 03:50  2.0 MiB   /vaultwarden.dmp custom format
+  a02f6d19  10-10 03:50  3.0 MiB   /vaultwarden plain SQL (old)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  2 snapshots · kept by daily 90, weekly 24, monthly 24, yearly 20
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ tag files:  5d1e09ab 10-11 03:50 /data   ·   b81c440e 10-10 03:50 /data
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⏎ browse  → into folder  r restore this snapshot  D download file  c compare with previous  esc back

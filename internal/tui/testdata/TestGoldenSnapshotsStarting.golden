@@ -1,0 +1,30 @@
+  b2bk   › vaultwarden › restic › snapshots           starting pod 0s   tag [files] db   tab switch tag 
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  Starting the restic pod b2bk snapshots uses. It takes a few seconds; the TUI keeps it
+  for this backup until you quit, so browsing is fast after this.
+
+  still waiting: restic-b2bk-browse-7qx2m-abcde is ContainerCreating (15s of 10m0s)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⏎ browse  → into folder  r restore this snapshot  D download file  c compare with previous  esc back
