@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 
+	"github.com/spf13/cobra"
+
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -104,6 +106,9 @@ func Execute(f *Factory, args ...string) error {
 	cmd.SetArgs(args)
 	return cmd.Execute()
 }
+
+// Root returns the b2bk command tree reading through f.
+func Root(f *Factory) *cobra.Command { return newRoot(f, "b2bk") }
 
 // RunWith makes f hand the one-off Jobs of b2bk commands that stream logs to
 // run instead of starting them.

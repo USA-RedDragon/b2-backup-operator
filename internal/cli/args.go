@@ -171,15 +171,15 @@ func (f *Factory) completeName(kinds nameKinds) cobra.CompletionFunc {
 		}
 		c, err := f.Client()
 		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
+			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		ns, err := f.Namespace()
 		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
+			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		backups, repos, err := namesIn(cmd.Context(), c, ns, kinds)
 		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
+			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		names := make([]cobra.Completion, 0, len(backups)+len(repos))
 		for _, name := range backups {

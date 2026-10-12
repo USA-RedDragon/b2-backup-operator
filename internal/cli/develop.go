@@ -41,11 +41,8 @@ func newRenderCommand(f *Factory) *cobra.Command {
 Takes either a local manifest or the name of one in the cluster, so it answers
 both "what would this change do" and "what is this actually running".
 With neither, it renders the namespace's only ScheduledBackup.`,
-		Args: argCount(0, 1, "argument"),
-		ValidArgsFunction: func(cmd *cobra.Command, args []string, s string) ([]cobra.Completion, cobra.ShellCompDirective) {
-			names, _ := f.completeName(backupsOnly)(cmd, args, s)
-			return names, cobra.ShellCompDirectiveDefault
-		},
+		Args:              argCount(0, 1, "argument"),
+		ValidArgsFunction: f.completeNameOrManifest,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			arg, err := f.nameArg(cmd, args, backupsOnly)
 			if err != nil {
@@ -154,7 +151,8 @@ This catches what the operator would reject at reconcile time -- an
 unresolvable schedule, a source it cannot render, a missing database field --
 without needing a cluster. It does not run the CRD's CEL rules, which the API
 server owns.`,
-		Args: argCount(1, 1, "argument"),
+		Args:              argCount(1, 1, "argument"),
+		ValidArgsFunction: completeManifestArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sb, err := readScheduledBackup(args[0])
 			if err != nil {
@@ -213,7 +211,8 @@ A database dump that moves from backup-cnpg.sh to dumpdb cnpg is reported as a
 difference of its own, since the dump's format and file name change with it.
 
 Only --from-secret runs anything, sops.`,
-		Args: argCount(2, 2, "argument"),
+		Args:              argCount(2, 2, "argument"),
+		ValidArgsFunction: completeManifestArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := resolveBackupImage(cmd, f, &opts); err != nil {
 				return err
@@ -226,6 +225,7 @@ Only --from-secret runs anything, sops.`,
 		"The original repository, as the s3: URL in RESTIC_REPOSITORY")
 	cmd.Flags().StringVar(&opts.fromSecret, "from-secret", "",
 		"A SOPS-encrypted Secret to read the original RESTIC_REPOSITORY from")
+	_ = cmd.RegisterFlagCompletionFunc("from-secret", completeManifests)
 	cmd.MarkFlagsMutuallyExclusive("repository", "from-secret")
 	return cmd
 }

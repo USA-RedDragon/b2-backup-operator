@@ -152,6 +152,7 @@ targets and exits, so a script never restores somewhere it did not name.
 	cmd.Flags().StringVar(&o.toNewPVC, "to-new-pvc", "", "Restore into a new claim of this name")
 	cmd.Flags().BoolVar(&o.toDatabase, "to-database", false, "Restore the dump into the database")
 	cmd.Flags().StringVar(&o.toDir, "to", "", "Download the files into this directory")
+	_ = cmd.RegisterFlagCompletionFunc("to", completeDirs)
 	cmd.Flags().StringVar(&o.size, "size", "", "Size of the new claim (default: the source claim's size)")
 	cmd.Flags().StringVar(&o.path, "path", "", "Restore only this path from the snapshot")
 	cmd.Flags().StringArrayVar(&o.include, "include", nil, "Restore only paths matching this pattern")

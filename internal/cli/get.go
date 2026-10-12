@@ -87,15 +87,15 @@ func (f *Factory) completeGet(
 		}
 		c, err := f.Client()
 		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
+			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		ns, err := f.ListNamespace()
 		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
+			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		backups, repos, err := namesIn(cmd.Context(), c, ns, kinds)
 		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
+			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		return slices.Compact(slices.Sorted(slices.Values(append(backups, repos...)))),
 			cobra.ShellCompDirectiveNoFileComp

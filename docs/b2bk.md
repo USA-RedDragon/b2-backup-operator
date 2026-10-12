@@ -105,8 +105,16 @@ when the namespace has only one: `restore`, `prune`, `unlock`,
 `rotate-password`, `reinit`, `cancel` and `resume`. Without it, it lists what
 the namespace holds, when it can read that, and stops.
 
-Names complete in the shell for every command that takes one. A name that both
-a ScheduledBackup and a Repository use completes in its qualified form.
+Names complete in the shell for every command that takes one, and `get KIND`
+completes the names of that kind. A name that both a ScheduledBackup and a
+Repository use completes in its qualified form. `-n`, `--context`, `--cluster`
+and `--user` complete from the cluster and the kubeconfig. Only a path ever
+completes from the file system: YAML files for `render`, `validate`, `parity`,
+`migrate` and `--from-secret`, directories for `restore --to` and
+`--cache-dir`, and any file for `--kubeconfig` and the certificate flags.
+`render` offers names until what you type looks like a path. Every other
+argument and flag value completes to nothing rather than to the files in the
+current directory.
 
 ## Commands that start a pod
 

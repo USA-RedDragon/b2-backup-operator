@@ -91,7 +91,7 @@ A bare b2bk opens it too when both ends are a terminal; piped, redirected or
 with TERM=dumb it prints help instead. Settings come from flags, then the
 B2BK_ALL_NAMESPACES and B2BK_MOUSE environment variables, then
 ~/.config/b2bk/config.yaml (tui.allNamespaces, tui.mouse), then the defaults.`,
-		Args: cobra.NoArgs,
+		Args: argCount(0, 0, "argument"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !f.canDrawTUI() {
 				return tui.ErrNoTerminal

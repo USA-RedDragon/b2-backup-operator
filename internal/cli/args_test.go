@@ -30,6 +30,11 @@ const (
 	cmdPrune   = "prune"
 	cmdUnlock  = "unlock"
 	argsApp01  = "app-01"
+	argsApp02  = "app-02"
+	cmdGet     = "get"
+	cmdTUI     = "tui"
+	cmdRender  = "render"
+	kindRepo   = "repo"
 	usingApp01 = "using " + "scheduledbackup/" + argsApp01 + "\n"
 )
 
@@ -40,10 +45,11 @@ func TestWrongArgumentCountsNameTheUsage(t *testing.T) {
 		want string
 	}{
 		{args: []string{"version", "x"}, want: "version takes no arguments, got 1: b2bk version"},
+		{args: []string{cmdTUI, "x"}, want: "tui takes no arguments, got 1: b2bk tui"},
 		{args: []string{"parity", "a.yaml"}, want: "parity takes exactly two arguments, got 1: b2bk parity <generated.yaml>"},
 		{args: []string{"validate"}, want: "validate takes exactly one argument, got none: b2bk validate <file.yaml>"},
 		{args: []string{"migrate", "a", "b"}, want: "migrate takes exactly one argument, got 2: b2bk migrate"},
-		{args: []string{"get", "sb", "app", "x"}, want: "get takes at most two arguments, got 3: b2bk get [repositories|backups [NAME]]"},
+		{args: []string{cmdGet, "sb", "app", "x"}, want: "get takes at most two arguments, got 3: b2bk get [repositories|backups [NAME]]"},
 		{args: []string{cmdRestore, "a", "b"}, want: "restore takes exactly one name, got 2: b2bk restore"},
 		{args: []string{cmdExec, "a", binRestic}, want: "exec needs -- before the command: b2bk exec"},
 		{args: []string{cmdExec, "a", "b", "--", binRestic}, want: "exec takes at most one name before --, got 2: b2bk exec"},
@@ -152,13 +158,13 @@ func TestNoNameUsesTheOnlyOneInTheNamespace(t *testing.T) {
 		{name: "suspend", args: []string{cmdSuspend}, objs: argsBackups(1),
 			wantStderr: usingApp01, wantOut: "scheduledbackup/app-01 suspended\n"},
 		{name: "exec with nothing before --", args: execCatConfig,
-			objs: argsBackups(1), wantStderr: usingApp01, wantRun: "app-01"},
+			objs: argsBackups(1), wantStderr: usingApp01, wantRun: argsApp01},
 		{name: "exec example keeps the command", args: execCatConfig,
 			objs: argsBackups(2), wantErr: cli.ErrNameNeeded,
 			wantText: []string{"e.g. b2bk exec scheduledbackup/app-01 -- <command>..."}},
 		{name: "snapshots", args: []string{cmdSnapshots, "--all-tags"}, objs: argsBackups(1),
-			wantStderr: usingApp01, wantRun: "app-01"},
-		{name: "a name is still used as given", args: []string{cmdStatus, "app-02"}, objs: argsBackups(2),
+			wantStderr: usingApp01, wantRun: argsApp01},
+		{name: "a name is still used as given", args: []string{cmdStatus, argsApp02}, objs: argsBackups(2),
 			wantOut: "scheduledbackup/app-02\n"},
 	}
 	for _, tt := range tests {
@@ -276,12 +282,14 @@ func TestNamesComplete(t *testing.T) {
 		{args: []string{cmdRestore, ""}, objs: argsBackups(2), want: "app-01\napp-02\n:4\n"},
 		{args: []string{"reinit", ""}, objs: argsBackups(2), want: "vault\n:4\n"},
 		{args: []string{cmdStatus, ""}, objs: shared, want: "app\nscheduledbackup/vault\nrepository/vault\n:4\n"},
-		{args: []string{cmdStatus, argsApp01, ""}, objs: argsBackups(2), want: ":4\n"},
+		{args: []string{cmdStatus, argsApp01, ""}, objs: argsBackups(2), want: compNoFiles},
 		{args: []string{cmdExec, ""}, objs: argsBackups(1), want: "app-01\nvault\n:4\n"},
-		{args: []string{"render", ""}, objs: argsBackups(1), want: "app-01\n:0\n"},
-		{args: []string{"get", "repo", ""}, objs: argsBackups(2), want: "vault\n:4\n"},
-		{args: []string{"get", "sb", ""}, objs: argsBackups(2), want: "app-01\napp-02\n:4\n"},
-		{args: []string{cmdStatus, "-n", "elsewhere", ""}, objs: argsBackups(1), want: ":4\n"},
+		{args: []string{cmdRender, ""}, objs: argsBackups(1), want: "app-01\n:4\n"},
+		{args: []string{cmdRender, "./"}, objs: argsBackups(1), want: compManifests},
+		{args: []string{cmdRender, ""}, objs: nil, want: compManifests},
+		{args: []string{cmdGet, kindRepo, ""}, objs: argsBackups(2), want: "vault\n:4\n"},
+		{args: []string{cmdGet, "sb", ""}, objs: argsBackups(2), want: "app-01\napp-02\n:4\n"},
+		{args: []string{cmdStatus, "-n", "elsewhere", ""}, objs: argsBackups(1), want: compNoFiles},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -306,12 +314,12 @@ func TestGetOneByName(t *testing.T) {
 		notWant string
 		wantErr error
 	}{
-		{args: []string{"get", "sb", "app-02"}, want: []string{"app-02"}, notWant: "app-01"},
-		{args: []string{"get", "repo", argsRepo, "-o", "name"}, want: []string{"repository.b2backup.mcswain.dev/vault"}},
-		{args: []string{"get", "backups", "app-01", "-o", "yaml"}, want: []string{"kind: ScheduledBackup", "name: app-01"},
+		{args: []string{cmdGet, "sb", argsApp02}, want: []string{argsApp02}, notWant: argsApp01},
+		{args: []string{cmdGet, kindRepo, argsRepo, "-o", "name"}, want: []string{"repository.b2backup.mcswain.dev/vault"}},
+		{args: []string{cmdGet, "backups", argsApp01, "-o", "yaml"}, want: []string{"kind: ScheduledBackup", "name: app-01"},
 			notWant: "kind: List"},
-		{args: []string{"get", "sb", "nope"}, wantErr: cli.ErrTargetNotFound},
-		{args: []string{"get", "sb", argsRepo}, wantErr: cli.ErrTargetNotFound},
+		{args: []string{cmdGet, "sb", "nope"}, wantErr: cli.ErrTargetNotFound},
+		{args: []string{cmdGet, "sb", argsRepo}, wantErr: cli.ErrTargetNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {

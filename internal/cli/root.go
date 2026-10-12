@@ -77,6 +77,8 @@ actions; see b2bk tui --help.`,
 	cmd.SetErr(streams.ErrOut)
 
 	f.ConfigFlags.AddFlags(cmd.PersistentFlags())
+	f.registerConnectionFlagCompletions(cmd)
+	cmd.CompletionOptions.SetDefaultShellCompDirective(cobra.ShellCompDirectiveNoFileComp)
 
 	subcommands := []*cobra.Command{
 		newBackupCommand(f),

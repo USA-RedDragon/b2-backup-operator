@@ -137,7 +137,8 @@ as extra shell commands, several tags on one backup or a custom
 Once the operator reports the Repository ready, restic-envs only needs
 RESTIC_PASSWORD; it is the only off-cluster copy of the key that decrypts
 these backups, so keep it.`,
-		Args: argCount(1, 1, "argument"),
+		Args:              argCount(1, 1, "argument"),
+		ValidArgsFunction: completeManifestArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := resolveBackupImage(cmd, f, &opts); err != nil {
 				return err
@@ -151,6 +152,7 @@ these backups, so keep it.`,
 		"The existing repository, as the s3: URL in RESTIC_REPOSITORY")
 	cmd.Flags().StringVar(&opts.fromSecret, "from-secret", "",
 		"A SOPS-encrypted Secret to read RESTIC_REPOSITORY from, such as <app>-restic.yaml in the secrets repository")
+	_ = cmd.RegisterFlagCompletionFunc("from-secret", completeManifests)
 	cmd.MarkFlagsMutuallyExclusive("repository", "from-secret")
 	return cmd
 }
