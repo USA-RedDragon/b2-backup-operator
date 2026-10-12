@@ -203,6 +203,14 @@ The check also covers what the specs no longer show. Each backup Job carries its
 
 The body runs as `set -o pipefail; { set -euo pipefail; ...; restic cache --cleanup; } 2>&1 | ts`, so every line is timestamped, a failure anywhere fails the run with restic's own exit status, a failed command piped into restic fails it too, and the output of a run that fails at once is not lost.
 
+#### Run history
+
+`status.history` keeps the last 10 runs, scheduled and triggered, newest first, with how each ended. Each run also lists, under `sources`, what restic recorded for each source's snapshot: files new, changed and unmodified, files and bytes processed, `addedBytes` (the new data, before compression: restic's "Added to the repository") and `storedBytes` (what that data took once compressed), and when restic started and finished it. A failed run lists the sources it saved before it failed.
+
+The numbers come from the snapshot, not from parsing restic's output. After each `restic backup`, the script runs `restic snapshots --json --no-lock --group-by= --tag=<tag> --host="$RESTIC_HOST" latest` and appends one line, the tag and the snapshot's summary object, to the container's termination message, `/dev/termination-log`. A source line is about 240 bytes, and the kubelet keeps 4096 bytes of the message; the operator skips any line it cannot read in full. That step takes no lock, prints nothing to the log, and cannot fail the backup. The operator reads the message from the Job's pod when the run finishes, as it does for the init Job, and keeps the figures after the pod and Job are gone.
+
+`sources` stays empty for a `spec.script` backup, whose commands the operator cannot follow; for a run whose pod was deleted before the operator read it; for a run from an operator release before this field; and for an image without `sed -E`. Two runs of one backup at once under `concurrencyPolicy: Allow` can each record the other's snapshot. `b2bk status`, the dashboard and its detail screen show these figures; the dashboard's SIZE column is the Repository's `status.currentUsage` beside what the newest succeeded run added.
+
 ### Pod security
 
 Backup pods drop every capability but `DAC_OVERRIDE`, forbid privilege escalation, run under the `RuntimeDefault` seccomp profile and mount no ServiceAccount token. The backup image runs as root, and `DAC_OVERRIDE` is what lets root read a directory another user owns with mode `0700`, as the app's own container, with the runtime's default capabilities, could; without it such files are left out of every snapshot. `DAC_READ_SEARCH` would be enough, but the baseline Pod Security Standard does not allow it. `b2bk restore --in-place` and `--to-new-pvc` add `CHOWN`, `DAC_OVERRIDE`, `FOWNER` and `FSETID` to their own Job, which restic needs to recreate files with their owners and modes.
@@ -312,7 +320,7 @@ Backblaze documents `writeKeys` as granting full access to the account, since a 
 
 The default image is [`ghcr.io/usa-reddragon/restic`](https://github.com/USA-RedDragon/dockers/tree/main/images/restic), tagged with the restic version it ships. Each operator release pins one tag, and Renovate bumps it. The image is a fork of [`ghcr.io/gabe565/restic`](https://github.com/gabe565/docker-restic) with `restoredb` added, and `restoredb` is developed there.
 
-It must provide `restic`, `ts` and `dumpdb` on PATH. `b2bk restore --to-database` additionally needs `restoredb`, which it probes for, and a `/bin/sh` that supports `set -o pipefail`, so a dump that dies mid-stream cannot be reported as a successful restore. BusyBox ash, bash, zsh and Debian trixie's dash do; older dash exits with `Illegal option -o pipefail`.
+It must provide `restic`, `ts` and `dumpdb` on PATH, and `sed` with `-E` for the [run history](#run-history) sizes, which are left out without it. `b2bk restore --to-database` additionally needs `restoredb`, which it probes for, and a `/bin/sh` that supports `set -o pipefail`, so a dump that dies mid-stream cannot be reported as a successful restore. BusyBox ash, bash, zsh and Debian trixie's dash do; older dash exits with `Illegal option -o pipefail`.
 
 The part that is easy to miss: **`restic` in this image is a wrapper** sitting ahead of the real binary, and it injects two things that appear nowhere in the script the operator renders.
 

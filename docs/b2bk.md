@@ -259,8 +259,8 @@ a confirmation.
 
 | Screen | Shows | Keys |
 | --- | --- | --- |
-| Dashboard | Every backup: sources, last success, next run, status. A strip shows the backup in flight | `↑↓`/`jk` move, `⏎` open, `b` backup now, `l` logs, `s` snapshots, `d` doctor, `p` pause or resume, `r` restore, `c` check, `x` cancel, `/` filter, `S` problems first, `A` all namespaces, `PgUp`/`PgDn` page |
-| Backup detail | What `status` shows: schedule and next run, sources, retention and its forget scope, repository, lifecycle rule, usage, conditions, and the recent runs as a duration chart with the reason a run failed | `↑↓` choose a run, `l`/`⏎` its logs, and `b` `s` `d` `p` `r` `c` `x` as on the dashboard |
+| Dashboard | Every backup: sources, last success, size, next run, status. SIZE is the repository's size as the operator last measured it, `—` before it has, then what the newest succeeded run added, as `246 KiB  +12.0 KiB`. Narrow terminals drop the added figure first, then the SOURCES, SIZE, LAST SUCCESS and NEXT RUN columns. A strip shows the backup in flight | `↑↓`/`jk` move, `⏎` open, `b` backup now, `l` logs, `s` snapshots, `d` doctor, `p` pause or resume, `r` restore, `c` check, `x` cancel, `/` filter, `S` problems first, `A` all namespaces, `PgUp`/`PgDn` page |
+| Backup detail | What `status` shows: schedule and next run, sources, retention and its forget scope, repository, lifecycle rule, usage, conditions, and the recent runs as a duration chart with the reason a run failed and what each run added, as `+12.3 KiB (4.2 KiB stored) of 1.0 MiB`: the new data, what it took once compressed, and how much the run read. Narrower terminals show less of it, down to the added figure. A run with no recorded size shows `—` | `↑↓` choose a run, `l`/`⏎` its logs, and `b` `s` `d` `p` `r` `c` `x` as on the dashboard |
 | Logs | A run's log with timestamps, following a running one, with restic's progress as a bar | `f` follow, `/` search, `w` wrap, `g`/`G` top and end, `[`/`]` older and newer run, `x` cancel |
 | Snapshots | The snapshots under each source tag; database dumps say whether they are pg_dump's custom format (`.dmp`), a SQL dump (`.sql`) or old plain SQL; beside them, the files of the selected snapshot | `tab` switch tag, `⏎`/`→` browse and open a folder, `←` up, `r` restore, `D` download, `c` compare with the previous snapshot (`restic diff`), `R` read again |
 | Restore | The wizard above | `↑↓` choose, `tab` next field, `space` toggle, `⏎` continue, `esc` back |
@@ -310,7 +310,11 @@ that one, and `-o json|yaml` then prints the object itself instead of a list.
 
 One resource in detail: mode, bucket, path, endpoint, application key ID and
 usage with when it was measured, the **effective** schedule with its timezone,
-conditions with reasons, and a table of recent runs with result and duration.
+conditions with reasons, and a table of recent runs with result, duration and,
+under ADDED and STORED, the new data the run added to the repository before
+and after compression. The sizes come from the run history the operator
+records; a run still in flight, a `spec.script` backup and a run the operator
+did not record show `-`.
 
 `Adopted` means the operator found a restic `config` at the path before it
 initialized anything, so the snapshots predate this resource and
