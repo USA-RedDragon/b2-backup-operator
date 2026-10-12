@@ -23,6 +23,7 @@ import (
 const (
 	resumeHint     = "b2bk resume"
 	readDump       = "READ=1"
+	bigDump        = "DUMP_BYTES=4194304"
 	nothingWritten = "nothing was written"
 )
 
@@ -134,7 +135,9 @@ func TestADatabaseRestoreThatRestoredbStoppedBeforeWritingIsNotHeld(t *testing.T
 
 // The pod runs the pipeline under set -o pipefail, which gives the status of
 // the last command that failed, so restoredb's status wins whenever it failed,
-// whatever restic did.
+// whatever restic did. restic is never left writing to a closed pipe, which
+// would kill it before it removes its lock, and is sent SIGTERM when restoredb
+// stops before reading the dump.
 func TestRestoreDatabaseCommandExitsWithRestoredbsStatus(t *testing.T) {
 	t.Parallel()
 	shell := pipefailShell()
@@ -143,7 +146,8 @@ func TestRestoreDatabaseCommandExitsWithRestoredbsStatus(t *testing.T) {
 	}
 	bin := t.TempDir()
 	scripts := map[string]string{
-		resticController: "#!/bin/sh\nhead -c \"${DUMP_BYTES:-0}\" /dev/zero\nexit \"${RESTIC_EXIT:-0}\"\n",
+		resticController: "#!/bin/sh\ntrap 'echo term >\"$OUT.term\"' TERM\nhead -c \"${DUMP_BYTES:-0}\" /dev/zero\n" +
+			"echo \"$?\" >\"$OUT.write\"\nexit \"${RESTIC_EXIT:-0}\"\n",
 		purposeRestoreDB: "#!/bin/sh\n[ -n \"$READ\" ] && cat >/dev/null\nexit \"${RESTOREDB_EXIT:-0}\"\n",
 	}
 	for name, script := range scripts {
@@ -156,22 +160,26 @@ func TestRestoreDatabaseCommandExitsWithRestoredbsStatus(t *testing.T) {
 	argv := restoreDatabaseCommand(sb, resticSnapshot{ID: snapDB, Paths: []string{"/" + testNS + ".dmp"}}, "", false)
 
 	tests := []struct {
-		name string
-		env  []string
-		want int
+		name       string
+		env        []string
+		want       int
+		terminated bool
 	}{
-		{"both succeed", []string{readDump}, 0},
-		{"restoredb stops in its checks, before reading", []string{"DUMP_BYTES=4194304", "RESTOREDB_EXIT=75"}, 75},
-		{"restic fails and restoredb finds no dump", []string{"RESTIC_EXIT=1", readDump, "RESTOREDB_EXIT=75"}, 75},
-		{"restoredb fails in the restore", []string{"DUMP_BYTES=4194304", readDump, "RESTOREDB_EXIT=1"}, 1},
-		{"psql fails in the restore", []string{readDump, "RESTOREDB_EXIT=3"}, 3},
-		{"restic fails after restoredb succeeded", []string{"RESTIC_EXIT=12", readDump}, 12},
+		{"both succeed", []string{readDump}, 0, false},
+		{"restoredb stops in its checks, before reading", []string{bigDump, "RESTOREDB_EXIT=75"}, 75, true},
+		{"restoredb succeeds without reading it all", []string{bigDump}, 0, false},
+		{"restic fails and restoredb finds no dump", []string{"RESTIC_EXIT=1", readDump, "RESTOREDB_EXIT=75"}, 75, false},
+		{"restoredb fails in the restore", []string{bigDump, readDump, "RESTOREDB_EXIT=1"}, 1, false},
+		{"psql fails in the restore", []string{readDump, "RESTOREDB_EXIT=3"}, 3, false},
+		{"restic fails after restoredb succeeded", []string{"RESTIC_EXIT=12", readDump}, 12, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cmd := exec.Command(shell[0], append(shell[1:], argv[1:]...)...)
-			cmd.Env = append([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")}, tt.env...)
+			out := filepath.Join(t.TempDir(), "restic")
+			cmd.Env = append([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "OUT=" + out},
+				tt.env...)
 			err := cmd.Run()
 			got := 0
 			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -181,6 +189,13 @@ func TestRestoreDatabaseCommandExitsWithRestoredbsStatus(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("exit %d, want %d", got, tt.want)
+			}
+			wrote, err := os.ReadFile(out + ".write")
+			if err != nil || strings.TrimSpace(string(wrote)) != "0" {
+				t.Errorf("restic did not write the whole dump: status %q, %v", wrote, err)
+			}
+			if _, err := os.Stat(out + ".term"); tt.terminated && err != nil {
+				t.Errorf("restic was not sent SIGTERM: %v", err)
 			}
 		})
 	}

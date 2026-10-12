@@ -378,9 +378,9 @@ func TestDatabaseRestoreReadsTheDumpTheSnapshotHolds(t *testing.T) {
 		snapshot string
 		want     string
 	}{
-		{"the latest custom-format dump", latest, "restic dump '" + snapDB + "' '/" + testNS + ".dmp' | restoredb cnpg"},
+		{"the latest custom-format dump", latest, "restic dump '" + snapDB + "' '/" + testNS + ".dmp' | { restoredb cnpg "},
 		{"an old plain-SQL dump stored without an extension", snapOldDump,
-			"restic dump '" + snapOldDump + "' '/" + testNS + "' | restoredb cnpg"},
+			"restic dump '" + snapOldDump + "' '/" + testNS + "' | { restoredb cnpg "},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -637,15 +637,22 @@ func (o *restoreOptions) databaseSource(sb *b2backupv1.ScheduledBackup) (restore
 	return src, nil
 }
 
+// restoreDatabaseCommand pipes restic dump into restoredb. restic dies of
+// SIGPIPE when it writes to a pipe nobody reads, before it can remove its lock,
+// and a lock left behind stops every later forget --prune. So when restoredb
+// fails, the pipeline sends restic SIGTERM, which makes it remove its lock and
+// stop, and reads whatever restic still writes until it exits.
 func restoreDatabaseCommand(sb *b2backupv1.ScheduledBackup, snap resticSnapshot, database string, dryRun bool) []string {
-	pipeline := fmt.Sprintf("restic dump %s %s | restoredb %s --secret-mount=%s",
-		shellQuote(snap.ID), shellQuote(snap.Paths[0]), string(sb.Spec.Database.Engine), b2backupv1.DBSecretMountPath)
+	restore := fmt.Sprintf("restoredb %s --secret-mount=%s", string(sb.Spec.Database.Engine), b2backupv1.DBSecretMountPath)
 	if database != "" {
-		pipeline += " --database=" + shellQuote(database)
+		restore += " --database=" + shellQuote(database)
 	}
 	if dryRun {
-		pipeline += " --dry-run"
+		restore += " --dry-run"
 	}
+	pipeline := fmt.Sprintf("restic dump %s %s | { %s; rc=$?; "+
+		"[ \"$rc\" -eq 0 ] || pkill -TERM -P $$ '(^|/)restic$'; cat >/dev/null; exit \"$rc\"; }",
+		shellQuote(snap.ID), shellQuote(snap.Paths[0]), restore)
 	guarded := fmt.Sprintf(
 		"set -o pipefail\ncommand -v restoredb >/dev/null 2>&1 || { echo %s >&2; exit 1; }\n%s",
 		shellQuote("this backup image has no restoredb; use ghcr.io/usa-reddragon/restic "+
