@@ -121,15 +121,16 @@ func (s *stream) add(raw string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if p, ok := parseProgress(line.text); ok {
+	body := tsPrefix.ReplaceAllString(line.text, "")
+	if p, ok := parseProgress(body); ok {
 		s.progress, s.inStatus = &p, true
 		return
 	}
-	if s.inStatus && strings.HasPrefix(line.text, "/") {
+	if s.inStatus && strings.HasPrefix(body, "/") {
 		return
 	}
 	s.inStatus = false
-	if label := commandLabel(line.text); label != "" {
+	if label := commandLabel(body); label != "" {
 		s.label = label
 		s.progress = nil
 	}
@@ -155,6 +156,10 @@ func (s *stream) snapshot() streamView {
 	}
 	return streamView{lines: s.lines, progress: p, label: s.label, done: s.done, err: s.err, started: s.started}
 }
+
+// tsPrefix is the time ts '%H:%M:%S' puts before every line a backup Job
+// prints.
+var tsPrefix = regexp.MustCompile(`^\d{2}:\d{2}:\d{2} `)
 
 var progressLine = regexp.MustCompile(
 	`^\[(?:(\d+):)?(\d+):(\d+)\]\s+(?:([\d.]+)%\s+)?\d+ files(?:/dirs)?,? ([\d.]+ [KMGTPE]?i?B)` +

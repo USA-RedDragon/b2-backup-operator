@@ -335,3 +335,23 @@ func TestFailedRunWithALogReasonEndsWhenItsJobFailed(t *testing.T) {
 		t.Errorf("reason = %q, want the log line", runs[0].reason)
 	}
 }
+
+func TestStreamReadsStatusLinesBehindTheBackupJobsTimes(t *testing.T) {
+	t.Parallel()
+	log := `2026-10-12T02:56:23.000000000Z 21:56:23 + /usr/bin/restic backup --tag=files /data/library --group-by=tags
+2026-10-12T02:56:41.000000000Z 21:56:41 [0:30] 11.08%  7 files 127.264 MiB, total 55 files 1.122 GiB, 0 errors ETA 4:00
+2026-10-12T02:56:41.000000000Z 21:56:41 /data/library/2026/raw/DSC_4105.NEF
+`
+	s := startStream(t.Context(), newHub(), testNow, func(_ context.Context, w io.Writer) error {
+		_, err := io.WriteString(w, log)
+		return err
+	})
+	eventually(t, func() bool { return s.snapshot().done })
+	v := s.snapshot()
+	if v.label != "files /data/library" || v.progress == nil || v.progress.percent != 11.08 {
+		t.Fatalf("label = %q, progress = %+v", v.label, v.progress)
+	}
+	if len(v.lines) != 1 || v.lines[0].text != "21:56:23 + /usr/bin/restic backup --tag=files /data/library --group-by=tags" {
+		t.Errorf("lines = %+v, want only the traced command, as the Job printed it", v.lines)
+	}
+}
