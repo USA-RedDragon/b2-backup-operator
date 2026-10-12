@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	utilexec "k8s.io/client-go/util/exec"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
@@ -608,6 +610,9 @@ func restoreToDatabase(
 				return nil
 			})
 	})
+	if errors.Is(err, ErrNothingWritten) {
+		wrote = false
+	}
 	return hold.finish(f, err, wrote)
 }
 
@@ -639,8 +644,18 @@ func (o *restoreOptions) restoreDatabase(
 	if err := p.Err(); err != nil {
 		return err
 	}
-	return pod.exec(ctx, restoreDatabaseCommand(sb, snap, src.database, o.dryRun), out)
+	err = pod.exec(ctx, restoreDatabaseCommand(sb, snap, src.database, o.dryRun), out)
+	if exitErr, ok := errors.AsType[utilexec.ExitError](err); ok && exitErr.ExitStatus() == restoredbUntouchedExit {
+		return fmt.Errorf("%w; %s was not changed: %w", ErrNothingWritten, target, err)
+	}
+	return err
 }
+
+// restoredbUntouchedExit is the status restoredb exits with when one of its
+// checks stopped it before it wrote anything to the database. Under pipefail
+// the pipeline exits with it only then: restic and the tools restoredb runs
+// never exit 75.
+const restoredbUntouchedExit = 75
 
 // databaseTarget names the database a restore overwrites, as restoredb will
 // resolve it: the database given, else DB_DATABASE from the environment, which

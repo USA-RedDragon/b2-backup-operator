@@ -358,6 +358,10 @@ func (h *restoreHold) finish(f *Factory, err error, wrote bool) error {
 		names = append(names, "scheduledbackup/"+key.Name)
 	}
 	p := newPrinter(f.Streams.ErrOut)
+	if errors.Is(err, ErrNothingWritten) && len(left) == 0 && releaseErr == nil {
+		p.printf("%s released: nothing was written, so there is nothing to check or resume\n",
+			strings.Join(names, ", "))
+	}
 	if len(left) > 0 {
 		p.printf("! %s stay held, with the CronJob suspended and no backup triggered:\n", strings.Join(names, ", "))
 		p.printf("! %s may hold a partial restore, which the next backup would save\n", strings.Join(left, ", "))

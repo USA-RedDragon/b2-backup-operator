@@ -24,6 +24,7 @@ var (
 	ErrWrongSnapshot  = errors.New("the snapshot is not one this source took")
 	ErrBackupRunning  = errors.New("a backup is running")
 	ErrClaimExists    = errors.New("the claim already exists")
+	ErrNothingWritten = errors.New("restoredb stopped before it wrote anything")
 )
 
 const restoreMountPath = "/restore"

@@ -594,6 +594,19 @@ first. A restore into a new, empty database therefore needs the untrusted
 extensions, such as `earthdistance`, `vector` and `vchord`, created before it. A
 dry run does not connect to the database, so it does not make these checks.
 
+`restoredb` exits 75 when one of its checks stops it before the restore starts:
+an empty dump, a database it cannot connect to or query, a custom-format dump
+that needs an extension the user cannot create, or a mariadb target it refuses
+before it creates the staging database. Neither restic nor the tools `restoredb`
+runs exit 75, and the pod runs the pipeline under `set -o pipefail`, so the
+pipeline exits 75 only then. b2bk then takes out the
+`restore-partial` entry it recorded, releases the hold, and says that nothing was
+written, so the next backup runs as usual and no `b2bk resume` is needed. An
+entry an earlier failed restore left stays. Any other failure keeps the database
+held as a partial restore, even where `restoredb` rolled it back, as a plain
+dump that names a missing extension partway through. A `restoredb` from before
+it had this exit status never exits 75, so with it every failure keeps the hold.
+
 A mariadb restore is all or nothing too, although a mariadb-dump cannot run in
 one transaction: its `DROP TABLE` and `CREATE TABLE` commit on their own. So
 `restoredb` streams the dump into a staging database, `<db>__b2bk_restore`,
