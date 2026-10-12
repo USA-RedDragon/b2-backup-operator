@@ -10,6 +10,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -94,6 +96,7 @@ func (r *ScheduledBackupReconciler) reconcileTrigger(
 type observedRun struct {
 	run    b2backupv1.BackupRun
 	active bool
+	uid    types.UID
 }
 
 func activeRun(runs []observedRun) string {
@@ -120,7 +123,9 @@ func (r *ScheduledBackupReconciler) observedRuns(
 		if owner == nil || (owner.UID != sb.UID && (cronJobUID == "" || owner.UID != cronJobUID)) {
 			continue
 		}
-		out = append(out, runFromJob(job))
+		o := runFromJob(job)
+		o.uid = job.UID
+		out = append(out, o)
 	}
 
 	slices.SortStableFunc(out, func(a, b observedRun) int {
@@ -215,7 +220,75 @@ func mostComplete(recorded, live b2backupv1.BackupRun) b2backupv1.BackupRun {
 	if live.Result == b2backupv1.BackupRunRunning && terminal(recorded.Result) {
 		live.Result = recorded.Result
 	}
+	if len(live.Sources) == 0 {
+		live.Sources = recorded.Sources
+	}
 	return live
+}
+
+// addRunSources reads what restic recorded for each finished run that has no
+// sources in the history yet from the termination message of the run's pod.
+// A script backup leaves none, so its runs are not looked up. Pods are read
+// uncached: the manager caches no pods, and a cache of every pod in the
+// cluster would cost far more than this list.
+func (r *ScheduledBackupReconciler) addRunSources(
+	ctx context.Context, sb *b2backupv1.ScheduledBackup, runs []observedRun,
+) {
+	if len(sb.Spec.Sources) == 0 {
+		return
+	}
+	recorded := map[string]bool{}
+	for _, run := range sb.Status.History {
+		recorded[run.JobName] = len(run.Sources) > 0
+	}
+	wanted := map[types.UID]int{}
+	for i := range runs {
+		if !runs[i].active && runs[i].uid != "" && !recorded[runs[i].run.JobName] {
+			wanted[runs[i].uid] = i
+		}
+	}
+	if len(wanted) == 0 {
+		return
+	}
+	uids := make([]string, 0, len(wanted))
+	for uid := range wanted {
+		uids = append(uids, string(uid))
+	}
+	slices.Sort(uids)
+	req, err := labels.NewRequirement(batchv1.ControllerUidLabel, selection.In, uids)
+	if err != nil {
+		return
+	}
+	var pods corev1.PodList
+	if err := r.uncached().List(ctx, &pods, client.InNamespace(sb.Namespace),
+		client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(*req)}); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list backup Job pods", "scheduledBackup", sb.Name)
+		return
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		owner := metav1.GetControllerOf(pod)
+		if owner == nil {
+			continue
+		}
+		at, ok := wanted[owner.UID]
+		if !ok || len(runs[at].run.Sources) > 0 {
+			continue
+		}
+		if sources := podRunSources(pod); len(sources) > 0 {
+			runs[at].run.Sources = sources
+		}
+	}
+}
+
+// podRunSources reads the summaries the backup container of pod left.
+func podRunSources(pod *corev1.Pod) []b2backupv1.BackupRunSource {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == backup.ContainerName && cs.State.Terminated != nil {
+			return backup.ParseRunSummary(cs.State.Terminated.Message)
+		}
+	}
+	return nil
 }
 
 func terminal(result b2backupv1.BackupRunResult) bool {

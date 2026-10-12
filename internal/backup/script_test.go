@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -50,9 +51,11 @@ func TestRender(t *testing.T) {
 {
 set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
+@summary db
 restic backup --retry-lock=5m0s --tag=files /data/app \
   --exclude='**/temp*' \
   --exclude='app/export-logs'
+@summary files
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=db --tag=files --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -75,6 +78,7 @@ restic cache --cleanup
 {
 set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb --secret-mount=/var/run/secrets/b2backup/database -- --single-transaction '--where=id > 5' '--ignore-table=app.*' '--comment=it'\''s fine'
+@summary db
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
 `,
@@ -92,8 +96,10 @@ restic cache --cleanup
 {
 set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb --secret-mount=/var/run/secrets/b2backup/database -- --skip-ssl
+@summary db
 restic backup --retry-lock=5m0s --tag=files /data \
   --exclude='dumps'
+@summary files
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=db --tag=files --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -112,7 +118,9 @@ restic cache --cleanup
 {
 set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
+@summary db
 restic backup --retry-lock=5m0s --tag=db-external --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database --database=reporting
+@summary db-external
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=db --tag=db-external --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -128,6 +136,7 @@ restic cache --cleanup
 {
 set -euo pipefail
 restic backup --retry-lock=5m0s --tag=files /data
+@summary files
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=files --keep-hourly=168 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -143,6 +152,7 @@ restic cache --cleanup
 {
 set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
+@summary db
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=db --keep-hourly=28 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -164,7 +174,9 @@ restic cache --cleanup
 {
 set -euo pipefail
 restic backup --retry-lock=5m0s --tag=files /data /blobs
+@summary files
 restic backup --retry-lock=5m0s --tag=server /data/server
+@summary server
 restic forget --prune --retry-lock=5m0s --host="$RESTIC_HOST" --group-by=tags --tag=files --tag=server --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
@@ -192,6 +204,7 @@ restic cache --cleanup
 {
 set -euo pipefail
 restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/b2backup/database
+@summary db
 restic cache --cleanup
 } 2>&1 | ts '%H:%M:%S'
 `,
@@ -210,10 +223,39 @@ restic cache --cleanup
 			if err != nil {
 				t.Fatalf("Render() error = %v", err)
 			}
-			if got != tt.want {
-				t.Errorf("Render() mismatch\n--- got ---\n%s\n--- want ---\n%s", got, tt.want)
+			want := summaryToken.ReplaceAllStringFunc(tt.want, func(m string) string {
+				return SummaryLine(strings.TrimPrefix(m, "@summary "))
+			})
+			if got != want {
+				t.Errorf("Render() mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
 			}
 		})
+	}
+}
+
+var summaryToken = regexp.MustCompile(`@summary \S+`)
+
+func TestSummaryLine(t *testing.T) {
+	want := `restic snapshots --json --no-lock --group-by= --tag=db-2 --host="$RESTIC_HOST" latest 2>/dev/null | ` +
+		`sed -nE '/"summary":/{s/.*"summary":(\{[^}]*\}).*/db-2 \1/;s/"(dirs_[a-z]+|data_blobs|tree_blobs)":[0-9]+,//g;` +
+		`s/[.][0-9]+([Z+-])/\1/g;p;}' ` +
+		`2>/dev/null >>/dev/termination-log || true`
+	if got := SummaryLine("db-2"); got != want {
+		t.Errorf("SummaryLine() =\n%s\nwant\n%s", got, want)
+	}
+	if !IsSummaryLine("  "+want) || IsSummaryLine(strings.Replace(want, "|| true", "", 1)) ||
+		IsSummaryLine("restic snapshots --json") {
+		t.Error("IsSummaryLine does not match exactly the lines SummaryLine renders")
+	}
+}
+
+func TestScriptBackupRecordsNoSummary(t *testing.T) {
+	got, err := Render(withSpec(b2backupv1.ScheduledBackupSpec{Script: "restic backup --tag=custom /data\n"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, SummaryCommand) || strings.Contains(got, "termination-log") {
+		t.Errorf("a script backup got a summary line:\n%s", got)
 	}
 }
 

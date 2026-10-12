@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 )
 
@@ -40,6 +42,8 @@ func Render(sb *b2backupv1.ScheduledBackup) (string, error) {
 			return "", err
 		}
 		b.WriteString(line)
+		b.WriteString("\n")
+		b.WriteString(SummaryLine(src.EffectiveTag()))
 		b.WriteString("\n")
 	}
 
@@ -112,6 +116,40 @@ func renderSource(src b2backupv1.BackupSource, workingDir, retryLock string) (st
 	default:
 		return "", fmt.Errorf("unknown source type %q", src.Type)
 	}
+}
+
+// ContainerName is the backup container's name in every backup pod.
+const ContainerName = containerName
+
+// SummaryCommand starts the line that records restic's summary of the
+// snapshot a source just saved. The line appends the tag, a space and the
+// snapshot's summary object to the container's termination message, less the
+// directory and blob counts and the fractions of a second, which keeps a line
+// near 220 bytes: the kubelet keeps 4096 bytes of the message, and the
+// operator skips a line it cut short. restic stores the summary in the
+// snapshot itself, so nothing parses its human-readable output. The line runs
+// restic without a lock and cannot fail the backup.
+const SummaryCommand = "restic snapshots --json --no-lock --group-by= --tag="
+
+// SummaryLine renders the summary line for the source tagged tag. An empty
+// --group-by keeps the image's wrapper from grouping the JSON. Tags are
+// [A-Za-z0-9_.-], which need no quoting in the shell or in sed.
+func SummaryLine(tag string) string {
+	return SummaryCommand + tag + ` --host="$RESTIC_HOST" latest 2>/dev/null | ` +
+		`sed -nE '/"summary":/{s/.*"summary":(\{[^}]*\}).*/` + tag + ` \1/;` +
+		`s/"(dirs_[a-z]+|data_blobs|tree_blobs)":[0-9]+,//g;s/[.][0-9]+([Z+-])/\1/g;p;}' 2>/dev/null >>` +
+		corev1.TerminationMessagePathDefault + " || true"
+}
+
+// IsSummaryLine reports whether a script line is one SummaryLine rendered.
+func IsSummaryLine(line string) bool {
+	line = strings.TrimSpace(line)
+	tag, ok := strings.CutPrefix(line, SummaryCommand)
+	if !ok {
+		return false
+	}
+	tag, _, _ = strings.Cut(tag, " ")
+	return line == SummaryLine(tag)
 }
 
 // ForgetHostFlag scopes restic forget to the host this backup's snapshots carry.

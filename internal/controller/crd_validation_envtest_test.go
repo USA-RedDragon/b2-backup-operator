@@ -794,3 +794,52 @@ func getRepository(t *testing.T, c client.Client, obj *b2backupv1.Repository) *b
 	}
 	return &got
 }
+
+func TestCRDRunHistoryHoldsSourceSizes(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	mustCreateNamespace(t, c, "runsizes")
+
+	sb := &b2backupv1.ScheduledBackup{
+		Namespace: "runsizes", Name: resticName,
+		Spec: b2backupv1.ScheduledBackupSpec{
+			RepositoryRef: corev1.LocalObjectReference{Name: resticName},
+			Schedule:      hourlySchedule,
+			Sources:       []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}},
+		},
+	}
+	if err := c.Create(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	at := metav1.NewTime(time.Date(2026, 10, 12, 4, 21, 22, 0, time.UTC))
+	write := func(src b2backupv1.BackupRunSource) error {
+		live := &b2backupv1.ScheduledBackup{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(sb), live); err != nil {
+			return err
+		}
+		base := live.DeepCopy()
+		live.Status.History = []b2backupv1.BackupRun{{JobName: "restic-backup-1",
+			Trigger: b2backupv1.BackupTriggerScheduled, Result: b2backupv1.BackupRunSucceeded,
+			StartTime: &at, CompletionTime: &at, Sources: []b2backupv1.BackupRunSource{src}}}
+		return c.Status().Patch(ctx, live, client.MergeFrom(base))
+	}
+
+	unchanged := b2backupv1.BackupRunSource{Tag: "db", FilesUnmodified: 1, ProcessedFiles: 1,
+		ProcessedBytes: 8, StartTime: &at, CompletionTime: &at}
+	if err := write(unchanged); err != nil {
+		t.Fatalf("a run that added nothing was refused: %v", err)
+	}
+	live := &b2backupv1.ScheduledBackup{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(sb), live); err != nil {
+		t.Fatal(err)
+	}
+	if got := live.Status.History[0].Sources; len(got) != 1 || got[0].AddedBytes != 0 || got[0].ProcessedBytes != 8 {
+		t.Errorf("sources read back = %+v", got)
+	}
+
+	negative := unchanged
+	negative.AddedBytes = -1
+	if err := write(negative); err == nil {
+		t.Error("a negative size was accepted")
+	}
+}

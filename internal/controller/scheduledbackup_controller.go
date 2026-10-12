@@ -50,7 +50,17 @@ type ScheduledBackupReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
 
+	// APIReader reads backup pods, which the manager does not cache.
+	APIReader client.Reader
+
 	Config backup.Config
+}
+
+func (r *ScheduledBackupReconciler) uncached() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // +kubebuilder:rbac:groups=b2backup.mcswain.dev,resources=scheduledbackups,verbs=get;list;watch;update;patch
@@ -61,6 +71,7 @@ type ScheduledBackupReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;create;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
 
 // Reconcile keeps the backup's CronJob, cache claim and run history up to date.
 func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -242,6 +253,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	r.addRunSources(ctx, sb, runs)
 	sb.Status.History = mergeHistory(sb.Status.History, runs)
 	sb.Status.Active = activeRuns(cronActive, runs)
 	sb.Status.LastSuccessfulTime = laterTime(sb.Status.LastSuccessfulTime, lastSucceeded(sb.Status.History))
@@ -517,6 +529,9 @@ func (r *ScheduledBackupReconciler) setCondition(
 func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorder("scheduledbackup-controller")
+	}
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
 	}
 
 	if err := mgr.GetFieldIndexer().IndexField(

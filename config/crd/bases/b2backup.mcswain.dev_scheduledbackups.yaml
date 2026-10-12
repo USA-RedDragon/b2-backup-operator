@@ -1912,6 +1912,88 @@ spec:
                       - Succeeded
                       - Failed
                       type: string
+                    sources:
+                      description: |-
+                        Sources is what restic recorded for each source the run backed up, in
+                        the order the run saved them, read from the snapshot summary the backup
+                        container leaves in its termination message. A failed run lists the
+                        sources saved before it failed. It is empty for a spec.script backup, a
+                        run whose pod was gone before the operator read it, and a run from an
+                        operator that did not record it.
+                      items:
+                        description: BackupRunSource is restic's summary of one snapshot
+                          a run saved.
+                        properties:
+                          addedBytes:
+                            description: |-
+                              AddedBytes is the new data restic added to the repository, before
+                              compression: "Added to the repository" in restic's output.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          completionTime:
+                            description: CompletionTime is when restic finished this
+                              snapshot.
+                            format: date-time
+                            type: string
+                          filesChanged:
+                            description: FilesChanged is how many files changed since
+                              the parent snapshot.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          filesNew:
+                            description: FilesNew is how many files restic had not
+                              seen in the parent snapshot.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          filesUnmodified:
+                            description: FilesUnmodified is how many files were unchanged
+                              since the parent snapshot.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          processedBytes:
+                            description: ProcessedBytes is the size of the files the
+                              snapshot holds.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          processedFiles:
+                            description: ProcessedFiles is how many files the snapshot
+                              holds.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          startTime:
+                            description: StartTime is when restic started this snapshot.
+                            format: date-time
+                            type: string
+                          storedBytes:
+                            description: |-
+                              StoredBytes is what the added data took in the repository once
+                              compressed and packed: the "stored" figure in restic's output.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          tag:
+                            description: Tag is the source's restic tag.
+                            maxLength: 64
+                            type: string
+                        required:
+                        - addedBytes
+                        - filesChanged
+                        - filesNew
+                        - filesUnmodified
+                        - processedBytes
+                        - processedFiles
+                        - storedBytes
+                        - tag
+                        type: object
+                      maxItems: 16
+                      type: array
+                      x-kubernetes-list-type: atomic
                     startTime:
                       description: StartTime is when the run started.
                       format: date-time

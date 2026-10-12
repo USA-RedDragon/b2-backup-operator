@@ -449,10 +449,14 @@ var groupByFlag = regexp.MustCompile(` --group-by[= ](\S+)`)
 // normalizeScript drops the preamble and postamble around a backup script,
 // both the operator's and the one hand-written scripts carried, and what the
 // operator adds to each line, so two scripts compare equal when they run the
-// same commands.
+// same commands. It drops the lines that record each snapshot's summary, which
+// read the repository and change nothing in it.
 func normalizeScript(s string) (string, []string) {
 	var lines, dumps []string
 	for _, line := range joinContinuations(scriptBody(s)) {
+		if backup.IsSummaryLine(line) {
+			continue
+		}
 		line = ignoredFlags.ReplaceAllString(line, "")
 		line = quotedExclude.ReplaceAllStringFunc(line, unquoteExclude)
 		if strings.HasPrefix(strings.TrimSpace(line), "restic forget ") {

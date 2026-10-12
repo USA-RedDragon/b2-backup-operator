@@ -488,6 +488,70 @@ type BackupRun struct {
 	// CompletionTime is when the run finished.
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
+
+	// Sources is what restic recorded for each source the run backed up, in
+	// the order the run saved them, read from the snapshot summary the backup
+	// container leaves in its termination message. A failed run lists the
+	// sources saved before it failed. It is empty for a spec.script backup, a
+	// run whose pod was gone before the operator read it, and a run from an
+	// operator that did not record it.
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=atomic
+	// +optional
+	Sources []BackupRunSource `json:"sources,omitempty"`
+}
+
+// BackupRunSource is restic's summary of one snapshot a run saved.
+type BackupRunSource struct {
+	// Tag is the source's restic tag.
+	// +kubebuilder:validation:MaxLength=64
+	// +required
+	Tag string `json:"tag"`
+
+	// FilesNew is how many files restic had not seen in the parent snapshot.
+	// +kubebuilder:validation:Minimum=0
+	// +required
+	FilesNew int64 `json:"filesNew"`
+
+	// FilesChanged is how many files changed since the parent snapshot.
+	// +kubebuilder:validation:Minimum=0
+	// +required
+	FilesChanged int64 `json:"filesChanged"`
+
+	// FilesUnmodified is how many files were unchanged since the parent snapshot.
+	// +kubebuilder:validation:Minimum=0
+	// +required
+	FilesUnmodified int64 `json:"filesUnmodified"`
+
+	// ProcessedFiles is how many files the snapshot holds.
+	// +kubebuilder:validation:Minimum=0
+	// +required
+	ProcessedFiles int64 `json:"processedFiles"`
+
+	// ProcessedBytes is the size of the files the snapshot holds.
+	// +kubebuilder:validation:Minimum=0
+	// +required
+	ProcessedBytes int64 `json:"processedBytes"`
+
+	// AddedBytes is the new data restic added to the repository, before
+	// compression: "Added to the repository" in restic's output.
+	// +kubebuilder:validation:Minimum=0
+	// +required
+	AddedBytes int64 `json:"addedBytes"`
+
+	// StoredBytes is what the added data took in the repository once
+	// compressed and packed: the "stored" figure in restic's output.
+	// +kubebuilder:validation:Minimum=0
+	// +required
+	StoredBytes int64 `json:"storedBytes"`
+
+	// StartTime is when restic started this snapshot.
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+
+	// CompletionTime is when restic finished this snapshot.
+	// +optional
+	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 }
 
 // ScheduledBackup is a recurring restic backup into a Repository.
