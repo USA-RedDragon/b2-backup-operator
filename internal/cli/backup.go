@@ -269,6 +269,18 @@ func followJobLogs(
 	key types.NamespacedName,
 	timeout time.Duration,
 ) error {
+	job, err := waitForJobPod(ctx, c, key, timeout)
+	if err != nil {
+		return err
+	}
+	return streamJobLogs(ctx, c, cs, out, job, corev1.PodLogOptions{Follow: true})
+}
+
+// waitForJobPod waits until one of the Job's pods has left Pending, so its
+// logs can be read.
+func waitForJobPod(ctx context.Context, c client.Client, key types.NamespacedName, timeout time.Duration) (
+	*batchv1.Job, error,
+) {
 	var job batchv1.Job
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, timeout, true,
 		func(ctx context.Context) (bool, error) {
@@ -290,8 +302,7 @@ func followJobLogs(
 			return false, nil
 		})
 	if err != nil {
-		return fmt.Errorf("waiting for the backup pod: %w", err)
+		return nil, fmt.Errorf("waiting for the backup pod: %w", err)
 	}
-
-	return streamJobLogs(ctx, c, cs, out, &job, corev1.PodLogOptions{Follow: true})
+	return &job, nil
 }

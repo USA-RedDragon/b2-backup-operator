@@ -67,14 +67,9 @@ func restoreToDir(
 		}
 	}
 
-	run, err := f.Runner()
-	if err != nil {
-		return err
-	}
-	return run.Attach(ctx, runner.ForBackup(sb), runner.Options{Purpose: purposeDownload}, defaultResticTimeout,
-		func(pod *corev1.Pod) error {
-			return o.download(ctx, runnerPod{run: run, pod: pod, stderr: f.Streams.ErrOut}, src, dest,
-				f.Streams.Out, f.Streams.ErrOut)
+	return f.attachPod(ctx, runner.ForBackup(sb), runner.Options{Purpose: purposeDownload},
+		func(pod restorePod, _ string) error {
+			return o.download(ctx, pod, src, dest, f.Streams.Out, f.Streams.ErrOut)
 		})
 }
 
