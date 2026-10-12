@@ -181,6 +181,33 @@ func TestStreamReadsResticsOwnStatusLines(t *testing.T) {
 	}
 }
 
+func TestStreamShowsOneTimePerLine(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"kubernetes time and ts time", "2026-10-11T22:26:33.123456789Z 22:26:33 using parent snapshot 3d70c6ed", "using parent snapshot 3d70c6ed"},
+		{"kubernetes time only", "2026-10-11T22:26:33.123456789Z using parent snapshot 3d70c6ed", "using parent snapshot 3d70c6ed"},
+		{"ts time only", "22:26:33 using parent snapshot 3d70c6ed", "22:26:33 using parent snapshot 3d70c6ed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := startStream(t.Context(), newHub(), testNow, func(_ context.Context, w io.Writer) error {
+				_, err := io.WriteString(w, tt.raw+"\n")
+				return err
+			})
+			eventually(t, func() bool { return s.snapshot().done })
+			v := s.snapshot()
+			if len(v.lines) != 1 || v.lines[0].text != tt.want {
+				t.Fatalf("lines = %+v, want one line %q", v.lines, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadOptionsPrecedence(t *testing.T) {
 	t.Parallel()
 	yes, no := ptr.To(true), ptr.To(false)
@@ -351,7 +378,7 @@ func TestStreamReadsStatusLinesBehindTheBackupJobsTimes(t *testing.T) {
 	if v.label != "files /data/library" || v.progress == nil || v.progress.percent != 11.08 {
 		t.Fatalf("label = %q, progress = %+v", v.label, v.progress)
 	}
-	if len(v.lines) != 1 || v.lines[0].text != "21:56:23 + /usr/bin/restic backup --tag=files /data/library --group-by=tags" {
-		t.Errorf("lines = %+v, want only the traced command, as the Job printed it", v.lines)
+	if len(v.lines) != 1 || v.lines[0].text != "+ /usr/bin/restic backup --tag=files /data/library --group-by=tags" {
+		t.Errorf("lines = %+v, want only the traced command, without the time ts put before it", v.lines)
 	}
 }

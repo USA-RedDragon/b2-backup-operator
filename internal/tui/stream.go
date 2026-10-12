@@ -134,6 +134,9 @@ func (s *stream) add(raw string) {
 		s.label = label
 		s.progress = nil
 	}
+	if !line.at.IsZero() {
+		line.text = body
+	}
 	s.lines = append(s.lines, line)
 }
 
