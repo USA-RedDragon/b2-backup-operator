@@ -521,7 +521,12 @@ func (o *restoreOptions) runVolumes(
 ) error {
 	for i, step := range plan.steps {
 		p := newPrinter(out)
-		p.printf("restoring %s:%s%s into %s\n", plan.snap.short(), step.snapPath, step.sub, plan.targets[i])
+		if o.dryRun {
+			p.printf("would restore %s:%s%s into %s; nothing is written\n",
+				plan.snap.short(), step.snapPath, step.sub, plan.targets[i])
+		} else {
+			p.printf("restoring %s:%s%s into %s\n", plan.snap.short(), step.snapPath, step.sub, plan.targets[i])
+		}
 		if err := p.Err(); err != nil {
 			return err
 		}

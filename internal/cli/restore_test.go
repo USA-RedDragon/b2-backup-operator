@@ -658,3 +658,67 @@ func TestChooseTargetMapsTheMenuToTheRightTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestRestoreToNewPVCDryRunCreatesNoClaim(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		dryRun      bool
+		wantClaim   bool
+		wantRestore string
+		wantSays    string
+		wantNot     string
+	}{
+		{name: "a dry run", dryRun: true,
+			wantRestore: "--target=/restore --exclude-xattr=security.selinux --dry-run --verbose=2",
+			wantSays:    "nothing was created or restored", wantNot: "ready to mount"},
+		{name: "a restore", wantClaim: true,
+			wantRestore: "--target=/restore --exclude-xattr=security.selinux",
+			wantSays:    "the claim is ready to mount", wantNot: "dry run"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fx := currentBackup(t, filesAtData)
+			c := newClient(t, fx.objects(sourceClaim())...)
+			pod := &fakePod{}
+			var mounts [][]corev1.VolumeMount
+			var errOut bytes.Buffer
+			f := factoryWithClient(t, c)
+			f.Streams.ErrOut = &errOut
+			f.attachHook = func(_ context.Context, _ runner.Subject, opts runner.Options,
+				fn func(restorePod, string) error) error {
+				mounts = append(mounts, opts.ExtraMounts)
+				return fn(pod, ownRestoreJob)
+			}
+			const name = "web-files-restore"
+			o := &restoreOptions{toNewPVC: name, snapshot: latest, dryRun: tt.dryRun}
+			if err := restoreToNewPVC(context.Background(), f, c, fx.sb, o); err != nil {
+				t.Fatal(err)
+			}
+
+			var pvc corev1.PersistentVolumeClaim
+			err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: name}, &pvc)
+			if got := err == nil; got != tt.wantClaim {
+				t.Errorf("claim created = %t (%v), want %t", got, err, tt.wantClaim)
+			}
+			for _, m := range mounts {
+				if tt.dryRun && len(m) > 0 {
+					t.Errorf("a dry run mounted %v", m)
+				}
+			}
+			var restores []string
+			for _, cmd := range pod.commands {
+				if strings.Contains(cmd, " restore ") {
+					restores = append(restores, cmd)
+				}
+			}
+			if len(restores) != 1 || !strings.HasSuffix(restores[0], tt.wantRestore) {
+				t.Errorf("restores = %q, want one ending %q", restores, tt.wantRestore)
+			}
+			if got := errOut.String(); !strings.Contains(got, tt.wantSays) || strings.Contains(got, tt.wantNot) {
+				t.Errorf("output %q, want it to say %q and not %q", got, tt.wantSays, tt.wantNot)
+			}
+		})
+	}
+}

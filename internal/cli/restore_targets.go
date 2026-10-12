@@ -330,13 +330,23 @@ func restoreToNewPVC(
 		return err
 	}
 
+	size := spec.Resources.Requests[corev1.ResourceStorage]
 	var plan volumePlan
 	err = f.attachRestorePod(ctx, sb, runner.Options{Purpose: purposeRestore}, func(pod restorePod, _ string) error {
 		plan, err = o.planVolumes(ctx, pod, src, newClaimTarget(sb, claim, restoreMountPath))
-		return err
+		if err != nil || !o.dryRun {
+			return err
+		}
+		return o.runVolumes(ctx, pod, src, plan, f.Streams.Out)
 	})
 	if err != nil {
 		return err
+	}
+	if o.dryRun {
+		p := newPrinter(f.Streams.ErrOut)
+		p.printf("dry run: would create pvc/%s (%s), laid out like pvc/%s, and restore into it mounted at %s; "+
+			"nothing was created or restored\n", o.toNewPVC, size.String(), claim.ExistingClaim, restoreMountPath)
+		return p.Err()
 	}
 
 	pvc := newRestoreClaim(sb, o.toNewPVC, spec)
@@ -344,7 +354,6 @@ func restoreToNewPVC(
 		return fmt.Errorf("creating pvc/%s: %w", o.toNewPVC, err)
 	}
 
-	size := spec.Resources.Requests[corev1.ResourceStorage]
 	p := newPrinter(f.Streams.ErrOut)
 	p.printf("created pvc/%s (%s), laid out like pvc/%s\n", pvc.Name, size.String(), claim.ExistingClaim)
 	if err := p.Err(); err != nil {

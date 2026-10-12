@@ -246,8 +246,8 @@ a confirmation.
 - **Dry run.** Over the live volume and into the database, the dry run is
   `restore --dry-run`, and its result is shown before you confirm. For a new
   claim or a download it lists what would be restored with `restic ls`, and
-  writes nothing: unlike `restore --to-new-pvc --dry-run`, it does not create
-  the claim.
+  writes nothing. Neither it nor `restore --to-new-pvc --dry-run` creates the
+  claim.
 - **Confirmation.** Over the live volume and into the database, you type the
   ScheduledBackup's name, the same name `restore` asks for, and `restore`
   itself checks it. The restore then takes the same restore lock, holds the
@@ -709,7 +709,7 @@ then ignored; do not read a successful run as having honored them.
 | Target | What `--dry-run` does |
 | --- | --- |
 | `--to` | Lists the snapshot with `restic ls` instead of downloading it. Nothing is written |
-| `--to-new-pvc` | **Still creates the claim**, then runs `restic restore --dry-run --verbose=2` into it. The claim is left behind |
+| `--to-new-pvc` | Creates no claim. In a pod without the new claim, runs `restic restore --dry-run --verbose=2` into `/restore`, where the claim would be mounted, which lists every file it would write. Then it names the claim it would create and its size. Nothing is created or written |
 | `--in-place` | Skips both the typed confirmation and the schedule suspension, then runs `restic restore --dry-run --verbose=2`, which lists every file it would write and delete |
 | `--to-database` | Skips the typed confirmation and passes `--dry-run` to `restoredb`. For postgres it prints the command and reads the dump to the end without connecting, so `restic dump` is not cut off, and a plain dump a real restore would stop or refuse fails the dry run too. For mariadb it restores into `<db>__b2bk_restore`, checks the trailer and the staged objects, prints the `RENAME TABLE` it would run, has the server parse it as a prepared statement without running it, and drops the staging database again. `<db>` is not changed |
 
