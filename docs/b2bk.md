@@ -225,7 +225,9 @@ snapshots screen reads again.
 
 Quitting with `q` or `ctrl+c`, a `SIGTERM` or `SIGHUP`, or a crash of the
 dashboard deletes the pod's Job before b2bk exits. Only `SIGKILL` leaves it;
-it then ends at its 12 hour deadline. A browse pod does not hold off an
+it then ends at its 12 hour deadline. When the pod is deleted, it sends every
+restic still running in it `SIGTERM` and waits up to 25 seconds, so restic
+removes its lock instead of being killed with it. A browse pod does not hold off an
 overwriting restore, but `unlock --remove-all` refuses while it runs, as for
 any other b2bk pod.
 

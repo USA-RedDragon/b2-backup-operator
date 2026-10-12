@@ -121,7 +121,17 @@ type Options struct {
 // Standard; the restricted one allows none, and rejects the pod.
 var RestoreCapabilities = []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID"}
 
-var idleCommand = []string{"sh", "-c", `trap "exit 0" TERM INT; sleep infinity & wait`}
+// idleCommand keeps an interactive pod running for exec. When the pod is
+// deleted, it sends SIGTERM to every restic an exec started and waits for them
+// to exit, up to 25 of the 30 seconds the kubelet allows: restic removes its
+// lock on SIGTERM. Once the shell exits, the kernel kills every process left
+// in the container with SIGKILL, and a restic killed so leaves its lock
+// behind. An exec whose client went away leaves restic running, blocked on its
+// output. The pattern is not -x: busybox pgrep -x compares argv[0], which the
+// image's wrapper sets to /usr/bin/restic.
+var idleCommand = []string{"sh", "-c", `trap 'pkill -TERM "(^|/)restic$" 2>/dev/null; i=0; ` +
+	`while [ "$i" -lt 25 ] && pgrep "(^|/)restic$" >/dev/null 2>&1; do sleep 1; i=$((i+1)); done; exit 0' TERM INT; ` +
+	`sleep infinity & wait`}
 
 // Subject is what a one-off Job is built for: a ScheduledBackup, whose
 // CronJob it copies, or else a Repository no ScheduledBackup uses.
