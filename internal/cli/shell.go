@@ -101,7 +101,7 @@ func openShell(
 				Namespace: pod.Namespace,
 				Pod:       pod.Name,
 				Container: runner.ContainerName,
-				Command:   shellArgv(subject, shell, interactive),
+				Command:   shellArgv(subject, shell, interactive, os.Getenv("NO_COLOR")),
 				Stdin:     f.Streams.In,
 				Stdout:    f.Streams.Out,
 				Stderr:    f.Streams.ErrOut,
@@ -120,14 +120,20 @@ func openShell(
 // shellArgv starts shell, without the operator's default
 // RESTIC_PROGRESS_FPS when on a terminal: restic redraws its status there by
 // itself, and the default would slow that to one line every ten seconds.
-func shellArgv(subject runner.Subject, shell string, interactive bool) []string {
-	if !interactive || subject.Backup == nil {
+func shellArgv(subject runner.Subject, shell string, interactive bool, noColor string) []string {
+	var env []string
+	if interactive && subject.Backup != nil {
+		if _, set := subject.Backup.Spec.Env[backup.EnvProgressFPS]; !set {
+			env = append(env, "-u", backup.EnvProgressFPS)
+		}
+	}
+	if noColor != "" {
+		env = append(env, "NO_COLOR="+noColor)
+	}
+	if len(env) == 0 {
 		return []string{shell}
 	}
-	if _, set := subject.Backup.Spec.Env[backup.EnvProgressFPS]; set {
-		return []string{shell}
-	}
-	return []string{"env", "-u", backup.EnvProgressFPS, shell}
+	return append(append([]string{"env"}, env...), shell)
 }
 
 func sizeQueueFor(ctx context.Context, interactive bool, stdin *os.File) remotecommand.TerminalSizeQueue {

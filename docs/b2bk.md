@@ -13,7 +13,8 @@ The commands print plain text: no color and no other escape sequences, with or
 without `NO_COLOR`. Status is in words and the symbols `✔`, `!` and `✖`. `logs`
 and the restic output of `check`, `exec` and the other pod commands are passed
 through as the container wrote them; b2bk adds nothing to them. The dashboard
-follows `NO_COLOR` too; see [Settings](#settings).
+follows `NO_COLOR` too; see [Settings](#settings). `shell` passes your
+`NO_COLOR` into the pod's shell, so tools you run there see it as well.
 
 ## What a command does to your data
 
