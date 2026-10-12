@@ -22,6 +22,7 @@ import (
 
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/kube"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/runner"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/tui"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 )
@@ -42,6 +43,14 @@ type Factory struct {
 
 	attachHook func(context.Context, runner.Subject, runner.Options, func(restorePod, string) error) error
 	runHook    func(context.Context, runner.Subject, runner.Options) error
+
+	// parent shares its clients with a Factory derived from it for one TUI
+	// action, which acts in namespace and asks confirmHook to confirm.
+	parent      *Factory
+	namespace   string
+	confirmHook func(what, name string) error
+
+	tuiHook func(context.Context, tui.Options) error
 
 	once struct {
 		scheme     sync.Once
@@ -68,6 +77,9 @@ func NewFactory(streams genericiooptions.IOStreams) *Factory {
 
 // Scheme returns the runtime scheme, including the b2backup types.
 func (f *Factory) Scheme() *runtime.Scheme {
+	if f.parent != nil {
+		return f.parent.Scheme()
+	}
 	f.once.scheme.Do(func() {
 		s := runtime.NewScheme()
 		utilruntime.Must(corev1.AddToScheme(s))
@@ -81,6 +93,9 @@ func (f *Factory) Scheme() *runtime.Scheme {
 
 // RESTConfig returns the client config from the kubeconfig and flags.
 func (f *Factory) RESTConfig() (*rest.Config, error) {
+	if f.parent != nil {
+		return f.parent.RESTConfig()
+	}
 	f.once.restConfig.Do(func() {
 		f.restConfig, f.restErr = f.ConfigFlags.ToRESTConfig()
 	})
@@ -89,6 +104,9 @@ func (f *Factory) RESTConfig() (*rest.Config, error) {
 
 // Client returns a controller-runtime client.
 func (f *Factory) Client() (client.Client, error) {
+	if f.parent != nil {
+		return f.parent.Client()
+	}
 	f.once.client.Do(func() {
 		cfg, err := f.RESTConfig()
 		if err != nil {
@@ -102,6 +120,9 @@ func (f *Factory) Client() (client.Client, error) {
 
 // Clientset returns a client-go clientset.
 func (f *Factory) Clientset() (*kubernetes.Clientset, error) {
+	if f.parent != nil {
+		return f.parent.Clientset()
+	}
 	f.once.clientset.Do(func() {
 		cfg, err := f.RESTConfig()
 		if err != nil {
@@ -115,6 +136,9 @@ func (f *Factory) Clientset() (*kubernetes.Clientset, error) {
 
 // Namespace returns the namespace to act on.
 func (f *Factory) Namespace() (string, error) {
+	if f.namespace != "" {
+		return f.namespace, nil
+	}
 	ns, _, err := f.ConfigFlags.ToRawKubeConfigLoader().Namespace()
 	return ns, err
 }
@@ -155,4 +179,31 @@ func (f *Factory) Interactive() bool {
 	}
 	file, ok := f.Streams.In.(*os.File)
 	return ok && kube.IsTerminal(file.Fd())
+}
+
+// derive returns a Factory sharing f's clients that acts in namespace, writes
+// to streams, never reads a terminal, and confirms through confirmHook.
+func (f *Factory) derive(namespace string, streams genericiooptions.IOStreams, confirmHook func(what, name string) error) *Factory {
+	interactive := false
+	return &Factory{
+		ConfigFlags:     f.ConfigFlags,
+		Streams:         streams,
+		podStartTimeout: f.podStartTimeout,
+		interactive:     &interactive,
+		attachHook:      f.attachHook,
+		runHook:         f.runHook,
+		parent:          f,
+		namespace:       namespace,
+		confirmHook:     confirmHook,
+	}
+}
+
+// canDrawTUI reports whether both ends are a terminal the TUI can draw on.
+func (f *Factory) canDrawTUI() bool {
+	if f.interactive != nil {
+		return *f.interactive
+	}
+	in, inOK := f.Streams.In.(*os.File)
+	out, outOK := f.Streams.Out.(*os.File)
+	return inOK && outOK && kube.IsTerminal(in.Fd()) && kube.IsTerminal(out.Fd()) && os.Getenv("TERM") != "dumb"
 }

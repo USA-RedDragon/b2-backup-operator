@@ -28,6 +28,9 @@ type resticSnapshot struct {
 	Paths    []string  `json:"paths"`
 	Hostname string    `json:"hostname"`
 	Tags     []string  `json:"tags"`
+	Summary  *struct {
+		TotalBytesProcessed uint64 `json:"total_bytes_processed"`
+	} `json:"summary,omitempty"`
 }
 
 func (s resticSnapshot) short() string {

@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -52,13 +53,24 @@ func newRoot(f *Factory, argv0 string) *cobra.Command {
 		Long: `b2bk drives the backups that b2-backup-operator schedules.
 
 It triggers backups on demand, explains why one is not running, browses and
-restores snapshots, and drops you into a shell with restic already configured.`,
+restores snapshots, and drops you into a shell with restic already configured.
+
+On a terminal, b2bk with no command opens a full-screen dashboard of the same
+actions; see b2bk tui --help.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Annotations: map[string]string{
 			cobra.CommandDisplayNameAnnotation: display,
 		},
+		Args: unknownCommand,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !f.canDrawTUI() {
+				return cmd.Help()
+			}
+			return runTUI(cmd, f)
+		},
 	}
+	addTUIFlags(cmd)
 
 	cmd.SetIn(streams.In)
 	cmd.SetOut(streams.Out)
@@ -92,6 +104,7 @@ restores snapshots, and drops you into a shell with restic already configured.`,
 		newMigrateCommand(f),
 		newParityCommand(f),
 		newVersionCommand(f),
+		newTUICommand(f),
 	}
 
 	used := make(map[string]bool, len(subcommands))
@@ -121,4 +134,20 @@ func groupOrder() []*cobra.Group {
 		{ID: GroupEscape, Title: "Escape hatch:"},
 		{ID: GroupDevelopment, Title: "Development:"},
 	}
+}
+
+// unknownCommand refuses arguments to the bare command the way cobra refuses an
+// unknown command, with its suggestions, since a runnable root otherwise loses them.
+func unknownCommand(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if cmd.SuggestionsMinimumDistance <= 0 {
+		cmd.SuggestionsMinimumDistance = 2
+	}
+	msg := fmt.Sprintf("unknown command %q for %q", args[0], cmd.CommandPath())
+	if suggestions := cmd.SuggestionsFor(args[0]); len(suggestions) > 0 {
+		msg += "\n\nDid you mean this?\n\t" + strings.Join(suggestions, "\n\t")
+	}
+	return fmt.Errorf("%s\n\nRun '%s --help' for usage", msg, cmd.CommandPath())
 }

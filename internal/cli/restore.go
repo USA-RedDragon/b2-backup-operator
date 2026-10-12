@@ -256,6 +256,9 @@ func confirm(f *Factory, skip bool, what, name string) error {
 	if skip {
 		return nil
 	}
+	if f.confirmHook != nil {
+		return f.confirmHook(what, name)
+	}
 	if !f.Interactive() {
 		return fmt.Errorf(
 			"%w: this overwrites %s, and there is no terminal to confirm on; pass --yes to proceed",
