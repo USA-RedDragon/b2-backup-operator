@@ -420,6 +420,8 @@ Pushes to `main` publish `beta` images. A `v*` tag publishes the manager image t
 b2bk doctor -n myapp-prod        # or: kubectl b2bk doctor -n myapp-prod
 ```
 
+Run `b2bk` alone in a terminal for a full-screen dashboard of every backup in the namespace, or every namespace with `-A`: status as the operator writes it, logs with restic's progress, snapshots and their files, a restore wizard with the same guards as `b2bk restore`, and `doctor`. See [The dashboard](docs/b2bk.md#the-dashboard).
+
 `b2bk` talks to the cluster as you do, and needs more than the operator's own ServiceAccount holds: `config/rbac/b2bk_user_role.yaml` defines `b2bk-viewer` for read-only use and `b2bk-operator` for triggering backups and restoring.
 
 See [docs/b2bk.md](docs/b2bk.md) for the full command reference.

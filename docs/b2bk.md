@@ -79,8 +79,8 @@ given. `restore`, `prune`, `backup` and `rotate-password` still need a
 ScheduledBackup.
 
 Standard kubectl connection flags work everywhere: `-n/--namespace`,
-`--context`, `--kubeconfig`. `-A` and `-o` appear only on `get`, where they
-mean something.
+`--context`, `--kubeconfig`. `-A` appears only on `get`, a bare `b2bk` and
+`tui`, and `-o` only on `get`, where they mean something.
 
 ## Commands that start a pod
 
@@ -97,6 +97,122 @@ affinity, a claim that will not bind, an image that will not pull — fails
 immediately with the reason rather than waiting out the budget. Raise the
 timeout when the image is large or the node is cold; the timeout message names
 the flag.
+
+## The dashboard
+
+`b2bk` with no command opens a full-screen dashboard when stdin and stdout are
+both a terminal. Piped, redirected, or with `TERM=dumb`, it prints help as
+before. `b2bk tui` opens the same dashboard, and fails without a terminal.
+
+The dashboard does nothing a subcommand cannot do. Each action calls the code of
+its subcommand and carries that subcommand's marker: `b` is `backup`, `p` is
+`suspend` or `resume`, `x` is `cancel`, `c` is `check`, `d` is `doctor`, `l` is
+`logs`, and the restore wizard is `restore`, with every guard that `restore`
+has.
+
+### Settings
+
+| Setting | Flag | Environment | Config file | Default |
+| --- | --- | --- | --- | --- |
+| Start on every namespace | `-A`, `--all-namespaces` | `B2BK_ALL_NAMESPACES` | `tui.allNamespaces` | `false`: the namespace from the kubeconfig or `-n` |
+| Capture the mouse | `--mouse` | `B2BK_MOUSE` | `tui.mouse` | `true` |
+
+A flag wins over the environment, the environment over the config file, and
+the config file over the default. The config file is
+`$XDG_CONFIG_HOME/b2bk/config.yaml`, else `~/.config/b2bk/config.yaml`. An
+unknown key in it, or an environment value that is not `true` or `false`, is
+an error, so a typo does not go unnoticed.
+
+```yaml
+tui:
+  allNamespaces: true
+  mouse: false
+```
+
+### What it shows, and how
+
+- **Live status.** Informers watch ScheduledBackups, Repositories, CronJobs,
+  Jobs and pods in the namespace, or in every namespace. CronJobs, Jobs and pods
+  are narrowed to those labelled `app.kubernetes.io/managed-by` as the
+  operator's or b2bk's own. A row changes when the operator writes status.
+  Nothing polls B2.
+- **Permissions.** At start, and again on `A`, SelfSubjectAccessReviews ask
+  what you may do. An action you may not take is left out of the key bar, and
+  `?` lists it with the RBAC rule that is missing. A kind you may not list and
+  watch is not watched, and `?` says so.
+- **Times.** Times are in the backup's `spec.timeZone` (UTC when unset), with
+  how long ago or how long until. The next run comes from the effective
+  schedule and that time zone, and is `—` while the schedule is suspended or
+  held for a restore.
+- **Progress.** The logs screen takes restic's status lines out of the log and
+  shows the latest one as a bar. restic prints them to a log only when
+  `RESTIC_PROGRESS_FPS` is set, and the operator does not set it, so a backup
+  shows its log and its running time without a bar. To get the bar, set it in
+  `spec.env`, such as `RESTIC_PROGRESS_FPS: "0.2"` for a line every five
+  seconds. A backup you start with `b` is followed from the start, and its
+  progress also shows on the dashboard.
+- **Colors.** The 16 colors of the terminal, so the dashboard follows your
+  theme. `NO_COLOR` turns color off. Below 60 columns by 12 lines it asks for a
+  larger terminal; narrower terminals drop columns and shorten text with `…`.
+
+### The restic pod
+
+Snapshots, file lists, compare and download need restic, so the first of them
+for a backup starts the same idle pod `b2bk snapshots` would, labelled
+`b2backup.mcswain.dev/b2bk-purpose=browse`. The snapshots screen shows it
+starting. The dashboard keeps that pod, one per backup, until you quit, and
+keeps what it read, so browsing is fast after the first open. `R` on the
+snapshots screen reads again.
+
+Quitting with `q` or `ctrl+c`, a `SIGTERM` or `SIGHUP`, or a crash of the
+dashboard deletes the pod's Job before b2bk exits. Only `SIGKILL` leaves it;
+it then ends at its 12 hour deadline. A browse pod does not hold off an
+overwriting restore, but `unlock --remove-all` refuses while it runs, as for
+any other b2bk pod.
+
+`check`, a restore and its dry run start their own pod, as the subcommands do.
+
+### Restoring
+
+`r` opens a wizard over `b2bk restore`: the snapshot, then where it goes, then
+a confirmation.
+
+- **Targets.** A new claim, a download to this computer, over the live volume,
+  or into the database, safest first. A target the backup cannot use is shown
+  dimmed with the reason: the error `restore` would give, a missing RBAC rule,
+  or a database restore offered on a files snapshot.
+- **Options.** Only a path (the folder or file selected in the file pane, when
+  the wizard starts there), remove files that are not in the snapshot
+  (`--delete`), and a dry run first, which is on by default.
+- **Dry run.** Over the live volume and into the database, the dry run is
+  `restore --dry-run`, and its result is shown before you confirm. For a new
+  claim or a download it lists what would be restored with `restic ls`, and
+  writes nothing: unlike `restore --to-new-pvc --dry-run`, it does not create
+  the claim.
+- **Confirmation.** Over the live volume and into the database, you type the
+  ScheduledBackup's name, the same name `restore` asks for, and `restore`
+  itself checks it. The restore then takes the same restore lock, holds the
+  same schedules, and runs only when the operator has rendered the current
+  spec. Quitting while it writes asks first: the target is then kept held as
+  partial, as when `restore` is interrupted.
+
+### Screens and keys
+
+| Screen | Shows | Keys |
+| --- | --- | --- |
+| Dashboard | Every backup: sources, last success, next run, status. A strip shows the backup in flight | `↑↓`/`jk` move, `⏎` open, `b` backup now, `l` logs, `s` snapshots, `d` doctor, `p` pause or resume, `r` restore, `c` check, `x` cancel, `/` filter, `S` problems first, `A` all namespaces, `PgUp`/`PgDn` page |
+| Backup detail | What `status` shows: schedule and next run, sources, retention and its forget scope, repository, lifecycle rule, usage, conditions, and the recent runs as a duration chart with the reason a run failed | `↑↓` choose a run, `l`/`⏎` its logs, and `b` `s` `d` `p` `r` `c` `x` as on the dashboard |
+| Logs | A run's log with timestamps, following a running one, with restic's progress as a bar | `f` follow, `/` search, `w` wrap, `g`/`G` top and end, `[`/`]` older and newer run, `x` cancel |
+| Snapshots | The snapshots under each source tag; database dumps say whether they are pg_dump's custom format (`.dmp`), a SQL dump (`.sql`) or old plain SQL; beside them, the files of the selected snapshot | `tab` switch tag, `⏎`/`→` browse and open a folder, `←` up, `r` restore, `D` download, `c` compare with the previous snapshot (`restic diff`), `R` read again |
+| Restore | The wizard above | `↑↓` choose, `tab` next field, `space` toggle, `⏎` continue, `esc` back |
+| Doctor | The checks of `doctor`, failing first, with a next step under each that has one | `↑↓` choose, `⏎` take the next step, `R` check again |
+| Output | What `check`, compare and download print | `f` `/` `w` `g`/`G` as in logs |
+
+Everywhere: `?` lists every key of the screen, `esc` goes back, `q` or
+`ctrl+c` quits, and `m` turns mouse capture off and on. With the mouse
+captured, a click selects a row and a second click opens it, the wheel
+scrolls, and a click on the key bar presses that key. Turn it off with `m` to
+select text in the terminal.
 
 ## Inspect
 
@@ -1074,6 +1190,10 @@ Apply `config/rbac/b2bk_user_role.yaml` and bind one of:
   ScheduledBackups (`suspend`, `reinit`, `backup`), which RBAC cannot narrow to
   those fields, so it can also change `deletionPolicy`. It cannot write
   Repository status, which decides what the operator deletes.
+
+The dashboard needs `list` and `watch` on what it shows, which `b2bk-viewer`
+grants, and asks what else you may do with SelfSubjectAccessReviews, which
+every signed-in user may create.
 
 The operator's own role does not cover the CLI. `manager-role` never reads pods
 and never execs, both of which `b2bk` needs, so `b2bk` runs as you and needs a
