@@ -87,6 +87,21 @@ cleanup-test-e2e: kind ## Tear down the Kind cluster used for e2e tests, if it e
 	fi; \
 	rm -f "$(E2E_KUBECONFIG)" "$(E2E_KUBECONFIG).tmp"
 
+.PHONY: demo-env
+demo-env: kind $(LOCALBIN) ## Create the b2bk-demo Kind cluster with the operator, a B2 stub, an S3 server and seeded backups.
+	KIND="$(KIND)" KIND_NODE_IMAGE=$(KIND_NODE_IMAGE) hack/demo/demo.sh up
+
+.PHONY: demo
+demo: demo-env vhs ttyd ## Record docs/demo/*.gif against the b2bk-demo Kind cluster.
+	KIND="$(KIND)" hack/demo/demo.sh stage
+	cd docs/demo && for tape in tui cli; do \
+		KIND="$(KIND)" PATH="$(LOCALBIN):$$PATH" "$(VHS)" $$tape.tape || exit 1; \
+	done
+
+.PHONY: demo-clean
+demo-clean: kind ## Delete the b2bk-demo Kind cluster and its images.
+	KIND="$(KIND)" hack/demo/demo.sh clean
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
@@ -174,6 +189,8 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+VHS ?= $(LOCALBIN)/vhs
+TTYD ?= $(LOCALBIN)/ttyd
 
 KUSTOMIZE_VERSION ?= v5.8.3
 KIND_VERSION ?= v0.33.0
@@ -184,6 +201,10 @@ ENVTEST_VERSION ?= $(call required,$(call gomodver,sigs.k8s.io/controller-runtim
 ENVTEST_K8S_VERSION ?= $(shell printf '%s' '$(call required,$(call gomodver,k8s.io/api),Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag))' | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.14.0
+VHS_VERSION ?= v0.12.1
+TTYD_VERSION ?= 1.7.7
+TTYD_SHA256_x86_64 = 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
+TTYD_SHA256_aarch64 = b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
@@ -222,6 +243,26 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 	echo "Building custom golangci-lint with plugins..."; \
 	"$(GOLANGCI_LINT)" custom --destination "$(LOCALBIN)" --name golangci-lint-custom && \
 	mv -f "$(LOCALBIN)/golangci-lint-custom" "$(GOLANGCI_LINT)-$(GOLANGCI_LINT_VERSION)"
+
+.PHONY: vhs
+vhs: $(VHS) ## Download vhs locally if necessary.
+$(VHS): $(LOCALBIN)
+	$(call go-install-tool,$(VHS),github.com/charmbracelet/vhs,$(VHS_VERSION))
+
+.PHONY: ttyd
+ttyd: $(TTYD) ## Download ttyd, which vhs runs, locally if necessary.
+$(TTYD): $(LOCALBIN)
+	@[ -f "$(TTYD)-$(TTYD_VERSION)" ] || { \
+		set -e; \
+		arch=$$(uname -m); \
+		case $$arch in x86_64) sum=$(TTYD_SHA256_x86_64) ;; aarch64|arm64) arch=aarch64; sum=$(TTYD_SHA256_aarch64) ;; \
+			*) echo "No pinned ttyd build for $$arch; install ttyd $(TTYD_VERSION) on PATH" >&2; exit 1 ;; esac; \
+		curl -fsSL -o "$(TTYD)-$(TTYD_VERSION).tmp" https://github.com/tsl0922/ttyd/releases/download/$(TTYD_VERSION)/ttyd.$$arch; \
+		echo "$$sum  $(TTYD)-$(TTYD_VERSION).tmp" | sha256sum -c --quiet; \
+		chmod +x "$(TTYD)-$(TTYD_VERSION).tmp"; \
+		mv "$(TTYD)-$(TTYD_VERSION).tmp" "$(TTYD)-$(TTYD_VERSION)"; \
+	}; \
+	ln -sf "$$(realpath "$(TTYD)-$(TTYD_VERSION)")" "$(TTYD)"
 
 define go-install-tool
 @[ -f "$(1)-$(3)" ] && [ "$$(readlink -- "$(1)" 2>/dev/null)" = "$(1)-$(3)" ] || { \

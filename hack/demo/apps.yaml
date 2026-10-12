@@ -1,0 +1,368 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: notes
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: notes-data
+  namespace: notes
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notes
+  namespace: notes
+  labels:
+    app.kubernetes.io/name: notes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notes
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notes
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          command: ["sleep", "infinity"]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: notes-data
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: notes
+spec:
+  mode: Prefix
+  bucket: demo-backups
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: notes
+  namespace: notes
+spec:
+  repositoryRef: {name: restic}
+  schedule: "05 __HOUR__ * * *"
+  sources:
+    - {type: files, tag: files, paths: [notes, attachments]}
+  retention: {last: 10, daily: 7, weekly: 4, monthly: 6}
+  volumes:
+    - {existingClaim: notes-data, mountPath: /data}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wiki
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wiki-data
+  namespace: wiki
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wiki
+  namespace: wiki
+  labels:
+    app.kubernetes.io/name: wiki
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wiki
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wiki
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          command: ["sleep", "infinity"]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: wiki-data
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: wiki
+spec:
+  mode: Prefix
+  bucket: demo-backups
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: wiki
+  namespace: wiki
+spec:
+  repositoryRef: {name: restic}
+  schedule: "20 __HOUR__ * * *"
+  sources:
+    - {type: cnpg, tag: db}
+    - {type: files, tag: files, paths: [uploads]}
+  retention: {last: 10, daily: 7, weekly: 4, monthly: 6}
+  volumes:
+    - {existingClaim: wiki-data, mountPath: /data}
+  database: {engine: cnpg}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: photos
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: photos-data
+  namespace: photos
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: photos
+  namespace: photos
+  labels:
+    app.kubernetes.io/name: photos
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: photos
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: photos
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          command: ["sleep", "infinity"]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: photos-data
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: photos
+spec:
+  mode: Bucket
+  bucket: demo-photos
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: photos
+  namespace: photos
+spec:
+  repositoryRef: {name: restic}
+  schedule: "35 __HOUR__ * * *"
+  sources:
+    - {type: files, tag: files, paths: [library]}
+  retention: {last: 10, daily: 7, weekly: 4, monthly: 6}
+  volumes:
+    - {existingClaim: photos-data, mountPath: /data}
+  env:
+    RESTIC_PROGRESS_FPS: "0.5"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: git
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: git-data
+  namespace: git
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git
+  namespace: git
+  labels:
+    app.kubernetes.io/name: git
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: git
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: git
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          command: ["sleep", "infinity"]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: git-data
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: git
+spec:
+  mode: Prefix
+  bucket: demo-backups
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: git
+  namespace: git
+spec:
+  repositoryRef: {name: restic}
+  schedule: "45 __HOUR__ * * *"
+  sources:
+    - {type: files, tag: files, paths: [repositories]}
+  retention: {last: 10, daily: 7, weekly: 4, monthly: 6}
+  volumes:
+    - {existingClaim: git-data, mountPath: /data}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bookmarks
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bookmarks-data
+  namespace: bookmarks
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bookmarks
+  namespace: bookmarks
+  labels:
+    app.kubernetes.io/name: bookmarks
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bookmarks
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bookmarks
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          command: ["sleep", "infinity"]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bookmarks-data
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: Repository
+metadata:
+  name: restic
+  namespace: bookmarks
+spec:
+  mode: Prefix
+  bucket: demo-backups
+---
+apiVersion: b2backup.mcswain.dev/v1
+kind: ScheduledBackup
+metadata:
+  name: bookmarks
+  namespace: bookmarks
+spec:
+  repositoryRef: {name: restic}
+  schedule: "50 __HOUR__ * * *"
+  sources:
+    - {type: files, tag: files, paths: [export]}
+  retention: {last: 10, daily: 7, weekly: 4, monthly: 6}
+  volumes:
+    - {existingClaim: bookmarks-data, mountPath: /data}
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgresql
+  namespace: wiki
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.6-minimal-trixie@sha256:37ade18dbdddba430858c72725aceeec66f33fa5333e82ea1df4942f6c1c83a3
+  storage:
+    size: 1Gi
+  bootstrap:
+    initdb:
+      database: wiki
+      owner: wiki

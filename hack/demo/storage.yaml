@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: b2-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: b2
+  namespace: b2-demo
+  labels:
+    app.kubernetes.io/name: b2
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: b2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: b2
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: buckets
+          image: docker.io/rclone/rclone:1.75.1@sha256:45401ad7410db1d67ffdb58e19059ad20b0d8e0285a60e38bbec55cc1019c7a5
+          command: ["mkdir", "-p", "/data/demo-backups"]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          securityContext: &restricted
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: api
+          image: example.com/b2-stub:demo
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: MASTER_KEY_ID, value: demo-master-key-id}
+            - {name: MASTER_KEY, value: demo-master-key}
+            - {name: S3_API_URL, value: http://s3.b2-demo.svc}
+            - {name: BUCKETS, value: demo-backups}
+            - {name: MIRROR_DIR, value: /data}
+          ports:
+            - {containerPort: 8080, name: http}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+          volumeMounts:
+            - {name: data, mountPath: /data, readOnly: true}
+          securityContext: *restricted
+        - name: s3
+          image: docker.io/rclone/rclone:1.75.1@sha256:45401ad7410db1d67ffdb58e19059ad20b0d8e0285a60e38bbec55cc1019c7a5
+          args: ["serve", "s3", "--addr=:9000", "--bwlimit=2M", "--config=", "/data"]
+          env:
+            - {name: HOME, value: /tmp}
+          ports:
+            - {containerPort: 9000, name: s3}
+          readinessProbe:
+            tcpSocket: {port: 9000}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+          securityContext: *restricted
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: b2
+  namespace: b2-demo
+spec:
+  selector:
+    app.kubernetes.io/name: b2
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+  namespace: b2-demo
+spec:
+  selector:
+    app.kubernetes.io/name: b2
+  ports:
+    - {name: s3, port: 80, targetPort: 9000}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: b2-credentials
+  namespace: b2-backup-operator-system
+stringData:
+  B2_APPLICATION_KEY_ID: demo-master-key-id
+  B2_APPLICATION_KEY: demo-master-key
