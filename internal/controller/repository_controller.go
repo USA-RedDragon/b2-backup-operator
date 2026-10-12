@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -2250,7 +2251,21 @@ func (r *RepositoryReconciler) patchStatus(
 	if equality.Semantic.DeepEqual(repo.Status, base.Status) {
 		return nil
 	}
-	return r.Status().Patch(ctx, repo, client.MergeFrom(base))
+	if equality.Semantic.DeepEqual(repo.Status.Conditions, base.Status.Conditions) {
+		return r.Status().Patch(ctx, repo, client.MergeFrom(base))
+	}
+	conditions := repo.Status.Conditions
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var live b2backupv1.Repository
+		if err := r.uncached().Get(ctx, client.ObjectKeyFromObject(repo), &live); err != nil {
+			return err
+		}
+		from := base.DeepCopy()
+		from.ResourceVersion = live.ResourceVersion
+		from.Status.Conditions = live.Status.Conditions
+		repo.Status.Conditions = rebaseConditions(base.Status.Conditions, conditions, live.Status.Conditions)
+		return r.Status().Patch(ctx, repo, client.MergeFromWithOptions(from, client.MergeFromWithOptimisticLock{}))
+	})
 }
 
 // SetupWithManager registers the controller with the manager.

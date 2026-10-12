@@ -117,7 +117,13 @@ one of these:
   are deleted only once no Job that reads the Secret and started before the
   rotation is running, or after 24 hours.
 - **Status is written with a merge patch**, never a full update: the informer
-  cache lags behind the controller's own writes.
+  cache lags behind the controller's own writes. A merge patch replaces a list
+  whole, so when a pass changed `conditions` (or a ScheduledBackup's `history`
+  or `lastSuccessfulTime`), `patchStatus` rereads the live object, applies only
+  what the pass changed (`rebaseConditions`, `mergeHistory`, `laterTime`) and
+  patches against the live `resourceVersion`. Otherwise a pass that read a
+  stale copy writes back that copy's other conditions, such as an
+  `Initialized` reason recorded after it was cached.
 - **The init Job is deleted a pass after success is recorded**, not in the same
   one, or the watch event races the status write.
 - **`spec.env` may not name a variable the operator sets.** A container's `env`

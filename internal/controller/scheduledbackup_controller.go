@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -515,7 +516,35 @@ func (r *ScheduledBackupReconciler) patchStatus(
 	if equality.Semantic.DeepEqual(sb.Status, base.Status) {
 		return nil
 	}
-	return r.Status().Patch(ctx, sb, client.MergeFrom(base))
+	conditionsChanged := !equality.Semantic.DeepEqual(sb.Status.Conditions, base.Status.Conditions)
+	historyChanged := !equality.Semantic.DeepEqual(sb.Status.History, base.Status.History)
+	latestChanged := !equality.Semantic.DeepEqual(sb.Status.LastSuccessfulTime, base.Status.LastSuccessfulTime)
+	if !conditionsChanged && !historyChanged && !latestChanged {
+		return r.Status().Patch(ctx, sb, client.MergeFrom(base))
+	}
+	pass := sb.Status.DeepCopy()
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var live b2backupv1.ScheduledBackup
+		if err := r.uncached().Get(ctx, client.ObjectKeyFromObject(sb), &live); err != nil {
+			return err
+		}
+		from := base.DeepCopy()
+		from.ResourceVersion = live.ResourceVersion
+		from.Status.Conditions = live.Status.Conditions
+		from.Status.History = live.Status.History
+		from.Status.LastSuccessfulTime = live.Status.LastSuccessfulTime
+		sb.Status.Conditions = rebaseConditions(base.Status.Conditions, pass.Conditions, live.Status.Conditions)
+		sb.Status.History = live.Status.History
+		if historyChanged {
+			runs := make([]observedRun, len(pass.History))
+			for i, run := range pass.History {
+				runs[i] = observedRun{run: run}
+			}
+			sb.Status.History = mergeHistory(live.Status.History, runs)
+		}
+		sb.Status.LastSuccessfulTime = laterTime(live.Status.LastSuccessfulTime, pass.LastSuccessfulTime)
+		return r.Status().Patch(ctx, sb, client.MergeFromWithOptions(from, client.MergeFromWithOptimisticLock{}))
+	})
 }
 
 func (r *ScheduledBackupReconciler) setCondition(
