@@ -241,9 +241,13 @@ func onlyTarget(
 
 	switch len(names) {
 	case 0:
+		qualified := string(TargetScheduledBackup) + "/NAME"
+		if !kinds.backups {
+			qualified = string(TargetRepository) + "/NAME"
+		}
 		return "", &sentinelError{ErrNothingToName, fmt.Sprintf(
-			"no %s in namespace %q; pick the namespace with -n NAMESPACE, or find them with %s get -A",
-			kinds.noun(), namespace, cmd.Root().CommandPath())}
+			"no %s in namespace %q; name one in its namespace, e.g. %s, or find them with %s get -A",
+			kinds.noun(), namespace, example(cmd, "-n NAMESPACE "+qualified), cmd.Root().CommandPath())}
 	case 1:
 		return prefix + names[0], nil
 	}

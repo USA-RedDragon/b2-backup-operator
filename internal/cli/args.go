@@ -145,7 +145,7 @@ func (f *Factory) candidates(cmd *cobra.Command, kinds nameKinds) string {
 	if len(names) == 0 {
 		return fmt.Sprintf("\nnamespace %q has no %s", ns, kinds.noun())
 	}
-	return fmt.Sprintf("\nnamespace %q has:\n%s", ns, listNames(names))
+	return fmt.Sprintf("\nnamespace %q has:\n%s\ne.g. %s", ns, listNames(names), example(cmd, names[0]))
 }
 
 // execArgs wants at most one name, then --, then the command.
