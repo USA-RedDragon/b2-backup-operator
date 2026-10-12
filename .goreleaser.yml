@@ -42,6 +42,7 @@ archives:
       - tar.gz
     files:
       - README.md
+      - docs/b2bk.md
       - LICENSE
 
 checksum:
