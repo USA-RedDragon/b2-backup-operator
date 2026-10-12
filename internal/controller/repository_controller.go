@@ -1407,13 +1407,15 @@ func (r *RepositoryReconciler) reconcileInitJob(
 			return 5 * time.Second, nil
 		}
 		if job.Status.Succeeded > 0 {
-			recorded, err := r.initializationRecorded(ctx, repo)
+			recorded, cond, err := r.recordedInitialization(ctx, repo)
 			if err != nil {
 				return 0, err
 			}
 			repo.Status.Initialized = true
 			if !recorded {
 				r.reportInitOutcome(ctx, repo, &job)
+			} else if cond != nil && cond.Status == metav1.ConditionTrue {
+				apimeta.SetStatusCondition(&repo.Status.Conditions, *cond)
 			}
 			return 0, nil
 		}
@@ -1640,15 +1642,22 @@ func (r *RepositoryReconciler) deleteJob(ctx context.Context, job *batchv1.Job) 
 	return nil
 }
 
-func (r *RepositoryReconciler) initializationRecorded(
+// recordedInitialization reports whether the live Repository records the init
+// as done, with its Initialized condition. A pass reading a cached copy from
+// before the outcome was recorded takes that condition over, so it does not
+// write a generic reason in its place.
+func (r *RepositoryReconciler) recordedInitialization(
 	ctx context.Context, repo *b2backupv1.Repository,
-) (bool, error) {
+) (bool, *metav1.Condition, error) {
 	var live b2backupv1.Repository
 	key := types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name}
 	if err := r.uncached().Get(ctx, key, &live); err != nil {
-		return false, client.IgnoreNotFound(err)
+		return false, nil, client.IgnoreNotFound(err)
 	}
-	return live.Status.Initialized, nil
+	if !live.Status.Initialized {
+		return false, nil, nil
+	}
+	return true, apimeta.FindStatusCondition(live.Status.Conditions, b2backupv1.RepositoryConditionInitialized), nil
 }
 
 func (r *RepositoryReconciler) cleanupInitJob(

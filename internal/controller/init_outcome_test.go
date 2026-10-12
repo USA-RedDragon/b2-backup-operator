@@ -3,18 +3,25 @@ package controller
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 )
 
-const reasonCreated = "Created"
+const (
+	reasonCreated       = "Created"
+	reasonFoundExisting = "FoundExisting"
+	caseEmptyPath       = "an empty path"
+)
 
 func finishInitPod(t *testing.T, c client.Client, message string, owned bool) {
 	t.Helper()
@@ -51,11 +58,11 @@ func TestInitSaysWhetherItCreatedOrFoundTheRepository(t *testing.T) {
 		wantSays   string
 		wantNot    string
 	}{
-		{name: "an empty path", message: "created\n", owned: true, wantReason: reasonCreated,
+		{name: caseEmptyPath, message: initCreated + "\n", owned: true, wantReason: reasonCreated,
 			wantSays: "Created a new restic repository", wantNot: "existing"},
-		{name: "an adopted repository", existing: true, message: "found\n", owned: true, wantReason: "FoundExisting",
+		{name: "an adopted repository", existing: true, message: initFound + "\n", owned: true, wantReason: reasonFoundExisting,
 			wantSays: "Found the existing restic repository", wantNot: reasonCreated},
-		{name: "a pod the Job does not own", existing: true, message: "created\n", wantReason: "Initialized",
+		{name: "a pod the Job does not own", existing: true, message: initCreated + "\n", wantReason: "Initialized",
 			wantSays: "Opened the restic repository", wantNot: reasonCreated},
 		{name: "a pod already gone", existing: true, wantReason: "Initialized",
 			wantSays: "Opened the restic repository", wantNot: reasonCreated},
@@ -130,6 +137,58 @@ func TestASeededPasswordNamesItsSource(t *testing.T) {
 			}
 			if !tt.seeded && n != 0 {
 				t.Errorf("a generated password was said to come from %s", seedSecret)
+			}
+		})
+	}
+}
+
+func TestTheInitOutcomeOutlivesAPassFromAStaleCopy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		existing   bool
+		message    string
+		wantReason string
+	}{
+		{name: "an adopted repository", existing: true, message: initFound + "\n", wantReason: reasonFoundExisting},
+		{name: caseEmptyPath, message: initCreated + "\n", wantReason: reasonCreated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeB2(t)
+			bucket := f.AddBucket(sharedBucket)
+			if tt.existing {
+				f.PutFile(bucket.BucketID, configPath(myappPath), 1)
+			}
+			var snapshot atomic.Pointer[b2backupv1.Repository]
+			r, c := newHarnessWithInterceptor(t, f, interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object,
+					opts ...client.GetOption) error {
+					if repo, ok := obj.(*b2backupv1.Repository); ok && snapshot.Load() != nil {
+						snapshot.Load().DeepCopyInto(repo)
+						return nil
+					}
+					return cl.Get(ctx, key, obj, opts...)
+				},
+			}, prefixRepo(usePasswordSeed), seedSecretFixture())
+			reconcileN(t, r, 1)
+			stale := getRepo(t, c)
+			finishInitPod(t, c, tt.message, true)
+			reconcileN(t, r, 1)
+
+			snapshot.Store(stale)
+			reconcileN(t, r, 1)
+			snapshot.Store(nil)
+			reconcileN(t, r, 1)
+
+			var live b2backupv1.Repository
+			if err := r.APIReader.Get(context.Background(), client.ObjectKeyFromObject(stale), &live); err != nil {
+				t.Fatal(err)
+			}
+			cond := apimeta.FindStatusCondition(live.Status.Conditions, b2backupv1.RepositoryConditionInitialized)
+			if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != tt.wantReason {
+				t.Errorf("Initialized = %+v, want True/%s", cond, tt.wantReason)
 			}
 		})
 	}
