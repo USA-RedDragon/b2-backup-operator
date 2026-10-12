@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 )
 
 const defaultRunLimit = 10
@@ -80,7 +81,7 @@ func runStatus(ctx context.Context, c client.Client, out io.Writer, namespace, a
 	if err != nil {
 		return err
 	}
-	writeRuns(p, jobs, limit)
+	writeRuns(p, sb, jobs, limit)
 	return p.Err()
 }
 
@@ -157,7 +158,7 @@ func writeConditions(p *printer, conds []metav1.Condition) {
 	_ = flushTable(w, tw)
 }
 
-func writeRuns(p *printer, jobs []batchv1.Job, limit int) {
+func writeRuns(p *printer, sb *b2backupv1.ScheduledBackup, jobs []batchv1.Job, limit int) {
 	p.println()
 	if len(jobs) == 0 {
 		p.println("No runs are still present in the cluster.")
@@ -169,13 +170,31 @@ func writeRuns(p *printer, jobs []batchv1.Job, limit int) {
 
 	tw := NewTabWriter(p)
 	w := newPrinter(tw)
-	w.println("RESULT\tSTARTED\tDURATION\tJOB")
+	w.println("RESULT\tSTARTED\tDURATION\tADDED\tSTORED\tJOB")
 	for i := range jobs {
 		job := &jobs[i]
-		w.printf("%s\t%s\t%s\t%s\n",
-			runResult(job), Since(job.Status.StartTime), runDuration(job), job.Name)
+		added, stored := runSize(sb, job.Name)
+		w.printf("%s\t%s\t%s\t%s\t%s\t%s\n",
+			runResult(job), Since(job.Status.StartTime), runDuration(job), added, stored, job.Name)
 	}
 	_ = flushTable(w, tw)
+}
+
+// runSize is what the run of job added to the repository, before and after
+// compression, as the operator recorded it in the history, or "-" for a run
+// with no recorded size: one still running, a spec.script backup, or a run
+// the operator could not read.
+func runSize(sb *b2backupv1.ScheduledBackup, job string) (added, stored string) {
+	for i := range sb.Status.History {
+		run := &sb.Status.History[i]
+		if run.JobName != job {
+			continue
+		}
+		if size, ok := backup.SizeOf(run); ok {
+			return backup.FormatBytes(size.Added), backup.FormatBytes(size.Stored)
+		}
+	}
+	return "-", "-"
 }
 
 func runResult(job *batchv1.Job) string {

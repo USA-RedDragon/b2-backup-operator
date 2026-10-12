@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
 )
 
 func status(t *testing.T, c client.Client, arg string) string {
@@ -38,6 +41,12 @@ func TestStatusBackup(t *testing.T) {
 	bad.Status.CompletionTime = &badDone
 	bad.Status.Failed = 1
 
+	sb.Status.History = []b2backupv1.BackupRun{{JobName: good.Name, Result: b2backupv1.BackupRunSucceeded,
+		Sources: []b2backupv1.BackupRunSource{
+			{Tag: "files", AddedBytes: 12_900_000, StoredBytes: 4_300_000, ProcessedBytes: 2_040_109_465},
+			{Tag: "db", AddedBytes: 1_310_720, StoredBytes: 262_144, ProcessedBytes: 8_388_608},
+		}}}
+
 	out := status(t, newClient(t, r, sb, cj, good, bad), "sb/web-files")
 
 	for _, want := range []string{
@@ -45,12 +54,20 @@ func TestStatusBackup(t *testing.T) {
 		"Repository", testRepoName, testUsage,
 		"Schedule", testSchedule, testTimeZone,
 		"CONDITION", "Ready", statusTrue,
-		"RESULT", "STARTED", "DURATION", "JOB",
+		"RESULT", "STARTED", "DURATION", "ADDED", "STORED", "JOB",
 		"succeeded", "4m12s", "web-files-backup-2",
 		"failed", "18s", firstBackupJob,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+	for job, want := range map[string]string{
+		good.Name:      `4m12s\s+13\.6 MiB\s+4\.4 MiB\s+web-files-backup-2`,
+		firstBackupJob: `18s\s+-\s+-\s+` + firstBackupJob,
+	} {
+		if !regexp.MustCompile(want).MatchString(out) {
+			t.Errorf("the run of %s does not read %q:\n%s", job, want, out)
 		}
 	}
 
