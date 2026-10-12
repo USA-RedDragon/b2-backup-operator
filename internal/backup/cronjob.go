@@ -49,6 +49,14 @@ const (
 	envDBUsername       = "DB_USERNAME"
 )
 
+// EnvProgressFPS makes restic print a status line to a log, which has no
+// terminal, at that many lines a second. b2bk's dashboard reads those lines.
+// The operator sets it to DefaultProgressFPS unless spec.env sets it.
+const (
+	EnvProgressFPS     = "RESTIC_PROGRESS_FPS"
+	DefaultProgressFPS = "0.1"
+)
+
 const fromRepositorySecret = "the Repository's Secret"
 
 var envSource = map[string]string{
@@ -539,6 +547,9 @@ func buildEnv(sb *b2backupv1.ScheduledBackup) ([]corev1.EnvVar, error) {
 		return nil, err
 	}
 
+	if _, set := sb.Spec.Env[EnvProgressFPS]; !set {
+		env = append(env, corev1.EnvVar{Name: EnvProgressFPS, Value: DefaultProgressFPS})
+	}
 	for _, k := range slices.Sorted(maps.Keys(sb.Spec.Env)) {
 		env = append(env, corev1.EnvVar{Name: k, Value: sb.Spec.Env[k]})
 	}

@@ -278,6 +278,8 @@ So `spec.env` is refused when it names one of those. Which names are reserved de
 
 The error names each offending variable and the field to use instead. It is raised at reconcile time, so a ScheduledBackup that predates this check goes `Ready=False` rather than quietly shadowing its own credentials. A CEL rule on the CRD rejects the five names from the Repository's Secret at admission as well: they are unconditional, and a CEL rule cannot be relaxed later without a version bump.
 
+`RESTIC_PROGRESS_FPS` is not reserved either. The operator sets it to `0.1` unless `spec.env` sets it, so restic writes one status line to the log every 10 seconds. Without it, restic 0.19.1 writes no progress to a log at all, and `b2bk`'s dashboard has nothing to draw its progress bar from. Restore Jobs start from the backup's CronJob, so they inherit it too. Set `"0"` to turn the lines off.
+
 `RESTIC_GROUP_BY` and `RESTIC_REST_USERNAME`/`RESTIC_REST_PASSWORD` are deliberately **not** reserved. The operator never sets them; the image's restic wrapper reads them, and overriding them is a supported thing to do. The operator's own `forget` passes `--group-by=tags` regardless, so an override cannot merge two sources into one retention group: grouped by host alone, the policy would keep one snapshot per period across every source and expire the rest.
 
 ### The snapshot host

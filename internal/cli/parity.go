@@ -981,6 +981,9 @@ func compareContainer(r *parityReport, o, g parityView) {
 	if _, ok := o.env["TZ"]; !ok {
 		o.env["TZ"] = imageZone(o.image)
 	}
+	if _, ok := o.env[backup.EnvProgressFPS]; !ok && g.env[backup.EnvProgressFPS] == backup.DefaultProgressFPS {
+		delete(g.env, backup.EnvProgressFPS)
+	}
 	for _, c := range []struct{ label, original, generated string }{
 		{volumeDiffers, o.volumes, g.volumes},
 		{"DATABASE SECRET DIFFERS", o.dbSecret, g.dbSecret},

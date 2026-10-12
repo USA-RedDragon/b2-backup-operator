@@ -754,6 +754,48 @@ func TestParityComparesResticEnvsGivenTheSecret(t *testing.T) {
 	}
 }
 
+func TestParityTakesTheDefaultProgressFPSAsTheOperators(t *testing.T) {
+	t.Parallel()
+	const fps2 = backup.EnvProgressFPS + "=2"
+	withSpecEnv := func(gen string) string {
+		return strings.Replace(gen, "  retention: {daily: 7}\n", "  retention: {daily: 7}\n  env:\n    "+backup.EnvProgressFPS+": \"2\"\n", 1)
+	}
+	withReleaseEnv := func(hr string) string {
+		return strings.Replace(hr, "              TZ: America/Chicago\n",
+			"              TZ: America/Chicago\n              "+backup.EnvProgressFPS+": \"2\"\n", 1)
+	}
+	tests := []struct {
+		name                string
+		generated, original string
+		differs             bool
+	}{
+		{"operator default, original unset", parityGenerated, parityRelease, false},
+		{"spec.env carries the original's value", withSpecEnv(parityGenerated), withReleaseEnv(parityRelease), false},
+		{"spec.env sets it, original unset", withSpecEnv(parityGenerated), parityRelease, true},
+		{"original sets it, generated takes the default", parityGenerated, withReleaseEnv(parityRelease), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			hr := filepath.Join(dir, "helmrelease.yaml")
+			gen := filepath.Join(dir, "generated.yaml")
+			if err := os.WriteFile(hr, []byte(tt.original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(gen, []byte(tt.generated), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			err := runParity(&out, gen, hr, migrateOptions{})
+			envDiffers := strings.Contains(out.String(), "ENV DIFFERS")
+			if envDiffers != tt.differs || (tt.differs && !strings.Contains(out.String(), fps2)) {
+				t.Errorf("parity = %v, want ENV DIFFERS %t naming %s:\n%s", err, tt.differs, fps2, out.String())
+			}
+		})
+	}
+}
+
 func TestParityReadsAMissingTimeZoneAsUTC(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

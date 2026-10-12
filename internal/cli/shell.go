@@ -10,6 +10,7 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 
 	b2backupv1 "github.com/USA-RedDragon/b2-backup-operator/api/v1"
+	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/kube"
 	"github.com/USA-RedDragon/b2-backup-operator/internal/cli/runner"
 )
@@ -93,7 +94,7 @@ func openShell(
 				Namespace: pod.Namespace,
 				Pod:       pod.Name,
 				Container: runner.ContainerName,
-				Command:   []string{shell},
+				Command:   shellArgv(subject, shell, interactive),
 				Stdin:     f.Streams.In,
 				Stdout:    f.Streams.Out,
 				Stderr:    f.Streams.ErrOut,
@@ -107,6 +108,19 @@ func openShell(
 		}
 		return kube.WithRawTerminal(stdin.Fd(), exec)
 	})
+}
+
+// shellArgv starts shell, without the operator's default
+// RESTIC_PROGRESS_FPS when on a terminal: restic redraws its status there by
+// itself, and the default would slow that to one line every ten seconds.
+func shellArgv(subject runner.Subject, shell string, interactive bool) []string {
+	if !interactive || subject.Backup == nil {
+		return []string{shell}
+	}
+	if _, set := subject.Backup.Spec.Env[backup.EnvProgressFPS]; set {
+		return []string{shell}
+	}
+	return []string{"env", "-u", backup.EnvProgressFPS, shell}
 }
 
 func sizeQueueFor(ctx context.Context, interactive bool, stdin *os.File) remotecommand.TerminalSizeQueue {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -68,6 +69,9 @@ type stream struct {
 	err      error
 	started  time.Time
 	cancel   context.CancelFunc
+	// inStatus is set while the lines after a status line can still be the
+	// files restic backup was reading, which it prints under the status line.
+	inStatus bool
 }
 
 const maxLineBytes = 1 << 20
@@ -118,9 +122,13 @@ func (s *stream) add(raw string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if p, ok := parseProgress(line.text); ok {
-		s.progress = &p
+		s.progress, s.inStatus = &p, true
 		return
 	}
+	if s.inStatus && strings.HasPrefix(line.text, "/") {
+		return
+	}
+	s.inStatus = false
 	if label := commandLabel(line.text); label != "" {
 		s.label = label
 		s.progress = nil
@@ -153,14 +161,15 @@ var progressLine = regexp.MustCompile(
 		`(?:, total \d+ files(?:/dirs)? ([\d.]+ [KMGTPE]?i?B))?(?:, \d+ errors)?(?: ETA (?:(\d+):)?(\d+):(\d+))?`)
 
 // parseProgress reads a restic status line, as restic prints one every few
-// seconds when RESTIC_PROGRESS_FPS is set or a terminal is attached.
+// seconds when RESTIC_PROGRESS_FPS is set or a terminal is attached. A backup
+// from stdin knows no total size, and reports it as 0 B.
 func parseProgress(text string) (progress, bool) {
 	m := progressLine.FindStringSubmatch(text)
 	if m == nil {
 		return progress{}, false
 	}
 	p := progress{done: m[5], total: m[6]}
-	if p.total == "" {
+	if p.total == "" || p.total == "0 B" {
 		p.total = "?"
 	}
 	p.elapsed = hms(m[1], m[2], m[3])
@@ -182,14 +191,15 @@ func hms(h, m, s string) time.Duration {
 }
 
 // commandLabel names what a traced restic command works on: "files /data"
-// for "+ restic backup --tag=files /data".
+// for "+ restic backup --tag=files /data". The image's restic wrapper traces
+// the real binary by its path, "+ /usr/bin/restic backup ...".
 func commandLabel(text string) string {
 	rest, ok := strings.CutPrefix(text, "+ ")
 	if !ok {
 		return ""
 	}
 	fields := strings.Fields(rest)
-	if len(fields) < 2 || fields[0] != "restic" {
+	if len(fields) < 2 || path.Base(fields[0]) != "restic" {
 		return ""
 	}
 	var tag string

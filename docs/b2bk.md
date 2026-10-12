@@ -144,13 +144,16 @@ tui:
   how long ago or how long until. The next run comes from the effective
   schedule and that time zone, and is `—` while the schedule is suspended or
   held for a restore.
-- **Progress.** The logs screen takes restic's status lines out of the log and
-  shows the latest one as a bar. restic prints them to a log only when
-  `RESTIC_PROGRESS_FPS` is set, and the operator does not set it, so a backup
-  shows its log and its running time without a bar. To get the bar, set it in
-  `spec.env`, such as `RESTIC_PROGRESS_FPS: "0.2"` for a line every five
-  seconds. A backup you start with `b` is followed from the start, and its
-  progress also shows on the dashboard.
+- **Progress.** The logs screen takes restic's status lines, and the files
+  restic backup lists under each one, out of the log and shows the latest
+  status as a bar. restic prints them to a log only when
+  `RESTIC_PROGRESS_FPS` is set. The operator sets it to `0.1`, one line every
+  10 seconds, in backup Jobs and in the restore and restic pods b2bk starts
+  from them. Set it in `spec.env` to change the rate, such as `"0.2"` for a
+  line every five seconds, or `"0"` for no lines and no bar. A backup from a
+  database dump has no known total, so it shows bytes read without a bar. A
+  backup you start with `b` is followed from the start, and its progress also
+  shows on the dashboard.
 - **Colors.** The 16 colors of the terminal, so the dashboard follows your
   theme. `NO_COLOR` turns color off. Below 60 columns by 12 lines it asks for a
   larger terminal; narrower terminals drop columns and shorten text with `…`.
@@ -778,7 +781,9 @@ interfere with a running backup.
 
 A pod from the backup image with `restic`, `ts` and `dumpdb` on PATH
 and the credentials already in the environment, so `restic snapshots` just
-works — and so does `restic mount /mnt`.
+works — and so does `restic mount /mnt`. On a terminal the shell starts
+without the operator's default `RESTIC_PROGRESS_FPS`, so restic redraws its
+status as usual; a value from `spec.env` is kept.
 
 | Flag | |
 | --- | --- |
@@ -954,7 +959,7 @@ printed with the time of day in the schedule's time zone, such as
 | `READ ACCESS DIFFERS` | 1 | The original could read every file on its claims, as root with `DAC_OVERRIDE`, and the generated backup cannot |
 | `WORKING DIR DIFFERS` | 1 | |
 | `RESTIC HOST DIFFERS` | 1 | Snapshots would start a new series under another host |
-| `ENV DIFFERS` | 1 | Another extra variable, or another `TZ`. An original without `TZ` on the upstream image ran in UTC: the image sets no `TZ` and has no `/etc/localtime` |
+| `ENV DIFFERS` | 1 | Another extra variable, or another `TZ`. An original without `TZ` on the upstream image ran in UTC: the image sets no `TZ` and has no `/etc/localtime`. The operator's default `RESTIC_PROGRESS_FPS=0.1` is not a difference when the original sets none; it changes only what restic logs |
 | `GROUPING DIFFERS` | 1 | The original's forget grouped by something other than tags: its own `--group-by`, or `RESTIC_GROUP_BY`, which the image's wrapper adds and the image sets to `tags`. The operator's forget always passes `--group-by=tags` |
 | `ENVFROM DIFFERS` | 1 | The original reads a Secret or ConfigMap other than `restic-envs` and `restic-b2` |
 | `DATABASE SECRET DIFFERS` | 1 | |

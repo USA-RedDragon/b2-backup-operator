@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +63,7 @@ func TestHeldBackupsDoNotFire(t *testing.T) {
 
 func TestParseProgress(t *testing.T) {
 	t.Parallel()
-	const kib12 = "1.200 KiB"
+	const kib12, mib800 = "1.200 KiB", "800.001 MiB"
 	tests := []struct {
 		line    string
 		ok      bool
@@ -79,6 +80,12 @@ func TestParseProgress(t *testing.T) {
 		{"[0:05] 1200 files, 2.000 MiB, 0 errors", true, 0, "2.000 MiB", "?", 0},
 		{"[0:01] 100.00%  3 files/dirs 1.200 KiB, total 3 files/dirs 1.200 KiB, skipped 1 files/dirs 2 B", true, 100,
 			kib12, kib12, 0},
+		{"[0:00] 14.96%  200 files 119.651 MiB, total 201 files 800.001 MiB, 0 errors ETA 0:01", true, 14.96,
+			"119.651 MiB", mib800, time.Second},
+		{"[0:10] 0 files 8.231 MiB, total 1 files 0 B, 0 errors", true, 0, "8.231 MiB", "?", 0},
+		{"[0:00] 27.33%  200 files/dirs 218.670 MiB, total 201 files/dirs 800.001 MiB", true, 27.33,
+			"218.670 MiB", mib800, 0},
+		{"[0:00] 100.00%  1 / 1 snapshots", false, 0, "", "", 0},
 		{"scan finished in 32.118s: 41822 files, 1.937 GiB", false, 0, "", "", 0},
 		{"open repository", false, 0, "", "", 0},
 	}
@@ -92,11 +99,14 @@ func TestParseProgress(t *testing.T) {
 
 func TestCommandLabel(t *testing.T) {
 	t.Parallel()
+	const filesData = "files /data"
 	tests := map[string]string{
-		"+ restic backup --retry-lock=5m0s --tag=files /data":     "files /data",
-		"+ restic backup --tag=db --stdin --stdin-from-command x": "db x",
-		"+ restic forget --prune --tag=files":                     "",
-		"restic backup /data":                                     "",
+		"+ restic backup --retry-lock=5m0s --tag=files /data":        filesData,
+		"+ restic backup --tag=db --stdin --stdin-from-command x":    "db x",
+		"+ restic forget --prune --tag=files":                        "",
+		"restic backup /data":                                        "",
+		"+ /usr/bin/restic backup --tag=files /data --group-by=tags": filesData,
+		"+ /usr/bin/restic restore latest:/data --target=/data":      "latest:/data",
 	}
 	for in, want := range tests {
 		if got := commandLabel(in); got != want {
@@ -118,6 +128,51 @@ func TestStreamTakesProgressOutOfTheLog(t *testing.T) {
 	}
 	if v.lines[0].at.IsZero() || v.lines[0].text != "+ restic backup --retry-lock=5m0s --tag=files /data" {
 		t.Errorf("the timestamp was not split off: %+v", v.lines[0])
+	}
+}
+
+// resticLog is what restic 0.19.1 in the backup image writes with
+// RESTIC_PROGRESS_FPS set and no terminal, as kubectl logs --timestamps shows
+// it: a status line with the files being read under it, and the wrapper's
+// trace of the real binary.
+const resticLog = `2026-10-12T01:06:08.000000000Z + /usr/bin/restic backup --tag=files /w/data --group-by=tags
+2026-10-12T01:06:08.100000000Z no parent snapshot found, will read all files
+2026-10-12T01:06:08.500000000Z [0:00] 14.96%  200 files 119.651 MiB, total 201 files 800.001 MiB, 0 errors ETA 0:01
+2026-10-12T01:06:08.500000000Z /w/data/big
+2026-10-12T01:06:09.000000000Z [0:01] 200 files 716.626 MiB, total 201 files 800.001 MiB, 0 errors
+2026-10-12T01:06:09.000000000Z /w/data/big
+2026-10-12T01:06:09.200000000Z 
+2026-10-12T01:06:09.200000000Z Files:         201 new,     0 changed,     0 unmodified
+2026-10-12T01:06:09.200000000Z Dirs:            2 new,     0 changed,     0 unmodified
+2026-10-12T01:06:09.200000000Z Added to the repository: 800.099 MiB (800.110 MiB stored)
+2026-10-12T01:06:09.200000000Z 
+2026-10-12T01:06:09.200000000Z processed 201 files, 800.001 MiB in 0:02
+2026-10-12T01:06:09.200000000Z snapshot 4b28f2bb saved
+`
+
+func TestStreamReadsResticsOwnStatusLines(t *testing.T) {
+	t.Parallel()
+	s := startStream(t.Context(), newHub(), testNow, func(_ context.Context, w io.Writer) error {
+		_, err := io.WriteString(w, resticLog)
+		return err
+	})
+	eventually(t, func() bool { return s.snapshot().done })
+	v := s.snapshot()
+	if v.label != "files /w/data" || v.progress == nil || v.progress.done != "716.626 MiB" ||
+		v.progress.total != "800.001 MiB" || v.progress.hasPercent {
+		t.Fatalf("label = %q, progress = %+v", v.label, v.progress)
+	}
+	texts := make([]string, 0, len(v.lines))
+	for _, l := range v.lines {
+		texts = append(texts, l.text)
+	}
+	got := strings.Join(texts, "\n")
+	if strings.Contains(got, "/w/data/big") || strings.Contains(got, "[0:0") {
+		t.Errorf("status lines or the files under them are left in the log:\n%s", got)
+	}
+	if len(v.lines) != 9 || !strings.HasPrefix(got, "+ /usr/bin/restic backup") ||
+		!strings.HasSuffix(got, "snapshot 4b28f2bb saved") {
+		t.Errorf("log = %d lines:\n%s", len(v.lines), got)
 	}
 }
 

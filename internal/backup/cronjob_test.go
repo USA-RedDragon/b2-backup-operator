@@ -363,6 +363,24 @@ func TestUserEnvIsSorted(t *testing.T) {
 	}
 }
 
+func TestProgressFPSDefaultsAndSpecEnvWins(t *testing.T) {
+	c := containerOf(t, testBackup(func(*b2backupv1.ScheduledBackup) {}), testConfig())
+	if env := envOf(c, EnvProgressFPS); env == nil || env.Value != DefaultProgressFPS {
+		t.Errorf("%s = %v, want %s", EnvProgressFPS, env, DefaultProgressFPS)
+	}
+	sb := testBackup(func(s *b2backupv1.ScheduledBackup) { s.Spec.Env = map[string]string{EnvProgressFPS: "2"} })
+	c = containerOf(t, sb, testConfig())
+	var values []string
+	for _, e := range c.Env {
+		if e.Name == EnvProgressFPS {
+			values = append(values, e.Value)
+		}
+	}
+	if strings.Join(values, ",") != "2" {
+		t.Errorf("%s values = %v, want only the spec.env value", EnvProgressFPS, values)
+	}
+}
+
 func TestDatabaseSecretMountsWhereTheDumpToolIsTold(t *testing.T) {
 	tests := []struct {
 		name       string

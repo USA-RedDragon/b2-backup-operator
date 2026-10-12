@@ -663,6 +663,28 @@ func TestMigrateThenParityOnAVerbatimScriptIsEquivalent(t *testing.T) {
 	}
 }
 
+func TestMigrateKeepsTheReleasesProgressFPS(t *testing.T) {
+	body := strings.Replace(homeClusterRelease, "              TZ: America/Chicago\n",
+		"              TZ: America/Chicago\n              "+backup.EnvProgressFPS+": \"2\"\n", 1)
+	dir := writeHomeClusterRelease(t, body)
+	var buf bytes.Buffer
+	if err := runMigrate(&buf, dir, migrateOptions{repository: sopsRepoURL}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !strings.Contains(buf.String(), backup.EnvProgressFPS+`: "2"`) {
+		t.Errorf("migrate did not carry %s into spec.env:\n%s", backup.EnvProgressFPS, buf.String())
+	}
+	generated := filepath.Join(t.TempDir(), "generated.yaml")
+	if err := os.WriteFile(generated, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	_ = runParity(&out, generated, dir, migrateOptions{repository: sopsRepoURL})
+	if strings.Contains(out.String(), "ENV DIFFERS") {
+		t.Errorf("parity reports the carried value as a difference:\n%s", out.String())
+	}
+}
+
 func TestMigrateTheShapesTheHomeClusterUses(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
