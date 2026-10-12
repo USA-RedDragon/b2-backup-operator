@@ -165,6 +165,23 @@ func TestRunFromJobClassifies(t *testing.T) {
 	}
 }
 
+func TestRunFromJobRecordsWhenAFailedJobFailed(t *testing.T) {
+	start := metav1.NewTime(time.Now().Add(-time.Hour))
+	failedAt := metav1.NewTime(start.Add(3 * time.Second))
+	job := &batchv1.Job{Status: batchv1.JobStatus{
+		StartTime: &start,
+		Failed:    1,
+		Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: failedAt,
+		}},
+	}}
+
+	got := runFromJob(job)
+	if got.run.CompletionTime == nil || !got.run.CompletionTime.Time.Equal(failedAt.Time) {
+		t.Errorf("completionTime = %v, want the Failed condition's time %v", got.run.CompletionTime, failedAt)
+	}
+}
+
 func TestRunFromJobFallsBackToCreationTime(t *testing.T) {
 	created := metav1.NewTime(time.Now().Add(-time.Minute))
 	job := &batchv1.Job{Name: "j", CreationTimestamp: created}

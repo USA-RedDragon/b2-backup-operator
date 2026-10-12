@@ -150,6 +150,9 @@ func runFromJob(job *batchv1.Job) observedRun {
 		run.Result = b2backupv1.BackupRunSucceeded
 	case jobFailedAt(job) != nil:
 		run.Result = b2backupv1.BackupRunFailed
+		if run.CompletionTime == nil {
+			run.CompletionTime = &metav1.Time{Time: *jobFailedAt(job)}
+		}
 	default:
 		return observedRun{run: withResult(run, b2backupv1.BackupRunRunning), active: true}
 	}
