@@ -5,16 +5,16 @@
   RETENTION   daily 90 · weekly 24 · monthly 24 · yearly 20 forget scoped to host minecraft, tag files  
   REPOSITORY  mcswain-kubernetes-backups/k8s/minecraft   adopted   key 0050…0011
   LIFECYCLE   covered by the k8s/ rule: hidden files are deleted after 30 days
-  STORED      2.4 MiB (measured 2d ago)
+  STORED      not measured yet
 
   CONDITIONS
   ● Ready        True   Ready              Backing up on schedule
   ● Repository   True   FoundExisting      found the existing restic repository, nothing was created
 
   RECENT RUNS                                                                 duration 0 ─────── 5m00s  
- ›✖ Sun 10-11 15:07  scheduled  restic-backup-29342505   1m00s  ███▏░░░░░░░░░░░░
+ ›✖ Sun 10-11 15:07  scheduled  restic-backup-29342505   1m00s  ▄▄▄▁▁▁▁▁▁▁▁▁▁▁▁▁
       ↳ /data/world/session.lock: permission denied
-  ✔ Sat 10-10 15:07  scheduled  restic-backup-29341065   3m00s  █████████▌░░░░░░
+  ✔ Sat 10-10 15:07  scheduled  restic-backup-29341065   3m00s  ▄▄▄▄▄▄▄▄▄▖▁▁▁▁▁▁
 
 
 

@@ -97,6 +97,16 @@ func TestGoldenDashboard(t *testing.T) {
 	p.golden()
 }
 
+// wideFrame is wide enough for every dashboard column and every run size.
+const wideFrame = 132
+
+func TestGoldenDashboardWide(t *testing.T) {
+	t.Parallel()
+	p := runProgram(t, newFakeBackend(t), allNamespaces, wideFrame, 16)
+	p.waitFor("6 backups", "wx", "+12.0 KiB")
+	p.golden()
+}
+
 func TestGoldenDashboardCurrentNamespace(t *testing.T) {
 	t.Parallel()
 	p := runProgram(t, newFakeBackend(t), Options{Mouse: true}, frameWidth, frameHeight)
@@ -127,6 +137,15 @@ func TestGoldenDetail(t *testing.T) {
 	p.waitFor("6 backups", "kosync")
 	p.press("j", "j", "enter")
 	p.waitFor("RECENT RUNS", "restic-backup-29336395")
+	p.golden()
+}
+
+func TestGoldenDetailWide(t *testing.T) {
+	t.Parallel()
+	p := runProgram(t, newFakeBackend(t), allNamespaces, wideFrame, frameHeight)
+	p.waitFor("6 backups", "kosync")
+	p.press("j", "j", "enter")
+	p.waitFor("RECENT RUNS", "restic-backup-29336395", "stored) of")
 	p.golden()
 }
 

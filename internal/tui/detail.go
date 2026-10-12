@@ -52,6 +52,8 @@ type run struct {
 	start   time.Time
 	end     time.Time
 	reason  string
+	size    backup.RunSize
+	sized   bool
 }
 
 func (r *run) duration(now time.Time) time.Duration {
@@ -70,6 +72,7 @@ func runsOf(m *Model, r *row) []run {
 	seen := map[string]bool{}
 	for _, h := range r.sb.Status.History {
 		ru := run{job: h.JobName, trigger: strings.ToLower(string(h.Trigger)), result: h.Result}
+		ru.size, ru.sized = backup.SizeOf(&h)
 		if h.StartTime != nil {
 			ru.start = h.StartTime.Time
 		}
@@ -335,7 +338,7 @@ func lifecycleText(r *row) string {
 func storedText(m *Model, r *row, now time.Time) string {
 	var parts []string
 	if r.repo != nil && r.repo.Status.CurrentUsage != "" {
-		text := r.repo.Status.CurrentUsage
+		text := usageText(r.repo.Status.CurrentUsage)
 		if t := r.repo.Status.UsageTime; t != nil {
 			text += styleDim.Render(" (measured " + ago(t.Time, now) + ")")
 		}
@@ -359,7 +362,6 @@ func (d *detail) runLines(m *Model, r *row, runs []run, width, space int) []stri
 		longest = max(longest, runs[i].duration(now))
 	}
 	scale := niceScale(longest)
-	barWidth := 16
 	head := "  " + styleBold.Render("RECENT RUNS")
 	legend := styleDim.Render("duration 0 " + strings.Repeat(symRule, 7) + " " + clock(scale))
 	out := []string{spread(head, legend+"  ", width)}
@@ -374,6 +376,7 @@ func (d *detail) runLines(m *Model, r *row, runs []run, width, space int) []stri
 	for i := range runs {
 		jobWidth = max(jobWidth, min(26, len(runs[i].job)))
 	}
+	sizes := runSizes(runs, width-(42+jobWidth+runBarWidth))
 	for i := d.runTop; i < min(len(runs), d.runTop+space); i++ {
 		ru := &runs[i]
 		sym := styleOK.Render(symSucceeded)
@@ -393,7 +396,10 @@ func (d *detail) runLines(m *Model, r *row, runs []run, width, space int) []stri
 		}
 		dur := ru.duration(now)
 		line := fmt.Sprintf(" %s%s %s  %s  %s  %s  %s", cursor, sym, fit(when, 15), fit(ru.trigger, 9),
-			fit(ru.job, jobWidth), fmt.Sprintf("%6s", clock(dur)), bar(float64(dur)/float64(scale), barWidth))
+			fit(ru.job, jobWidth), fmt.Sprintf("%6s", clock(dur)), runBar(float64(dur)/float64(scale), runBarWidth))
+		if sizes != nil {
+			line += "  " + sizes[i]
+		}
 		if i == d.sel {
 			line = styleSelected.Render(line)
 		}
@@ -408,6 +414,67 @@ func (d *detail) runLines(m *Model, r *row, runs []run, width, space int) []stri
 		out = append(out, line)
 	}
 	return lines(out, len(out))
+}
+
+// runBarWidth is how many cells a run's duration bar takes.
+const runBarWidth = 16
+
+// runBar draws a run's duration in half cells of lower half blocks over a
+// baseline, so the bars of adjacent rows stay apart rather than joining into
+// one block.
+func runBar(frac float64, width int) string {
+	frac = max(0, min(1, frac))
+	halves := int(frac * float64(width*2))
+	full := halves / 2
+	s := strings.Repeat(symRunBar, full)
+	if halves%2 == 1 && full < width {
+		s += symRunBarHalf
+		full++
+	}
+	return styleAccent.Render(s) + styleDim.Render(strings.Repeat(symRunTrack, width-full))
+}
+
+// runSizes renders what each run added, as much of it as fits in room cells
+// for every run: what restic added, what that took once stored and how much
+// the run read, then without the stored figure, then the added figure alone.
+// It returns nil when no run recorded a size or not even that fits.
+func runSizes(runs []run, room int) []string {
+	addedWidth := 0
+	for i := range runs {
+		if runs[i].sized {
+			addedWidth = max(addedWidth, len(humanBytes(uint64(max(0, runs[i].size.Added))))+1)
+		}
+	}
+	if addedWidth == 0 {
+		return nil
+	}
+	for level := range 3 {
+		out := make([]string, len(runs))
+		fits := true
+		for i := range runs {
+			out[i] = runSizeText(&runs[i], addedWidth, level)
+			fits = fits && lipgloss.Width(out[i])+2 <= room
+		}
+		if fits {
+			return out
+		}
+	}
+	return nil
+}
+
+func runSizeText(ru *run, addedWidth, level int) string {
+	if !ru.sized {
+		return styleDim.Render(fmt.Sprintf("%*s", addedWidth, symEm))
+	}
+	size := ru.size
+	text := fmt.Sprintf("%*s", addedWidth, "+"+humanBytes(uint64(max(0, size.Added))))
+	if level == 0 {
+		text += styleDim.Render(" (" + humanBytes(uint64(max(0, size.Stored))) + " stored)")
+	}
+	if level <= 1 {
+		text += styleDim.Render(" of " + humanBytes(uint64(max(0, size.Processed))))
+	}
+	return text
 }
 
 // niceScale rounds a longest duration up to a round chart scale.

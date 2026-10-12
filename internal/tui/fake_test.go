@@ -81,13 +81,28 @@ func succeeded(job string, trigger b2backupv1.BackupRunTrigger, start time.Durat
 		StartTime: at(start), CompletionTime: at(start + took)}
 }
 
+// usages are the repository sizes the operator measured, in its own format.
+var usages = map[string]string{"apprise": "246KiB", nsGitea: "1.9GiB", nsKosync: "2.4MiB", nsVault: "38MiB",
+	"wx": "12MiB"}
+
+// sized gives a run what restic recorded for each of its sources, as tag,
+// added, stored and processed bytes in turn.
+func sized(run b2backupv1.BackupRun, sources ...any) b2backupv1.BackupRun {
+	for i := 0; i+3 < len(sources); i += 4 {
+		run.Sources = append(run.Sources, b2backupv1.BackupRunSource{Tag: sources[i].(string),
+			AddedBytes: int64(sources[i+1].(int)), StoredBytes: int64(sources[i+2].(int)),
+			ProcessedBytes: int64(sources[i+3].(int)), ProcessedFiles: 1})
+	}
+	return run
+}
+
 func repository(ns string) *b2backupv1.Repository {
 	return &b2backupv1.Repository{
 		Namespace: ns, Name: nameRestic, UID: types.UID(ns + "-repo"),
 		Status: b2backupv1.RepositoryStatus{
 			BucketName: "mcswain-kubernetes-backups", Path: "k8s/" + ns, Adopted: true, Initialized: true,
 			Endpoint: "https://s3.us-east-005.backblazeb2.com", ApplicationKeyID: "005000000000000000000011",
-			CurrentUsage: "2.4 MiB", UsageTime: at(-48 * time.Hour),
+			CurrentUsage: usages[ns], UsageTime: at(-48 * time.Hour),
 			Conditions: []metav1.Condition{
 				{Type: reasonReady, Status: metav1.ConditionTrue, Reason: "FoundExisting",
 					Message: "found the existing restic repository, nothing was created"},
@@ -143,13 +158,14 @@ func cluster() []client.Object {
 	}
 
 	apprise := add(scheduled("apprise", "36 1 * * *", files("/config")))
-	apprise.Status.History = []b2backupv1.BackupRun{succeeded("restic-backup-1", b2backupv1.BackupTriggerScheduled,
-		-17*time.Hour, 20*time.Second)}
+	apprise.Status.History = []b2backupv1.BackupRun{sized(succeeded("restic-backup-1",
+		b2backupv1.BackupTriggerScheduled, -17*time.Hour, 20*time.Second), "files", 12_288, 3_900, 2_516_582)}
 
 	gitea := add(scheduled(nsGitea, "28 7 * * *", files("/data"), dbSource()))
 	gitea.Spec.Database = &b2backupv1.DatabaseSpec{Engine: b2backupv1.DatabaseEngineCNPG}
-	gitea.Status.History = []b2backupv1.BackupRun{succeeded("restic-backup-2", b2backupv1.BackupTriggerScheduled,
-		-11*time.Hour, 40*time.Second)}
+	gitea.Status.History = []b2backupv1.BackupRun{sized(succeeded("restic-backup-2",
+		b2backupv1.BackupTriggerScheduled, -11*time.Hour, 40*time.Second), "files", 13_002_342, 4_404_019,
+		2_040_109_465, "db", 1_310_720, 262_144, 8_388_608)}
 	gitea.Status.LastTriggerJob, gitea.Status.LastTriggerTime = "restic-manual-x8k2qp", at(-135*time.Second)
 	objs = append(objs, backupJob(gitea, "restic-manual-x8k2qp", -134*time.Second, true))
 
@@ -157,9 +173,12 @@ func cluster() []client.Object {
 	kosync.Spec.Database = &b2backupv1.DatabaseSpec{Engine: b2backupv1.DatabaseEngineCNPG}
 	kosync.Spec.Volumes = nil
 	kosync.Status.History = []b2backupv1.BackupRun{
-		succeeded("restic-backup-29342155", b2backupv1.BackupTriggerScheduled, -9*time.Hour-35*time.Minute, 24*time.Second),
-		succeeded("restic-manual-tmrg1h", b2backupv1.BackupTriggerManual, -25*time.Hour-52*time.Minute, 25*time.Second),
-		succeeded("restic-backup-29340715", b2backupv1.BackupTriggerScheduled, -33*time.Hour-35*time.Minute, 22*time.Second),
+		sized(succeeded("restic-backup-29342155", b2backupv1.BackupTriggerScheduled, -9*time.Hour-35*time.Minute,
+			24*time.Second), "db", 12_582, 4_301, 1_048_576),
+		sized(succeeded("restic-manual-tmrg1h", b2backupv1.BackupTriggerManual, -25*time.Hour-52*time.Minute,
+			25*time.Second), "db", 409_600, 98_304, 1_042_000),
+		sized(succeeded("restic-backup-29340715", b2backupv1.BackupTriggerScheduled, -33*time.Hour-35*time.Minute,
+			22*time.Second), "db", 9_830, 3_277, 1_040_000),
 		succeeded("restic-backup-29339275", b2backupv1.BackupTriggerScheduled, -57*time.Hour-35*time.Minute, 23*time.Second),
 		{JobName: "restic-backup-29337835", Trigger: b2backupv1.BackupTriggerScheduled,
 			Result: b2backupv1.BackupRunFailed, StartTime: at(-81*time.Hour - 35*time.Minute),

@@ -2,8 +2,8 @@
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
   1 backup   ● 1 healthy   ◐ 0 running   ⏸ 0 suspended   ✖ 0 failing                  / filter   ? help 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
-  BACKUP  SOURCES          LAST SUCCESS  NEXT RUN         STATUS  
-› restic  files /data, db  14h ago       03:05  in 8h15m  ● ok    
+  BACKUP  SOURCES          LAST SUCCESS  SIZE    NEXT RUN         STATUS  
+› restic  files /data, db  14h ago       38 MiB  03:05  in 8h15m  ● ok    
 
 
 

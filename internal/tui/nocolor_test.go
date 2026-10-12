@@ -201,6 +201,15 @@ func TestGoldenNoColorDashboard(t *testing.T) {
 	noColorFrame(t, p, sgrBold, sgrReverse)
 }
 
+func TestGoldenNoColorDetail(t *testing.T) {
+	t.Parallel()
+	p := runProgramIn(t, newFakeBackend(t), noColor, colorTerminal, wideFrame, frameHeight)
+	p.waitFor("6 backups", "kosync")
+	p.press("j", "j", "enter")
+	p.waitFor("RECENT RUNS", "restic-backup-29336395", "stored) of")
+	noColorFrame(t, p, sgrBold, sgrReverse)
+}
+
 func TestGoldenNoColorTerminalAnswersRGB(t *testing.T) {
 	t.Parallel()
 	p := runProgramIn(t, newFakeBackend(t), noColor, colorTerminal, frameWidth, frameHeight)

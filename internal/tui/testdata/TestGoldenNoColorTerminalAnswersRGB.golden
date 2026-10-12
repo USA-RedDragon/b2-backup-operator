@@ -2,13 +2,13 @@
 [m────────────────────────────────────────────────────────────────────────────────────────────────────────[m
   6 backups   [m● 3 healthy[m   [m◐ 1 running[m   [m⏸ 1 suspended[m   [m✖ 1 failing[m                 [1m/[m filter   [1m?[m help 
 [m────────────────────────────────────────────────────────────────────────────────────────────────────────[m
-[m  NAMESPACE    BACKUP  SOURCES          LAST SUCCESS  NEXT RUN          STATUS             [m
-  apprise      restic  files /config    16h ago       01:36  in 6h46m   [m● ok[m               
-  gitea        restic  files /data, db  10h ago       07:28  in 12h38m  [m◐ running  2m14s[m   
-[m›[m [1mkosync     [m  [1mrestic[m  [1mdb             [m  [1m9h ago      [m  [1m09:15  in 14h25m[m  [m● ok[m               
-  minecraft    restic  files /data +1   27h ago       15:07  in 20h17m  [m✖ failed   exit 3[m  
-  vaultwarden  restic  files /data, db  14h ago       03:05  in 8h15m   [m● ok[m               
-  wx           restic  script           6h ago        —                 [m⏸ suspended[m        
+[m  NAMESPACE    BACKUP  SOURCES          LAST SUCCESS  SIZE     NEXT RUN          STATUS             [m
+  apprise      restic  files /config    16h ago       246 KiB  01:36  in 6h46m   [m● ok[m               
+  gitea        restic  files /data, db  10h ago       1.9 GiB  07:28  in 12h38m  [m◐ running  2m14s[m   
+[m›[m [1mkosync     [m  [1mrestic[m  [1mdb             [m  [1m9h ago      [m  [1m2.4 MiB[m  [1m09:15  in 14h25m[m  [m● ok[m               
+  minecraft    restic  files /data +1   27h ago       —        15:07  in 20h17m  [m✖ failed   exit 3[m  
+  vaultwarden  restic  files /data, db  14h ago       38 MiB   03:05  in 8h15m   [m● ok[m               
+  wx           restic  script           6h ago        12 MiB   —                 [m⏸ suspended[m        
 
 
 

@@ -151,6 +151,11 @@ type column struct {
 
 func (d *dashboard) columns(m *Model, rows []*row, width int) []column {
 	now := m.now()
+	usageWidth := 0
+	for _, r := range rows {
+		usageWidth = max(usageWidth, lipgloss.Width(r.usage()))
+	}
+	withAdded := true
 	cols := []column{
 		{title: "NAMESPACE", cell: func(r *row) string { return r.sb.Namespace }},
 		{title: "BACKUP", cell: func(r *row) string { return r.sb.Name }},
@@ -161,21 +166,25 @@ func (d *dashboard) columns(m *Model, rows []*row, width int) []column {
 			}
 			return "never"
 		}},
+		{title: colSize, cell: func(r *row) string { return sizeCell(r, usageWidth, withAdded) }},
 		{title: colNextRun, cell: func(r *row) string { return nextRunCell(r, now) }},
 		{title: "STATUS", cell: func(r *row) string { return r.status(now) }},
 	}
 	if !m.allNamespaces {
 		cols = cols[1:]
 	}
-	caps := map[string]int{"NAMESPACE": 22, "BACKUP": 18, colSources: 22, colLastSuccess: 12, colNextRun: 22,
-		"STATUS": 22}
-	for i := range cols {
-		w := lipgloss.Width(cols[i].title)
-		for _, r := range rows {
-			w = max(w, lipgloss.Width(cols[i].cell(r)))
+	caps := map[string]int{"NAMESPACE": 22, "BACKUP": 18, colSources: 22, colLastSuccess: 12, colSize: 22,
+		colNextRun: 22, "STATUS": 22}
+	measure := func() {
+		for i := range cols {
+			w := lipgloss.Width(cols[i].title)
+			for _, r := range rows {
+				w = max(w, lipgloss.Width(cols[i].cell(r)))
+			}
+			cols[i].width = min(w, caps[cols[i].title])
 		}
-		cols[i].width = min(w, caps[cols[i].title])
 	}
+	measure()
 	total := func() int {
 		n := 2
 		for _, c := range cols {
@@ -183,7 +192,11 @@ func (d *dashboard) columns(m *Model, rows []*row, width int) []column {
 		}
 		return n
 	}
-	for _, drop := range []string{colSources, colLastSuccess, colNextRun} {
+	if total() > width {
+		withAdded = false
+		measure()
+	}
+	for _, drop := range []string{colSources, colSize, colLastSuccess, colNextRun} {
 		if total() <= width {
 			break
 		}
@@ -202,6 +215,20 @@ func (d *dashboard) columns(m *Model, rows []*row, width int) []column {
 		cols[widest].width--
 	}
 	return cols
+}
+
+// sizeCell is the repository's size as last measured and, with withAdded,
+// what the newest succeeded run added to it.
+func sizeCell(r *row, usageWidth int, withAdded bool) string {
+	usage := r.usage()
+	if !withAdded {
+		return usage
+	}
+	size, ok := backup.LastRunSize(r.sb)
+	if !ok {
+		return usage
+	}
+	return fit(usage, usageWidth) + "  +" + humanBytes(uint64(max(0, size.Added)))
 }
 
 func nextRunCell(r *row, now time.Time) string {

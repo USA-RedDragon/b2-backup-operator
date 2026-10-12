@@ -1,0 +1,30 @@
+ [1;7m b2bk [m  › kosync › restic                                                                                        [m● ok[m     [1mesc[m back 
+[m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+  [1mSCHEDULE[m    @daily → 15 9 * * *  [mAmerica/Chicago[m                                                 [mnext tomorrow 09:15 (in 14h25m)[m  
+  [1mSOURCE[m      db  cnpg postgresql / the Secret's dbname  → /kosync.dmp
+  [1mRETENTION[m   daily 90 · weekly 24 · monthly 24 · yearly 20                                   [mforget scoped to host kosync, tag db[m  
+  [1mREPOSITORY[m  mcswain-kubernetes-backups/k8s/kosync   adopted   key 0050…0011
+  [1mLIFECYCLE[m   covered by the k8s/ rule: hidden files are deleted after 30 days
+  [1mSTORED[m      2.4 MiB[m (measured 2d ago)[m
+
+  [1mCONDITIONS[m
+  [m●[m Ready        True   Ready              [mBacking up on schedule[m
+  [m●[m Repository   True   FoundExisting      [mfound the existing restic repository, nothing was created[m
+
+  [1mRECENT RUNS[m                                                                                             [mduration 0 ─────── 2m00s[m  
+[1m [m›[m[m✔[m Sun 10-11 09:15  scheduled  restic-backup-29342155     24s  [m▄▄▄[m[m▁▁▁▁▁▁▁▁▁▁▁▁▁[m   +12.3 KiB[m (4.2 KiB stored)[m[m of 1.0 MiB[m[m
+  [m✔[m Sat 10-10 16:58  manual     restic-manual-tmrg1h       25s  [m▄▄▄[m[m▁▁▁▁▁▁▁▁▁▁▁▁▁[m  +400.0 KiB[m (96.0 KiB stored)[m[m of 1017.6 KiB[m
+  [m✔[m Sat 10-10 09:15  scheduled  restic-backup-29340715     22s  [m▄▄▖[m[m▁▁▁▁▁▁▁▁▁▁▁▁▁[m    +9.6 KiB[m (3.2 KiB stored)[m[m of 1015.6 KiB[m
+  [m✔[m Fri 10-09 09:15  scheduled  restic-backup-29339275     23s  [m▄▄▄[m[m▁▁▁▁▁▁▁▁▁▁▁▁▁[m  [m         —[m
+  [m✖[m Thu 10-08 09:15  scheduled  restic-backup-29337835   1m02s  [m▄▄▄▄▄▄▄▄[m[m▁▁▁▁▁▁▁▁[m  [m         —[m
+  [m✔[m Wed 10-07 09:15  scheduled  restic-backup-29336395     21s  [m▄▄▖[m[m▁▁▁▁▁▁▁▁▁▁▁▁▁[m  [m         —[m
+
+
+
+
+
+
+
+
+[m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+ [1mb[m backup now  [1ml[m logs of selected run  [1ms[m snapshots  [1md[m doctor  [1mp[m pause  [1mr[m restore  [1mc[m check  [1mesc[m back

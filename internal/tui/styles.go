@@ -2,11 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/USA-RedDragon/b2-backup-operator/internal/backup"
 )
 
 // The palette is the terminal's own 16 colors, so the TUI follows its theme.
@@ -40,6 +43,9 @@ const (
 	symRule        = "─"
 	symBar         = "█"
 	symTrack       = "░"
+	symRunBar      = "▄"
+	symRunBarHalf  = "▖"
+	symRunTrack    = "▁"
 	symEm          = "—"
 )
 
@@ -81,16 +87,7 @@ func rule(width int) string { return styleDim.Render(strings.Repeat(symRule, max
 
 // humanBytes renders a size the way restic does.
 func humanBytes(n uint64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := uint64(unit), 0
-	for v := n / unit; v >= unit; v /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+	return backup.FormatBytes(int64(min(n, math.MaxInt64)))
 }
 
 // clock renders a short duration as running time: 24s, 2m14s, 1h02m.

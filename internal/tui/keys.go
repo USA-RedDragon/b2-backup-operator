@@ -26,4 +26,5 @@ const (
 	colSources     = "SOURCES"
 	colNextRun     = "NEXT RUN"
 	colLastSuccess = "LAST SUCCESS"
+	colSize        = "SIZE"
 )

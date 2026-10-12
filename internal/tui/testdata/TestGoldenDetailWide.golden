@@ -1,0 +1,30 @@
+  b2bk   › kosync › restic                                                                                        ● ok     esc back 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  SCHEDULE    @daily → 15 9 * * *  America/Chicago                                                 next tomorrow 09:15 (in 14h25m)  
+  SOURCE      db  cnpg postgresql / the Secret's dbname  → /kosync.dmp
+  RETENTION   daily 90 · weekly 24 · monthly 24 · yearly 20                                   forget scoped to host kosync, tag db  
+  REPOSITORY  mcswain-kubernetes-backups/k8s/kosync   adopted   key 0050…0011
+  LIFECYCLE   covered by the k8s/ rule: hidden files are deleted after 30 days
+  STORED      2.4 MiB (measured 2d ago)
+
+  CONDITIONS
+  ● Ready        True   Ready              Backing up on schedule
+  ● Repository   True   FoundExisting      found the existing restic repository, nothing was created
+
+  RECENT RUNS                                                                                             duration 0 ─────── 2m00s  
+ ›✔ Sun 10-11 09:15  scheduled  restic-backup-29342155     24s  ▄▄▄▁▁▁▁▁▁▁▁▁▁▁▁▁   +12.3 KiB (4.2 KiB stored) of 1.0 MiB
+  ✔ Sat 10-10 16:58  manual     restic-manual-tmrg1h       25s  ▄▄▄▁▁▁▁▁▁▁▁▁▁▁▁▁  +400.0 KiB (96.0 KiB stored) of 1017.6 KiB
+  ✔ Sat 10-10 09:15  scheduled  restic-backup-29340715     22s  ▄▄▖▁▁▁▁▁▁▁▁▁▁▁▁▁    +9.6 KiB (3.2 KiB stored) of 1015.6 KiB
+  ✔ Fri 10-09 09:15  scheduled  restic-backup-29339275     23s  ▄▄▄▁▁▁▁▁▁▁▁▁▁▁▁▁           —
+  ✖ Thu 10-08 09:15  scheduled  restic-backup-29337835   1m02s  ▄▄▄▄▄▄▄▄▁▁▁▁▁▁▁▁           —
+  ✔ Wed 10-07 09:15  scheduled  restic-backup-29336395     21s  ▄▄▖▁▁▁▁▁▁▁▁▁▁▁▁▁           —
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ b backup now  l logs of selected run  s snapshots  d doctor  p pause  r restore  c check  esc back

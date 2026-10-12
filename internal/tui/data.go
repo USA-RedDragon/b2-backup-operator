@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -336,6 +337,26 @@ func (r *row) nextRun(now time.Time) (time.Time, bool) {
 }
 
 // sources is the dashboard's SOURCES cell: files /data, db, script.
+// usage is the size of the backup's repository as the operator last measured
+// it, or an em dash before it has.
+func (r *row) usage() string {
+	if r.repo == nil || r.repo.Status.CurrentUsage == "" {
+		return symEm
+	}
+	return usageText(r.repo.Status.CurrentUsage)
+}
+
+var usageForm = regexp.MustCompile(`^([0-9.]+)\s*([KMGTPE]iB|B)$`)
+
+// usageText spaces a size the operator recorded as 246KiB the way restic
+// prints one, 246 KiB, so the two read alike side by side.
+func usageText(s string) string {
+	if m := usageForm.FindStringSubmatch(strings.TrimSpace(s)); m != nil {
+		return m[1] + " " + m[2]
+	}
+	return s
+}
+
 func (r *row) sources() string {
 	if r.sb.Spec.Script != "" && len(r.sb.Spec.Sources) == 0 {
 		return "script"
