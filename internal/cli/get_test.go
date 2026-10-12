@@ -60,7 +60,7 @@ func getOutput(t *testing.T, c client.Client, ns string, all bool, output string
 		t.Fatalf("kindsToList: %v", err)
 	}
 	var buf bytes.Buffer
-	if err := runGet(context.Background(), c, &buf, ns, all, output, kinds); err != nil {
+	if err := runGet(context.Background(), c, &buf, ns, all, output, kinds, ""); err != nil {
 		t.Fatalf("runGet: %v", err)
 	}
 	return buf.String()

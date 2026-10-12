@@ -261,13 +261,14 @@ reports a lifecycle rule problem from the `LifecycleRule` condition. `doctor`
 never calls B2 and needs no B2 credentials: whether the key still exists in B2
 is the operator's check, and it shows up as the `Ready` condition.
 
-### `get [repositories|backups]` — `reads`
+### `get [repositories|backups [NAME]]` — `reads`
 
 Both kinds by default. Shows where each repository lives and how big it is, and
 last-success against whether the schedule is suspended, so "are backups
 happening" is one command.
 The argument takes any of the prefixes above without the slash, so `get sb` and
-`get repos` work as well as `get backups`.
+`get repos` work as well as `get backups`. A name after the kind shows only
+that one, and `-o json|yaml` then prints the object itself instead of a list.
 
 | Flag | |
 | --- | --- |

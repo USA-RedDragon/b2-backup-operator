@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -20,15 +21,15 @@ func newGetCommand(f *Factory) *cobra.Command {
 	var output string
 
 	cmd := &cobra.Command{
-		Use:     "get [repositories|backups]",
+		Use:     "get [repositories|backups [NAME]]",
 		Short:   "List repositories and scheduled backups",
 		GroupID: GroupInspect,
 		Long: `List the operator's resources.
 
 With no argument both kinds are listed. Pass "repositories" or "backups" to
-narrow it.`,
-		Args:      argCount(0, 1, "argument"),
-		ValidArgs: knownPrefixes(),
+narrow it, and a name after the kind to show only that one.`,
+		Args:              argCount(0, 2, "argument"),
+		ValidArgsFunction: f.completeGet,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := ValidateOutput(output); err != nil {
 				return err
@@ -48,13 +49,58 @@ narrow it.`,
 				return err
 			}
 
-			return runGet(cmd.Context(), c, f.Streams.Out, ns, f.AllNamespaces(), output, kinds)
+			var name string
+			if len(args) == 2 {
+				name = args[1]
+			}
+			return runGet(cmd.Context(), c, f.Streams.Out, ns, f.AllNamespaces(), output, kinds, name)
 		},
 	}
 
 	AddOutputFlag(cmd, &output)
 	f.AddAllNamespacesFlag(cmd)
 	return cmd
+}
+
+// completeGet offers the kinds for get's first argument and the names of that
+// kind for its second.
+func (f *Factory) completeGet(
+	cmd *cobra.Command, args []string, toComplete string,
+) ([]cobra.Completion, cobra.ShellCompDirective) {
+	switch len(args) {
+	case 0:
+		var kinds []cobra.Completion
+		for _, prefix := range knownPrefixes() {
+			if strings.HasPrefix(prefix, toComplete) {
+				kinds = append(kinds, prefix)
+			}
+		}
+		return kinds, cobra.ShellCompDirectiveNoFileComp
+	case 1:
+		kind, ok := kindAliases[strings.ToLower(args[0])]
+		if !ok {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		kinds := backupsOnly
+		if kind == TargetRepository {
+			kinds = repositoriesOnly
+		}
+		c, err := f.Client()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		ns, err := f.ListNamespace()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		backups, repos, err := namesIn(cmd.Context(), c, ns, kinds)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		return slices.Compact(slices.Sorted(slices.Values(append(backups, repos...)))),
+			cobra.ShellCompDirectiveNoFileComp
+	}
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }
 
 func kindsToList(args []string) ([]TargetKind, error) {
@@ -77,6 +123,7 @@ func runGet(
 	allNamespaces bool,
 	output string,
 	kinds []TargetKind,
+	name string,
 ) error {
 	var repos b2backupv1.RepositoryList
 	var backups b2backupv1.ScheduledBackupList
@@ -90,6 +137,31 @@ func runGet(
 		}
 		if err := c.List(ctx, list, client.InNamespace(namespace)); err != nil {
 			return err
+		}
+	}
+
+	if name != "" {
+		repos.Items = slices.DeleteFunc(repos.Items, func(r b2backupv1.Repository) bool { return r.Name != name })
+		backups.Items = slices.DeleteFunc(backups.Items,
+			func(b b2backupv1.ScheduledBackup) bool { return b.Name != name })
+		if len(repos.Items)+len(backups.Items) == 0 {
+			kind := kindScheduledBackupDoc
+			if kinds[0] == TargetRepository {
+				kind = kindRepositoryDoc
+			}
+			scope := fmt.Sprintf("in namespace %q", namespace)
+			if allNamespaces {
+				scope = "in any namespace"
+			}
+			return fmt.Errorf("%w: no %s named %q %s", ErrTargetNotFound, kind, name, scope)
+		}
+		if IsMachineOutput(output) && len(repos.Items)+len(backups.Items) == 1 {
+			if len(repos.Items) == 1 {
+				repos.Items[0].TypeMeta = typeMetaFor("Repository")
+				return PrintObject(out, output, &repos.Items[0])
+			}
+			backups.Items[0].TypeMeta = typeMetaFor("ScheduledBackup")
+			return PrintObject(out, output, &backups.Items[0])
 		}
 	}
 

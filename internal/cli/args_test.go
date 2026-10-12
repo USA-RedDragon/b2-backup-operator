@@ -43,7 +43,7 @@ func TestWrongArgumentCountsNameTheUsage(t *testing.T) {
 		{args: []string{"parity", "a.yaml"}, want: "parity takes exactly two arguments, got 1: b2bk parity <generated.yaml>"},
 		{args: []string{"validate"}, want: "validate takes exactly one argument, got none: b2bk validate <file.yaml>"},
 		{args: []string{"migrate", "a", "b"}, want: "migrate takes exactly one argument, got 2: b2bk migrate"},
-		{args: []string{"get", "sb", "repo"}, want: "get takes at most one argument, got 2: b2bk get [repositories|backups]"},
+		{args: []string{"get", "sb", "app", "x"}, want: "get takes at most two arguments, got 3: b2bk get [repositories|backups [NAME]]"},
 		{args: []string{cmdRestore, "a", "b"}, want: "restore takes exactly one name, got 2: b2bk restore"},
 		{args: []string{cmdExec, "a", binRestic}, want: "exec needs -- before the command: b2bk exec"},
 		{args: []string{cmdExec, "a", "b", "--", binRestic}, want: "exec takes at most one name before --, got 2: b2bk exec"},
@@ -279,6 +279,8 @@ func TestNamesComplete(t *testing.T) {
 		{args: []string{cmdStatus, argsApp01, ""}, objs: argsBackups(2), want: ":4\n"},
 		{args: []string{cmdExec, ""}, objs: argsBackups(1), want: "app-01\nvault\n:4\n"},
 		{args: []string{"render", ""}, objs: argsBackups(1), want: "app-01\n:0\n"},
+		{args: []string{"get", "repo", ""}, objs: argsBackups(2), want: "vault\n:4\n"},
+		{args: []string{"get", "sb", ""}, objs: argsBackups(2), want: "app-01\napp-02\n:4\n"},
 		{args: []string{cmdStatus, "-n", "elsewhere", ""}, objs: argsBackups(1), want: ":4\n"},
 	}
 	for _, tt := range tests {
@@ -291,6 +293,42 @@ func TestNamesComplete(t *testing.T) {
 			}
 			if out.String() != tt.want {
 				t.Errorf("completions = %q, want %q", out.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestGetOneByName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		args    []string
+		want    []string
+		notWant string
+		wantErr error
+	}{
+		{args: []string{"get", "sb", "app-02"}, want: []string{"app-02"}, notWant: "app-01"},
+		{args: []string{"get", "repo", argsRepo, "-o", "name"}, want: []string{"repository.b2backup.mcswain.dev/vault"}},
+		{args: []string{"get", "backups", "app-01", "-o", "yaml"}, want: []string{"kind: ScheduledBackup", "name: app-01"},
+			notWant: "kind: List"},
+		{args: []string{"get", "sb", "nope"}, wantErr: cli.ErrTargetNotFound},
+		{args: []string{"get", "sb", argsRepo}, wantErr: cli.ErrTargetNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			f := cli.NewTestFactoryIn(argsNS, argsClient(t, argsBackups(2)...), &out, io.Discard, nil)
+			err := cli.Execute(f, tt.args...)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(out.String(), w) {
+					t.Errorf("output %q is missing %q", out.String(), w)
+				}
+			}
+			if tt.notWant != "" && strings.Contains(out.String(), tt.notWant) {
+				t.Errorf("output %q has %q", out.String(), tt.notWant)
 			}
 		})
 	}
