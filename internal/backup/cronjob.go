@@ -83,7 +83,7 @@ type Config struct {
 const DefaultImageRepository = "ghcr.io/usa-reddragon/restic"
 
 // DefaultImage is the backup image the operator runs by default.
-const DefaultImage = "ghcr.io/usa-reddragon/restic:0.19.1@sha256:64d729f52e278c1c1f887ad5c56b47095d986ea0564024c0a6adf0977620126b"
+const DefaultImage = "ghcr.io/usa-reddragon/restic:0.19.1@sha256:faaca1e7403dd0f948ece38d086642f860e6fccaf6205373f313912f43b328f6"
 
 // DefaultConfig returns the configuration the operator runs with when no flags are set.
 func DefaultConfig() Config {
