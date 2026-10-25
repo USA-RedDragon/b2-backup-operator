@@ -16,7 +16,7 @@ concurrency:
 jobs:
   backend-unit-tests:
     name: Unit tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -35,7 +35,7 @@ jobs:
 
   crd-tests:
     name: CRD validation tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -54,7 +54,7 @@ jobs:
 
   e2e-tests:
     name: E2E tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - name: Checkout repository

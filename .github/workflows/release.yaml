@@ -43,7 +43,7 @@ jobs:
     name: Release manifests
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [manager-image]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
