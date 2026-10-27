@@ -326,6 +326,67 @@ func lastSucceeded(history []b2backupv1.BackupRun) *metav1.Time {
 	return latest
 }
 
+// recordFailures updates lastFailureTime and consecutiveFailures from the run
+// history and lastSuccessfulTime, which must already be current. The streak
+// is read from the history, newest finished run first, back to the last
+// success. When every run the history holds failed after that success, older
+// failures may have left it, so the recorded count is carried forward and
+// only failures newer than the recorded lastFailureTime are added to it. A
+// pass that sees the same runs again counts nothing twice.
+func recordFailures(status *b2backupv1.ScheduledBackupStatus) {
+	recorded := status.LastFailureTime
+	lastSuccess := status.LastSuccessfulTime
+
+	finished := make([]b2backupv1.BackupRun, 0, len(status.History))
+	for _, run := range status.History {
+		if terminal(run.Result) {
+			finished = append(finished, run)
+		}
+		if run.Result == b2backupv1.BackupRunFailed {
+			status.LastFailureTime = laterTime(status.LastFailureTime, finishedAt(run))
+		}
+	}
+	slices.SortStableFunc(finished, func(a, b b2backupv1.BackupRun) int {
+		return compareRunTimes(finishedAt(b), finishedAt(a))
+	})
+
+	var streak, added int32
+	bounded := len(status.History) < historyLimit
+	for _, run := range finished {
+		at := finishedAt(run)
+		if run.Result == b2backupv1.BackupRunSucceeded || (lastSuccess != nil && !after(at, lastSuccess)) {
+			bounded = true
+			break
+		}
+		streak++
+		if after(at, recorded) {
+			added++
+		}
+	}
+
+	if !bounded {
+		var carried int32
+		if after(recorded, lastSuccess) {
+			carried = status.ConsecutiveFailures
+		}
+		streak = max(streak, carried+added)
+	}
+	status.ConsecutiveFailures = streak
+}
+
+// finishedAt is when run finished, or started when no completion was recorded.
+func finishedAt(run b2backupv1.BackupRun) *metav1.Time {
+	if run.CompletionTime != nil {
+		return run.CompletionTime
+	}
+	return run.StartTime
+}
+
+// after reports whether a is set and later than b, or b is unset.
+func after(a, b *metav1.Time) bool {
+	return a != nil && (b == nil || a.After(b.Time))
+}
+
 // laterTime returns whichever of a and b is later, so a recorded time never
 // moves back when the run that set it leaves the history.
 func laterTime(a, b *metav1.Time) *metav1.Time {

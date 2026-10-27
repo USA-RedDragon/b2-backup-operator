@@ -1889,6 +1889,17 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              consecutiveFailures:
+                description: |-
+                  ConsecutiveFailures is how many backup runs in a row have failed since
+                  the last one that succeeded, scheduled or triggered. A run that succeeds
+                  sets it back to 0. A run still in flight does not count, and neither
+                  does a configuration error that keeps the CronJob from firing: that is
+                  the Ready condition. The count is kept in status, so it survives an
+                  operator restart and the deletion of the failed Jobs.
+                format: int32
+                minimum: 0
+                type: integer
               effectiveSchedule:
                 description: EffectiveSchedule is the cron expression the shorthand
                   resolved to.
@@ -2011,6 +2022,11 @@ spec:
                   type: object
                 type: array
                 x-kubernetes-list-type: atomic
+              lastFailureTime:
+                description: LastFailureTime is when a backup last failed, scheduled
+                  or triggered.
+                format: date-time
+                type: string
               lastScheduleTime:
                 description: LastScheduleTime is when a backup was last started.
                 format: date-time

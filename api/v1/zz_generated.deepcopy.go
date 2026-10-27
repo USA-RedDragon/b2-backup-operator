@@ -514,6 +514,10 @@ func (in *ScheduledBackupStatus) DeepCopyInto(out *ScheduledBackupStatus) {
 		in, out := &in.LastSuccessfulTime, &out.LastSuccessfulTime
 		*out = (*in).DeepCopy()
 	}
+	if in.LastFailureTime != nil {
+		in, out := &in.LastFailureTime, &out.LastFailureTime
+		*out = (*in).DeepCopy()
+	}
 	if in.LastTriggerTime != nil {
 		in, out := &in.LastTriggerTime, &out.LastTriggerTime
 		*out = (*in).DeepCopy()

@@ -428,6 +428,20 @@ type ScheduledBackupStatus struct {
 	// +optional
 	LastSuccessfulTime *metav1.Time `json:"lastSuccessfulTime,omitempty"`
 
+	// LastFailureTime is when a backup last failed, scheduled or triggered.
+	// +optional
+	LastFailureTime *metav1.Time `json:"lastFailureTime,omitempty"`
+
+	// ConsecutiveFailures is how many backup runs in a row have failed since
+	// the last one that succeeded, scheduled or triggered. A run that succeeds
+	// sets it back to 0. A run still in flight does not count, and neither
+	// does a configuration error that keeps the CronJob from firing: that is
+	// the Ready condition. The count is kept in status, so it survives an
+	// operator restart and the deletion of the failed Jobs.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ConsecutiveFailures int32 `json:"consecutiveFailures,omitempty"`
+
 	// Active is how many backups are running.
 	// +optional
 	Active int32 `json:"active,omitempty"`

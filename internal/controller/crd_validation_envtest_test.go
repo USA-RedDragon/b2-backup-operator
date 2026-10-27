@@ -843,3 +843,48 @@ func TestCRDRunHistoryHoldsSourceSizes(t *testing.T) {
 		t.Error("a negative size was accepted")
 	}
 }
+
+func TestCRDScheduledBackupHoldsFailureCount(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	mustCreateNamespace(t, c, "failurecount")
+
+	sb := &b2backupv1.ScheduledBackup{
+		Namespace: "failurecount", Name: resticName,
+		Spec: b2backupv1.ScheduledBackupSpec{
+			RepositoryRef: corev1.LocalObjectReference{Name: resticName},
+			Schedule:      hourlySchedule,
+			Sources:       []b2backupv1.BackupSource{{Type: b2backupv1.SourceTypeCNPG}},
+		},
+	}
+	if err := c.Create(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	at := metav1.NewTime(time.Date(2026, 10, 12, 4, 21, 22, 0, time.UTC))
+	write := func(count int32) error {
+		live := &b2backupv1.ScheduledBackup{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(sb), live); err != nil {
+			return err
+		}
+		base := live.DeepCopy()
+		live.Status.ConsecutiveFailures = count
+		live.Status.LastFailureTime = &at
+		return c.Status().Patch(ctx, live, client.MergeFrom(base))
+	}
+
+	if err := write(2); err != nil {
+		t.Fatalf("a failure count was refused: %v", err)
+	}
+	live := &b2backupv1.ScheduledBackup{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(sb), live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Status.ConsecutiveFailures != 2 || live.Status.LastFailureTime == nil ||
+		!live.Status.LastFailureTime.Equal(&at) {
+		t.Errorf("status read back = %d failures, last at %v", live.Status.ConsecutiveFailures,
+			live.Status.LastFailureTime)
+	}
+	if err := write(-1); err == nil {
+		t.Error("a negative failure count was accepted")
+	}
+}

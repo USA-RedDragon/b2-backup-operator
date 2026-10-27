@@ -258,6 +258,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 	sb.Status.History = mergeHistory(sb.Status.History, runs)
 	sb.Status.Active = activeRuns(cronActive, runs)
 	sb.Status.LastSuccessfulTime = laterTime(sb.Status.LastSuccessfulTime, lastSucceeded(sb.Status.History))
+	recordFailures(&sb.Status)
 
 	if err := r.reconcileTrigger(ctx, sb, &repo, runs, hold); err != nil {
 		return ctrl.Result{}, err
@@ -518,7 +519,9 @@ func (r *ScheduledBackupReconciler) patchStatus(
 	}
 	conditionsChanged := !equality.Semantic.DeepEqual(sb.Status.Conditions, base.Status.Conditions)
 	historyChanged := !equality.Semantic.DeepEqual(sb.Status.History, base.Status.History)
-	latestChanged := !equality.Semantic.DeepEqual(sb.Status.LastSuccessfulTime, base.Status.LastSuccessfulTime)
+	latestChanged := !equality.Semantic.DeepEqual(sb.Status.LastSuccessfulTime, base.Status.LastSuccessfulTime) ||
+		!equality.Semantic.DeepEqual(sb.Status.LastFailureTime, base.Status.LastFailureTime) ||
+		sb.Status.ConsecutiveFailures != base.Status.ConsecutiveFailures
 	if !conditionsChanged && !historyChanged && !latestChanged {
 		return r.Status().Patch(ctx, sb, client.MergeFrom(base))
 	}
@@ -533,6 +536,8 @@ func (r *ScheduledBackupReconciler) patchStatus(
 		from.Status.Conditions = live.Status.Conditions
 		from.Status.History = live.Status.History
 		from.Status.LastSuccessfulTime = live.Status.LastSuccessfulTime
+		from.Status.LastFailureTime = live.Status.LastFailureTime
+		from.Status.ConsecutiveFailures = live.Status.ConsecutiveFailures
 		sb.Status.Conditions = rebaseConditions(base.Status.Conditions, pass.Conditions, live.Status.Conditions)
 		sb.Status.History = live.Status.History
 		if historyChanged {
@@ -543,6 +548,9 @@ func (r *ScheduledBackupReconciler) patchStatus(
 			sb.Status.History = mergeHistory(live.Status.History, runs)
 		}
 		sb.Status.LastSuccessfulTime = laterTime(live.Status.LastSuccessfulTime, pass.LastSuccessfulTime)
+		sb.Status.LastFailureTime = live.Status.LastFailureTime
+		sb.Status.ConsecutiveFailures = live.Status.ConsecutiveFailures
+		recordFailures(&sb.Status)
 		return r.Status().Patch(ctx, sb, client.MergeFromWithOptions(from, client.MergeFromWithOptimisticLock{}))
 	})
 }
