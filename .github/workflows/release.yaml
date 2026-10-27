@@ -65,7 +65,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Flux CLI
-        uses: fluxcd/flux2/action@dd233c4fadef306a62b7893204f8e3817fecc2b2 # v2.9.5
+        uses: fluxcd/flux2/action@3fa784edd773d56630bb9f62645e08f70c2cff0a # v2.10.0
 
       - name: Resolve the manager image digest
         id: digest
