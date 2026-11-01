@@ -2,7 +2,14 @@
 
 [![Release](https://github.com/USA-RedDragon/b2-backup-operator/actions/workflows/release.yaml/badge.svg)](https://github.com/USA-RedDragon/b2-backup-operator/actions/workflows/release.yaml) [![go.mod version](https://img.shields.io/github/go-mod/go-version/USA-RedDragon/b2-backup-operator.svg)](https://github.com/USA-RedDragon/b2-backup-operator) [![License](https://badgen.net/github/license/USA-RedDragon/b2-backup-operator)](https://github.com/USA-RedDragon/b2-backup-operator/blob/main/LICENSE) [![Release](https://img.shields.io/github/release/USA-RedDragon/b2-backup-operator.svg)](https://github.com/USA-RedDragon/b2-backup-operator/releases/)
 
-A Kubernetes operator that backs up apps with [restic](https://restic.net) into [Backblaze B2](https://www.backblaze.com/cloud-storage) through B2's S3-compatible API. Each app gets two short custom resources: a Repository that provisions or adopts the restic repository, its bucket, its own scoped application key and its lifecycle rule, and a ScheduledBackup that renders the CronJob that backs up into it. `b2bk`, a CLI, kubectl plugin and full-screen dashboard, runs backups on demand, explains why one is not running, and browses and restores snapshots.
+A Kubernetes operator that backs up applications to [Backblaze B2](https://www.backblaze.com/cloud-storage) using [restic](https://restic.net) over B2's S3-compatible API.
+
+Each application needs just two custom resources:
+
+- **Repository** provisions or adopts a restic repository, along with its B2 bucket, scoped application key, and lifecycle rule.
+- **ScheduledBackup** defines a backup schedule and generates the corresponding Kubernetes CronJob.
+
+The accompanying `b2bk` tool provides a CLI, kubectl plugin, and full-screen dashboard. Use it to trigger backups on demand, troubleshoot why a backup isn't running, and browse or restore snapshots.
 
 ![The b2bk dashboard: five backups in mixed states, one backup's run history, a running backup's log with its progress bar, database and file snapshots with the file pane, a restore into a new claim with its dry run, doctor on a failing backup, and the help overlay](docs/demo/tui.gif)
 
@@ -10,7 +17,7 @@ The dashboard: every backup in the namespace, its logs and progress, snapshots a
 
 ![b2bk in a terminal: get -A lists every repository and backup, status names the backup it picked, backup --follow streams a run, then snapshots, doctor on a failing backup, and a restore into a new claim](docs/demo/cli.gif)
 
-The CLI: the same operations as plain-text commands, for scripts and for kubectl.
+The CLI interface
 
 ## What it does
 
