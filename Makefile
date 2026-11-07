@@ -200,7 +200,7 @@ ENVTEST_VERSION ?= $(call required,$(call gomodver,sigs.k8s.io/controller-runtim
 
 ENVTEST_K8S_VERSION ?= $(shell printf '%s' '$(call required,$(call gomodver,k8s.io/api),Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag))' | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
-GOLANGCI_LINT_VERSION ?= v2.14.0
+GOLANGCI_LINT_VERSION ?= v2.15.0
 VHS_VERSION ?= v0.12.1
 TTYD_VERSION ?= 1.7.7
 TTYD_SHA256_x86_64 = 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
