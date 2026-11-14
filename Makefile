@@ -194,7 +194,7 @@ TTYD ?= $(LOCALBIN)/ttyd
 
 KUSTOMIZE_VERSION ?= v5.8.3
 KIND_VERSION ?= v0.33.0
-CONTROLLER_TOOLS_VERSION ?= v0.22.0
+CONTROLLER_TOOLS_VERSION ?= v0.23.0
 
 ENVTEST_VERSION ?= $(call required,$(call gomodver,sigs.k8s.io/controller-runtime),Set ENVTEST_VERSION manually (controller-runtime replace has no tag))
 
